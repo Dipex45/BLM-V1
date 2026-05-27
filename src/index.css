@@ -1,0 +1,83 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #c1121f;
+  --color-primary-container: #8f0f19;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #ffffff;
+  
+  --color-secondary: #202124;
+  --color-secondary-container: #ededed;
+  --color-on-secondary: #ffffff;
+  --color-on-secondary-container: #303033;
+
+  --color-surface: #ffffff;
+  --color-surface-container: #f5f6f3;
+  --color-surface-container-low: #eceee9;
+  --color-surface-container-lowest: #ffffff;
+  --color-on-surface: #1f2326;
+  --color-on-surface-variant: #646a6f;
+  
+  --color-outline: #ddddda;
+  --color-outline-variant: #c9cbc6;
+  
+  --color-background: #f7f8f5;
+  --color-on-background: #1f2326;
+
+  --color-error: #ef4444;
+  --color-error-container: #fee2e2;
+  --color-on-error: #ffffff;
+  --color-on-error-container: #991b1b;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "IBM Plex Sans", sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply antialiased bg-background text-on-background;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display font-bold;
+  }
+
+  a, button, input, select, textarea {
+    @apply outline-primary/30;
+  }
+}
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  display: inline-block;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: normal;
+  word-wrap: normal;
+  white-space: nowrap;
+  direction: ltr;
+}
+
+.fill-icon {
+  font-variation-settings: 'FILL' 1;
+}
+
+.glass {
+  @apply bg-white/95 border border-outline;
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 0, 0, 0.4); }
+  50% { box-shadow: 0 0 0 10px rgba(212, 0, 0, 0); }
+}
+
+.animate-pulse-red {
+  animation: pulse-red 2s infinite;
+}

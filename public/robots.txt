@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Sitemap: https://ais-pre-nj4efv3swojwnl6x6irpf3-322229176789.europe-west3.run.app/sitemap.xml
+# IndexNow Key
+# https://www.indexnow.org/documentation
+IndexNow: 8e4a9c12b7f34a8e9d2c1b0a7e5d6c3f

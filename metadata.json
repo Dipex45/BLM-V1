@@ -1,0 +1,13 @@
+{
+  "name": "BLM MOTORS | Elite Logistics",
+  "description": "High-performance logistics command center and elite transit services for global commerce.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "Real-time tracking",
+    "Fleet management",
+    "Secure ride booking",
+    "Payment integration"
+  ]
+}

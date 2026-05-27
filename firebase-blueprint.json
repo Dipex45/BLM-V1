@@ -1,0 +1,111 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["customer", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "email", "role"]
+    },
+    "Shipment": {
+      "title": "Shipment",
+      "description": "Shipment tracking record",
+      "type": "object",
+      "properties": {
+        "trackingId": { "type": "string" },
+        "origin": { "type": "string" },
+        "destination": { "type": "string" },
+        "carrier": { "type": "string" },
+        "status": { "type": "string", "enum": ["In Transit", "Processing", "Delivered", "Delayed"] },
+        "currentSpeed": { "type": "number" },
+        "eta": { "type": "string" },
+        "journeyLog": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": { "type": "string" },
+              "timestamp": { "type": "string", "format": "date-time" },
+              "location": { "type": "string" }
+            }
+          }
+        },
+        "customerId": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trackingId", "origin", "destination", "status", "customerId"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "A ride or transit booking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerId": { "type": "string" },
+        "pickup": { "type": "string" },
+        "destination": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "vehicleClass": { "type": "string", "enum": ["Standard Sedan", "Standard SUV", "Luxury Truck"] },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["Quoted", "Paid", "Confirmed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerId", "pickup", "destination", "vehicleClass", "totalAmount", "status"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "Global application configuration",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "object" }
+      },
+      "required": ["key", "value"]
+    },
+    "Hub": {
+      "title": "Hub",
+      "description": "Logistics hub or route endpoint",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "address": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name", "address", "active"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Store user profiles"
+    },
+    "shipments/{shipmentId}": {
+      "schema": "Shipment",
+      "description": "Tracking records for all shipments"
+    },
+    "bookings/{bookingId}": {
+      "schema": "Booking",
+      "description": "Customer ride bookings"
+    },
+    "settings/{settingId}": {
+      "schema": "Setting",
+      "description": "Global settings like vehicle prices"
+    },
+    "hubs/{hubId}": {
+      "schema": "Hub",
+      "description": "Available pickup/destination hubs"
+    },
+    "admins/{adminId}": {
+      "schema": "User",
+      "description": "Users with administrative privileges"
+    }
+  }
+}

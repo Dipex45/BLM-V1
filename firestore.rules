@@ -1,0 +1,177 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function adminDoc() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasAdminRecord() {
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function hasUserRecord() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function role() {
+      return hasAdminRecord() ? adminDoc().data.role : (hasUserRecord() ? userDoc().data.role : 'customer');
+    }
+
+    function hasRole(roles) {
+      return isSignedIn() && (role() in roles || role() == 'super_admin');
+    }
+
+    function isOps() {
+      return hasRole(['dispatcher', 'customer_support_agent', 'finance_admin']);
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll(['customerId', 'pickup', 'destination', 'date', 'time', 'vehicleClass', 'totalAmount', 'status', 'createdAt']) &&
+             data.customerId is string && data.customerId.size() <= 128 &&
+             data.pickup is string && data.pickup.size() <= 200 &&
+             data.destination is string && data.destination.size() <= 200 &&
+             data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+             data.time is string && data.time.matches('^\\d{2}:\\d{2}$') &&
+             data.totalAmount is number &&
+             data.status in ['Quoted', 'Booked', 'Paid', 'Confirmed', 'Dispatched', 'InTransit', 'Completed', 'Cancelled'] &&
+             data.createdAt is string;
+    }
+
+    match /admins/{adminId} {
+      allow read: if hasRole(['dispatcher', 'finance_admin', 'customer_support_agent']);
+      allow create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isOps();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'verificationStatus', 'fraudFlags', 'paymentHistory']);
+      allow delete: if false;
+    }
+
+    match /customers/{customerId} {
+      allow read: if isOwner(customerId) || isOps();
+      allow create, update: if isOwner(customerId);
+      allow delete: if false;
+    }
+
+    match /settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if hasRole(['dispatcher']);
+    }
+
+    match /hubs/{hubId} {
+      allow read: if isSignedIn();
+      allow write: if hasRole(['dispatcher']);
+    }
+
+    match /blocked_dates/{dateId} {
+      allow read: if isSignedIn();
+      allow write: if hasRole(['dispatcher']);
+    }
+
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isOps());
+      allow create: if isSignedIn() &&
+                    request.resource.data.customerId == request.auth.uid &&
+                    isValidBooking(request.resource.data);
+      allow update: if isSignedIn() &&
+                    (
+                      hasRole(['dispatcher', 'customer_support_agent']) ||
+                      (
+                        resource.data.customerId == request.auth.uid &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewId'])
+                      )
+                    );
+      allow delete: if false;
+    }
+
+    match /drivers/{driverId} {
+      allow read: if isOps() || isOwner(driverId);
+      allow create, update, delete: if false;
+    }
+
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /driver_locations/{driverId} {
+      allow read: if isOps() || isOwner(driverId);
+      allow create, update, delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || hasRole(['finance_admin', 'customer_support_agent']));
+      allow create, update, delete: if false;
+    }
+
+    match /refunds/{refundId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || hasRole(['finance_admin', 'customer_support_agent']));
+      allow create, update, delete: if false;
+    }
+
+    match /ledger_entries/{entryId} {
+      allow read: if hasRole(['finance_admin']);
+      allow create, update, delete: if false;
+    }
+
+    match /audit_logs/{auditId} {
+      allow read: if hasRole(['super_admin']);
+      allow create, update, delete: if false;
+    }
+
+    match /booking_events/{eventId} {
+      allow read: if isOps();
+      allow create, update, delete: if false;
+    }
+
+    match /support_tickets/{ticketId} {
+      allow read: if isOps() || resource.data.customerId == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /support_conversations/{conversationId} {
+      allow read: if isOps() || resource.data.userId == request.auth.uid;
+      allow create, update, delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isOps();
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /notification_logs/{notificationId} {
+      allow read: if isOps();
+      allow create, update, delete: if false;
+    }
+
+    match /realtime_events/{eventId} {
+      allow read: if isOps();
+      allow create, update, delete: if false;
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.customerId == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}

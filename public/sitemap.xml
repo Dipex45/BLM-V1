@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://ais-pre-nj4efv3swojwnl6x6irpf3-322229176789.europe-west3.run.app/</loc>
+    <lastmod>2026-05-12</lastmod>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://ais-pre-nj4efv3swojwnl6x6irpf3-322229176789.europe-west3.run.app/tracking</loc>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://ais-pre-nj4efv3swojwnl6x6irpf3-322229176789.europe-west3.run.app/booking</loc>
+    <priority>0.8</priority>
+  </url>
+</urlset>
