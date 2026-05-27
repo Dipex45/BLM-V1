@@ -35,6 +35,7 @@ import {
 import { useCurrency } from '../hooks/useCurrency';
 import { logAudit, AuditAction } from '../lib/audit';
 import { apiDelete, apiPost } from '../lib/api';
+import { company, defaultVehicles } from '../lib/company';
 
 export default function AdminDashboard() {
   const { user } = useAuth();
@@ -98,9 +99,7 @@ export default function AdminDashboard() {
         const p = snap.docs.find(d => d.id === 'vehicle_types')?.data()?.value || [];
         if (p.length === 0) {
            const defaults = [
-             { title: 'Economy', desc: 'Standard logistics transit.', price: 120, icon: 'local_shipping' },
-             { title: 'Business', desc: 'High-priority transit.', price: 350, icon: 'bolt' },
-             { title: 'Cross-Border Bus', desc: 'International transit.', price: 85, icon: 'directions_bus' },
+             ...defaultVehicles,
            ];
            setPrices(defaults);
         } else {
@@ -579,7 +578,7 @@ export default function AdminDashboard() {
                           <LineChart data={analyticsData.dailyRevenue}>
                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
                              <XAxis dataKey="date" fontSize={10} axisLine={false} tickLine={false} />
-                             <YAxis fontSize={10} axisLine={false} tickLine={false} tickFormatter={(val) => `$${val}`} />
+                             <YAxis fontSize={10} axisLine={false} tickLine={false} tickFormatter={(val) => formatPrice(Number(val))} />
                              <Tooltip 
                                 contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold' }}
                                 labelStyle={{ color: '#D40000' }}
@@ -682,7 +681,7 @@ export default function AdminDashboard() {
                     <p className="text-xs text-on-surface-variant font-medium">{p.desc}</p>
                   </div>
                   <div className="mt-auto">
-                    <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Base Price (USD Rate)</label>
+                    <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Base price (NGN)</label>
                     <div className="flex flex-col gap-2">
                        <p className="text-[10px] font-bold text-primary uppercase">Localized: {formatPrice(p.price)}</p>
                        <input 
@@ -710,7 +709,7 @@ export default function AdminDashboard() {
                 <form onSubmit={handleAddHub} className="space-y-6">
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Hub Name</label>
-                    <input name="hubName" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="e.g. Cape Town Logistics Center" />
+                    <input name="hubName" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="e.g. Lagos Operations Hub" />
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Physical Address</label>
@@ -834,7 +833,7 @@ export default function AdminDashboard() {
                         </div>
                         <div>
                           <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Phone</label>
-                          <input name="driverPhone" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="+27 XXXXXXXX" />
+                          <input name="driverPhone" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="+234 906 409 0276" />
                         </div>
                      </div>
                      <button type="submit" className="w-full py-4 bg-primary text-white font-bold rounded-xl uppercase tracking-widest text-xs">
@@ -1021,7 +1020,15 @@ export default function AdminDashboard() {
                  <div className="p-8 border border-outline rounded-lg bg-surface-container/30">
                     <h4 className="font-bold mb-2 text-sm">Data check</h4>
                     <p className="text-xs text-on-surface-variant mb-6">Re-validate operational records against the current data rules.</p>
-                    <button className="w-full py-4 border-2 border-outline text-on-surface-variant font-bold rounded-md text-sm hover:bg-surface-container transition-colors">
+                    <button
+                      onClick={() => {
+                        const missingCustomer = bookings.filter((booking) => !booking.customerId || !booking.customerEmail).length;
+                        const missingRoute = bookings.filter((booking) => !booking.pickup || !booking.destination).length;
+                        const missingAmount = bookings.filter((booking) => !booking.totalAmount).length;
+                        alert(`Diagnostic complete.\nBookings checked: ${bookings.length}\nMissing customer data: ${missingCustomer}\nMissing route data: ${missingRoute}\nMissing amount: ${missingAmount}`);
+                      }}
+                      className="w-full py-4 border-2 border-outline text-on-surface-variant font-bold rounded-md text-sm hover:bg-surface-container transition-colors"
+                    >
                       Run Diagnostic Scan
                     </button>
                  </div>
@@ -1034,12 +1041,12 @@ export default function AdminDashboard() {
       {/* Global Supply Chain Metrics Overlay */}
       <footer className="grid grid-cols-2 md:grid-cols-4 gap-8 pt-12 border-t border-outline">
          {[
-           { label: 'System Speed', val: 'Fast (14ms)', icon: 'speed' },
-           { label: 'Data Security', val: 'Excellent', icon: 'verified' },
-           { label: 'Energy Class', val: 'AA+', icon: 'eco' },
-           { label: 'Total Staff', val: '1,244', icon: 'groups' },
-         ].map((stat, i) => (
-           <div key={i} className="flex items-center gap-5">
+           { label: 'Bookings loaded', val: bookings.length.toString(), icon: 'receipt_long' },
+           { label: 'Drivers loaded', val: drivers.length.toString(), icon: 'badge' },
+           { label: 'Reviews loaded', val: reviews.length.toString(), icon: 'reviews' },
+           { label: 'Support', val: company.phoneDisplay, icon: 'call' },
+         ].map((stat) => (
+           <div key={stat.label} className="flex items-center gap-5">
               <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-on-surface-variant border border-outline">
                 <span className="material-symbols-outlined">{stat.icon}</span>
               </div>

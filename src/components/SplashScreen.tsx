@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { motion } from 'framer-motion';
+import { company } from '../lib/company';
 
 export default function SplashScreen({ onFinish }: { onFinish: () => void }) {
   useEffect(() => {
@@ -14,10 +15,7 @@ export default function SplashScreen({ onFinish }: { onFinish: () => void }) {
         animate={{ opacity: 1, y: 0 }}
         className="flex flex-col items-center gap-5"
       >
-        <div className="flex items-center gap-3">
-          <span className="flex h-12 w-12 items-center justify-center rounded-md bg-primary text-sm font-black text-white">BLM</span>
-          <span className="font-display text-2xl font-bold text-on-surface">BLM Motors</span>
-        </div>
+        <img src={company.logo} alt="BLM Motors logo" className="h-20 w-44 object-contain" />
         <div className="h-1 w-36 overflow-hidden rounded-md bg-surface-container">
           <motion.div
             initial={{ width: '20%' }}

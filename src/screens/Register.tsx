@@ -4,6 +4,7 @@ import { createUserWithEmailAndPassword, GoogleAuthProvider, sendEmailVerificati
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { motion } from 'framer-motion';
 import { auth, db } from '../lib/firebase';
+import { company } from '../lib/company';
 
 export default function Register() {
   const [email, setEmail] = useState('');
@@ -72,20 +73,16 @@ export default function Register() {
     <div className="flex min-h-screen bg-background">
       <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
         <img
-          src="https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&q=85&w=1400"
-          alt="Delivery truck on the road"
+          src={company.heroImage}
+          alt="BLM Motors transport service flyer"
           className="absolute inset-0 h-full w-full object-cover opacity-55"
-          referrerPolicy="no-referrer"
         />
         <div className="absolute inset-0 bg-black/55" />
         <div className="relative z-10 max-w-lg text-white">
-          <div className="mb-12 flex items-center gap-3">
-            <span className="flex h-12 w-12 items-center justify-center rounded-md bg-primary text-sm font-black text-white">BLM</span>
-            <span className="font-display text-2xl font-bold text-white">BLM Motors</span>
-          </div>
+          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-20 w-44 object-contain" />
           <h2 className="mb-6 text-5xl font-bold leading-tight">Create your BLM account.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
-            Book transport, save your details, and keep every delivery reference in one place.
+            Book transport, touring, car hire, pickup, and cross-border trips from one account.
           </p>
         </div>
       </div>
@@ -135,7 +132,7 @@ export default function Register() {
                 type="text"
                 required
                 className="w-full rounded-md border border-outline bg-surface-container px-4 py-3.5 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
-                placeholder="John Doe"
+                placeholder="Chinedu Okafor"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
               />

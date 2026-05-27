@@ -23,7 +23,7 @@ describe('Production schemas', () => {
       createdAt: new Date().toISOString(),
     });
 
-    expect(booking.currency).toBe('USD');
+    expect(booking.currency).toBe('NGN');
     expect(booking.status).toBe('Paid');
   });
 
@@ -40,7 +40,7 @@ describe('Production schemas', () => {
       provider: 'stripe',
       amount: 100,
       amountMinor: 10000,
-      currency: 'USD',
+      currency: 'NGN',
       status: 'initialized',
       reconciliation: { required: true, source: 'webhook_or_server_verify' },
       fraud: { duplicateCheck: 'passed', riskLevel: 'pending' },

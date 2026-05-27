@@ -50,7 +50,7 @@ declare global {
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === "production";
-const DEFAULT_EMAIL_FROM = process.env.NOTIFICATION_EMAIL_FROM || "BLM Motors <operations@blmmotors.com>";
+const DEFAULT_EMAIL_FROM = process.env.NOTIFICATION_EMAIL_FROM || "BLM Motors <bookings@blmmotors.ng>";
 const AI_DAILY_PROMPT_LIMIT = Number(process.env.AI_DAILY_PROMPT_LIMIT || 50);
 
 const BookingStatusSchema = z.enum([
@@ -1018,6 +1018,47 @@ async function startServer() {
     res.json({ status: "validated", data: validatedData });
   }));
 
+  app.get("/api/tracking/:bookingId", asyncHandler(async (req, res) => {
+    const bookingId = z.string().trim().min(3).max(160).parse(req.params.bookingId);
+    const bookingRef = getAdminDb().collection("bookings").doc(bookingId);
+    const bookingSnap = await bookingRef.get();
+    if (!bookingSnap.exists) throw new HttpError(404, "Tracking reference not found");
+
+    const booking = bookingSnap.data() || {};
+    const eventsSnap = await getAdminDb()
+      .collection("booking_events")
+      .where("bookingId", "==", bookingId)
+      .orderBy("createdAt", "desc")
+      .limit(8)
+      .get()
+      .catch(() => null);
+
+    const events = eventsSnap?.docs.map((doc) => {
+      const event = doc.data();
+      return {
+        id: doc.id,
+        type: event.type || "booking.update",
+        metadata: event.metadata || {},
+        createdAt: event.createdAt?.toDate?.().toISOString?.() || null,
+      };
+    }) || [];
+
+    res.json({
+      id: bookingId,
+      pickup: booking.pickup || null,
+      destination: booking.destination || null,
+      status: booking.status || "Unknown",
+      assignedDriverId: booking.assignedDriverId || null,
+      vehicleClass: booking.vehicleClass || null,
+      date: booking.date || null,
+      time: booking.time || null,
+      etaHistory: booking.etaHistory || [],
+      routeMetadata: booking.routeMetadata || null,
+      updatedAt: booking.updatedAt?.toDate?.().toISOString?.() || booking.updatedAt || null,
+      events,
+    });
+  }));
+
   app.post(
     "/api/payment/stripe/create-intent",
     paymentLimiter,
@@ -1038,7 +1079,7 @@ async function startServer() {
         return res.json({ clientSecret: existing.data.clientSecret, paymentId: existing.id, reused: true });
       }
 
-      const currency = String(booking.currency || "USD").toLowerCase();
+      const currency = String(booking.currency || "NGN").toLowerCase();
       const amount = Number(booking.totalAmount || 0);
       if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Booking amount is invalid");
 
@@ -1608,7 +1649,7 @@ async function startServer() {
       if (!hasQuota) throw new HttpError(429, "AI support daily quota exceeded");
 
       if (looksLikePromptInjection(sanitizedPrompt)) {
-        const fallback = "I cannot follow requests to override safety or support instructions. I can still help with bookings, tracking, payments, or connect this to a human support ticket.";
+        const fallback = "I cannot follow requests to override safety or support instructions. I can still help with bookings, tracking, payments, touring, car hire, or connect this to a human support ticket.";
         return res.json({ text: fallback, confidence: 0.2, escalate: true });
       }
 
@@ -1621,8 +1662,8 @@ async function startServer() {
       const escalate = shouldEscalate(sanitizedPrompt);
       const model = ai.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-1.5-flash" });
       const result = await model.generateContent([
-        `You are the BLM Motors logistics support assistant.
-Answer only about bookings, payments, refunds, delivery tracking, dispatch, driver arrival, or account support.
+        `You are the BLM Motors Nigeria support assistant.
+Answer only about bookings, payments, refunds, tracking, dispatch, driver arrival, touring, car hire, pickup, interstate movement, cross-border transport, or account support.
 Do not make policy promises, legal claims, or payment confirmations without server records.
 Escalate uncertain, emergency, refund, dispute, fraud, or complaint cases to a human.
 Current user: ${req.auth?.email || "guest"}.

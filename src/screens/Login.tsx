@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { motion } from 'framer-motion';
 import { auth, db } from '../lib/firebase';
 import { AuditAction, logAudit } from '../lib/audit';
+import { company } from '../lib/company';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -103,20 +104,16 @@ export default function Login() {
     <div className="flex min-h-screen bg-background">
       <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
         <img
-          src="https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&q=85&w=1400"
-          alt="Warehouse loading area"
+          src={company.servicesImage}
+          alt="BLM Motors services flyer"
           className="absolute inset-0 h-full w-full object-cover opacity-55"
-          referrerPolicy="no-referrer"
         />
         <div className="absolute inset-0 bg-black/55" />
         <div className="relative z-10 max-w-lg text-white">
-          <div className="mb-12 flex items-center gap-3">
-            <span className="flex h-12 w-12 items-center justify-center rounded-md bg-primary text-sm font-black text-white">BLM</span>
-            <span className="font-display text-2xl font-bold text-white">BLM Motors</span>
-          </div>
+          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-20 w-44 object-contain" />
           <h2 className="mb-6 text-5xl font-bold leading-tight">Welcome back.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
-            Manage your bookings, track deliveries, and stay connected with the BLM operations team.
+            Manage Nigerian transport, touring, car hire, pickup, and cross-border bookings.
           </p>
         </div>
       </div>

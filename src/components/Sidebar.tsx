@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { company } from '../lib/company';
 
 interface SidebarProps {
   isMobile?: boolean;
@@ -8,21 +9,19 @@ interface SidebarProps {
 export default function Sidebar({ isMobile = false }: SidebarProps) {
   const location = useLocation();
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = ['admin', 'super_admin', 'dispatcher', 'finance_admin', 'customer_support_agent'].includes(user?.role);
 
   const customerItems = [
     { path: '/dashboard', label: 'Dashboard', icon: 'grid_view' },
     { path: '/tracking', label: 'Track delivery', icon: 'location_on' },
     { path: '/booking', label: 'Book transport', icon: 'calendar_month' },
     { path: '/reports', label: 'History', icon: 'history' },
-    { path: '/settings', label: 'Settings', icon: 'settings' },
   ];
 
   const adminItems = [
     { path: '/admin', label: 'Admin panel', icon: 'admin_panel_settings' },
     { path: '/booking', label: 'Manual booking', icon: 'add_circle' },
     { path: '/reports', label: 'Reports', icon: 'analytics' },
-    { path: '/settings', label: 'Settings', icon: 'settings_suggest' },
   ];
 
   const menuItems = isAdmin ? adminItems : customerItems;
@@ -67,7 +66,9 @@ export default function Sidebar({ isMobile = false }: SidebarProps) {
           </div>
           <div>
             <p className="text-sm font-bold text-on-surface">24/7 support</p>
-            <p className="text-xs text-on-surface-variant font-medium mt-0.5">Live assistance</p>
+            <a href={`tel:${company.phone}`} className="text-xs text-on-surface-variant font-medium mt-0.5 hover:text-primary">
+              {company.phoneDisplay}
+            </a>
           </div>
         </div>
       </div>

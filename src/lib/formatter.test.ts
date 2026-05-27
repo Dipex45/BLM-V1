@@ -1,6 +1,10 @@
 import { formatCurrency, truncateId } from './formatter';
 
 describe('Formatter Utilities', () => {
+  test('formatCurrency should format NGN correctly', () => {
+    expect(formatCurrency(123456, 'NGN', '₦')).toBe('₦ 123,456.00');
+  });
+
   test('formatCurrency should format USD correctly', () => {
     expect(formatCurrency(1234.56, 'USD', '$')).toBe('$ 1,234.56');
   });

@@ -9,6 +9,7 @@ import { logAudit, AuditAction } from '../lib/audit';
 
 import { useCurrency } from '../hooks/useCurrency';
 import { BookingSchema } from '../lib/schemas';
+import { company, defaultVehicles } from '../lib/company';
 
 export default function Booking() {
   const { user } = useAuth();
@@ -54,9 +55,7 @@ export default function Booking() {
         }
       } else {
         const defaults = [
-          { title: 'Economy', desc: 'Standard logistics transit.', price: 120, icon: 'local_shipping' },
-          { title: 'Business', desc: 'High-priority transit.', price: 350, icon: 'bolt' },
-          { title: 'Cross-Border Bus', desc: 'International transit.', price: 85, icon: 'directions_bus' },
+          ...defaultVehicles,
         ];
         setVehicles(defaults);
         setFormData(prev => ({ ...prev, vehicleClass: 'Economy' }));
@@ -72,9 +71,10 @@ export default function Booking() {
       }
 
       const hData = hubsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setHubs(hData);
-      if (hData.length > 0) {
-        setFormData(prev => ({ ...prev, pickup: hData[0].name, destination: hData[1]?.name || hData[0].name }));
+      const resolvedHubs = hData.length > 0 ? hData : company.hubs.map((hub, index) => ({ id: `default-${index}`, ...hub }));
+      setHubs(resolvedHubs);
+      if (resolvedHubs.length > 0) {
+        setFormData(prev => ({ ...prev, pickup: resolvedHubs[0].name, destination: resolvedHubs[1]?.name || resolvedHubs[0].name }));
       }
 
       // Load Blocked Dates
@@ -149,6 +149,7 @@ export default function Booking() {
         date: formData.date,
         time: formData.time,
         totalAmount,
+        currency: 'NGN',
         isReturn: formData.isReturn,
         isRecurring: formData.isRecurring,
         recurringFrequency: formData.recurringFrequency,
@@ -211,10 +212,9 @@ export default function Booking() {
   return (
     <div className="p-8 md:p-12 max-w-7xl mx-auto flex flex-col gap-12 bg-background">
       <header className="border-b border-outline pb-10 text-center md:text-left flex flex-col items-center md:items-start">
-        <h1 className="text-4xl md:text-5xl font-display font-bold leading-none mb-4">Book transport.</h1>
+        <h1 className="text-4xl md:text-5xl font-display font-bold leading-none mb-4">Book BLM Motors.</h1>
         <p className="text-on-surface-variant max-w-2xl font-medium text-sm leading-relaxed mx-auto md:mx-0">
-          Schedule your transport or delivery through our reliable network. 
-          Choose a vehicle class below to get started.
+          Schedule transport, touring, car hire, pickup, interstate movement, or cross-border trips from Nigeria.
         </p>
       </header>
 
@@ -303,7 +303,7 @@ export default function Booking() {
            <div className="relative z-10 p-6 bg-surface-container/50 border border-outline rounded-2xl mb-8">
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-on-surface">Return Journey?</h4>
+                  <h4 className="text-[10px] font-bold uppercase tracking-widest text-on-surface">Return journey?</h4>
                   <p className="text-xs text-on-surface-variant">Add the return leg to this booking.</p>
                 </div>
                 <button 
@@ -343,7 +343,7 @@ export default function Booking() {
                 <label className="block text-[9px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Trip notes</label>
                 <textarea 
                   className="w-full bg-surface-container border border-outline rounded-xl p-4 text-xs font-medium focus:ring-2 focus:ring-primary/20"
-                  placeholder="Special handling instructions, gate codes, etc."
+                  placeholder="Pickup notes, border route, touring stops, luggage, parcel details, etc."
                   rows={2}
                   value={formData.notes}
                   onChange={(e) => setFormData({...formData, notes: e.target.value})}
@@ -411,7 +411,7 @@ export default function Booking() {
         <div className="space-y-8">
            <div className="bg-white rounded-lg p-6 md:p-10 border border-outline shadow-sm relative overflow-hidden">
               <div className="relative z-10">
-                <h3 className="text-[10px] font-bold uppercase tracking-widest text-primary mb-8">Booking Summary</h3>
+                <h3 className="text-[10px] font-bold uppercase tracking-widest text-primary mb-8">Booking summary</h3>
                 <div className="flex items-baseline gap-2 mb-8">
                   <span className="text-5xl font-bold text-on-surface">
                     {formatPrice(vehicles.find(v => v.title === formData.vehicleClass)?.price || 0)}
@@ -441,8 +441,8 @@ export default function Booking() {
                  <span className="material-symbols-outlined text-2xl">lock</span>
               </div>
               <div>
-                 <p className="text-sm font-bold text-on-surface">Secure Checkout</p>
-                 <p className="text-xs text-on-surface-variant mt-1">Your booking and payment details are handled securely.</p>
+                 <p className="text-sm font-bold text-on-surface">Secure checkout</p>
+                 <p className="text-xs text-on-surface-variant mt-1">Your booking uses server-side payment verification and Nigerian naira pricing.</p>
               </div>
            </div>
         </div>

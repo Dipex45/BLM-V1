@@ -1,44 +1,110 @@
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import { collection, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { useAuth } from '../hooks/useAuth';
+import { useCurrency } from '../hooks/useCurrency';
 
 export function Reports() {
+  const { user } = useAuth();
+  const { formatPrice } = useCurrency();
+  const [bookings, setBookings] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const q = query(
+      collection(db, 'bookings'),
+      where('customerId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setBookings(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setLoading(false);
+    }, () => {
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const downloadCsv = () => {
+    const headers = ['Booking ID', 'Pickup', 'Destination', 'Vehicle', 'Date', 'Time', 'Status', 'Amount'];
+    const rows = bookings.map((booking) => [
+      booking.id,
+      booking.pickup,
+      booking.destination,
+      booking.vehicleClass,
+      booking.date,
+      booking.time,
+      booking.status,
+      booking.totalAmount,
+    ]);
+    const csv = [headers, ...rows].map(row => row.map(value => `"${String(value || '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `blm-bookings-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="p-8 md:p-12 flex flex-col gap-10 max-w-5xl mx-auto bg-background min-h-screen">
+    <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-10 bg-background p-8 md:p-12">
       <header className="border-b border-outline pb-8">
-        <h1 className="text-4xl font-bold leading-none">Activity reports.</h1>
-        <p className="text-on-surface-variant text-sm mt-3 font-medium">View and download your monthly transport summaries and logs.</p>
+        <h1 className="text-4xl font-bold leading-none">Booking history.</h1>
+        <p className="mt-3 text-sm font-medium text-on-surface-variant">View your real BLM Motors booking records and export them as CSV.</p>
       </header>
 
-      <div className="space-y-6">
-        {[
-          { title: 'Weekly Transport Audit', date: 'Aug 07, 2026', type: 'PDF', icon: 'description' },
-          { title: 'Fleet Maintenance Log', date: 'Aug 05, 2026', type: 'XLS', icon: 'settings' },
-          { title: 'Delivery Summary Report', date: 'Aug 02, 2026', type: 'PDF', icon: 'analytics' },
-        ].map((report, i) => (
-          <motion.div 
-            key={i} 
-            initial={{ opacity: 0, x: -10 }}
-            whileInView={{ opacity: 1, x: 0 }}
-            transition={{ delay: i * 0.1 }}
-            className="bg-white p-8 rounded-lg border border-outline flex items-center justify-between hover:bg-surface-container transition-all cursor-pointer group shadow-sm"
-          >
-             <div className="flex items-center gap-6">
-                <div className="w-14 h-14 bg-primary/10 text-primary rounded-md flex items-center justify-center">
-                   <span className="material-symbols-outlined text-2xl">{report.icon}</span>
-                </div>
-                <div>
-                   <p className="font-bold text-lg">{report.title}</p>
-                   <p className="text-xs text-on-surface-variant mt-1 font-medium">{report.date}</p>
-                </div>
-             </div>
-             <div className="flex flex-col items-end gap-2 text-right">
-                <div className="text-xs font-bold text-primary border border-primary/20 px-4 py-1 rounded-md">
-                   {report.type}
-                </div>
-                <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">download</span>
-             </div>
-          </motion.div>
-        ))}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm font-bold text-on-surface-variant">{bookings.length} bookings found</p>
+        <button
+          onClick={downloadCsv}
+          disabled={bookings.length === 0}
+          className="rounded-md bg-primary px-5 py-3 text-sm font-bold text-white disabled:opacity-50"
+        >
+          Download CSV
+        </button>
       </div>
+
+      {loading ? (
+        <div className="rounded-lg border border-outline bg-white p-10 text-center text-sm font-bold text-on-surface-variant">
+          Loading booking records...
+        </div>
+      ) : bookings.length === 0 ? (
+        <div className="rounded-lg border border-outline bg-white p-10 text-center text-sm font-bold text-on-surface-variant">
+          No booking records yet.
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {bookings.map((booking, index) => (
+            <motion.div
+              key={booking.id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.03 }}
+              className="rounded-lg border border-outline bg-white p-6 shadow-sm"
+            >
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="font-mono text-xs font-bold text-primary">#{booking.id}</p>
+                  <h2 className="mt-2 text-lg font-bold text-on-surface">{booking.pickup} to {booking.destination}</h2>
+                  <p className="mt-1 text-sm text-on-surface-variant">{booking.vehicleClass} · {booking.date} {booking.time}</p>
+                </div>
+                <div className="text-left md:text-right">
+                  <p className="text-sm font-bold text-on-surface">{formatPrice(booking.totalAmount || 0)}</p>
+                  <p className="mt-1 text-xs font-bold uppercase tracking-wider text-primary">{booking.status}</p>
+                </div>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

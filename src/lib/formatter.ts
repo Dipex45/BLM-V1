@@ -1,4 +1,4 @@
-export function formatCurrency(amount: number, currency: string = 'USD', symbol: string = '$'): string {
+export function formatCurrency(amount: number, currency: string = 'NGN', symbol: string = '₦'): string {
   const formatted = new Intl.NumberFormat('en-US', {
     style: 'decimal',
     minimumFractionDigits: 2,

@@ -2,12 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../hooks/useAuth';
 import { apiPost } from '../lib/api';
+import { company } from '../lib/company';
 
 export default function SupportChat() {
   const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string; timestamp: Date }[]>([
-    { role: 'model', text: 'Hi, you are through to BLM support. How can we help with your booking or delivery?', timestamp: new Date() }
+    { role: 'model', text: `Hi, you are through to BLM support. How can we help with your booking, touring, car hire, pickup, or cross-border trip?`, timestamp: new Date() }
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -38,7 +39,7 @@ export default function SupportChat() {
       setMessages(prev => [...prev, { role: 'model', text: aiText, timestamp: new Date() }]);
     } catch (err) {
       console.error(err);
-      setMessages(prev => [...prev, { role: 'model', text: "Connection error. Please try again or email operations@blmmotors.com.", timestamp: new Date() }]);
+      setMessages(prev => [...prev, { role: 'model', text: `Connection error. Please try again, call ${company.phoneDisplay}, or email ${company.email}.`, timestamp: new Date() }]);
     } finally {
       setIsTyping(false);
     }
@@ -76,7 +77,7 @@ export default function SupportChat() {
                 </div>
                 <div>
                    <h3 className="text-sm font-bold leading-none">BLM support</h3>
-                   <span className="text-xs text-white/70 font-medium">Bookings and tracking</span>
+                   <span className="text-xs text-white/70 font-medium">Bookings, touring, and tracking</span>
                 </div>
               </div>
               <div className="flex gap-2">

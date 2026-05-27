@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
+import { useCurrency } from '../hooks/useCurrency';
 import { loadStripe } from '@stripe/stripe-js';
 import {
   Elements,
@@ -16,7 +17,6 @@ import { apiGet, apiPost } from '../lib/api';
 const getStripePromise = () => {
   const key = (import.meta as any).env.VITE_STRIPE_PUBLISHABLE_KEY;
   if (!key) {
-    console.warn("VITE_STRIPE_PUBLISHABLE_KEY is not defined. Stripe will not be available.");
     return null;
   }
   return loadStripe(key);
@@ -106,6 +106,7 @@ function StripeForm({ bookingId, onSuccess, onLoading }: { bookingId: string, am
 export default function Checkout() {
   const { bookingId } = useParams();
   const { user } = useAuth();
+  const { formatPrice } = useCurrency();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [booking, setBooking] = useState<any>(null);
@@ -240,8 +241,7 @@ export default function Checkout() {
                   <div className="pt-10 border-t border-outline flex justify-between items-baseline">
                      <span className="font-bold text-sm text-primary">Total amount</span>
                      <div className="flex items-baseline gap-1">
-                        <span className="text-lg font-bold text-on-surface opacity-40">$</span>
-                        <span className="font-bold text-6xl text-on-surface">{booking?.totalAmount}</span>
+                        <span className="font-bold text-4xl text-on-surface md:text-5xl">{formatPrice(booking?.totalAmount || 0)}</span>
                      </div>
                   </div>
                </div>
@@ -254,7 +254,7 @@ export default function Checkout() {
                   <div className="flex gap-4">
                      {[
                        { id: 'stripe', icon: 'credit_card', label: 'Stripe Global' },
-                       { id: 'paystack', icon: 'payments', label: 'Paystack Direct' }
+                       { id: 'paystack', icon: 'payments', label: 'Paystack Nigeria' }
                      ].map((m: any) => (
                        <button 
                          key={m.id}
@@ -297,7 +297,7 @@ export default function Checkout() {
                    <div className="space-y-8 flex flex-col items-center justify-center py-10 bg-surface-container/30 rounded-lg border border-dashed border-outline">
                       <div className="text-center px-8">
                          <h4 className="text-sm font-bold mb-2">Paystack online</h4>
-                         <p className="text-xs text-on-surface-variant font-medium opacity-70">Mobile money, cards, and direct bank transfers.</p>
+                         <p className="text-xs text-on-surface-variant font-medium opacity-70">Cards, bank transfers, USSD, and Nigerian payment channels.</p>
                       </div>
                       <button 
                         onClick={handlePaystackPayment}

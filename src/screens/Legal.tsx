@@ -1,5 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
+import { company } from '../lib/company';
 
 export default function Legal() {
   return (
@@ -17,24 +18,24 @@ export default function Legal() {
         <section className="space-y-6">
           <h2 className="text-2xl font-bold border-b border-outline pb-4">Privacy policy</h2>
           <div className="text-sm text-on-surface-variant space-y-4 leading-relaxed font-medium">
-            <p>At BLM MOTORS, we respect your privacy and are committed to protecting your personal data. This privacy policy informs you how we look after your personal data when you visit our website.</p>
+            <p>At {company.legalName}, we respect your privacy and protect the personal data needed to provide transport, touring, car hire, pickup, and logistics services.</p>
             <h3 className="font-bold text-on-surface text-sm pt-4">1. Data we collect</h3>
-            <p>We collect and process personal information such as your name, email address, and booking history to provide our transport services. We also collect technical data including your IP address and localized currency preferences.</p>
-            <h3 className="font-bold text-on-surface text-sm pt-4">2. GDPR compliance</h3>
-            <p>If you are located in the EU, you have rights under the General Data Protection Regulation (GDPR) including the right to access, correct, or erase your personal data.</p>
+            <p>We collect and process personal information such as your name, email address, phone number, booking history, route details, payment references, support messages, and review history.</p>
+            <h3 className="font-bold text-on-surface text-sm pt-4">2. Nigeria data protection</h3>
+            <p>We process personal data in line with Nigerian data protection expectations, including access, correction, deletion, and retention controls for customer records.</p>
             <h3 className="font-bold text-on-surface text-sm pt-4">3. Data security</h3>
-            <p>Your data is encrypted and stored in our secure Firestore clusters. Only authorized staff with "Admin" level clearance can access operational logs.</p>
+            <p>Your records are protected by role-based access controls. Only authorized operations, finance, and support users can access the data needed for their work.</p>
           </div>
         </section>
 
         <section className="space-y-6">
           <h2 className="text-2xl font-bold border-b border-outline pb-4">Terms of service</h2>
           <div className="text-sm text-on-surface-variant space-y-4 leading-relaxed font-medium">
-            <p>By using BLM MOTORS services, you agree to comply with the following terms regarding logistics and transport.</p>
+            <p>By using {company.legalName} services, you agree to comply with the following terms for Nigerian and cross-border transport.</p>
             <h3 className="font-bold text-on-surface text-sm pt-4">1. Booking and cancellation</h3>
             <p>All bookings are final once confirmed. Cancellations must be made through support at least 12 hours before scheduled departure.</p>
             <h3 className="font-bold text-on-surface text-sm pt-4">2. Liability</h3>
-            <p>BLM MOTORS acts as the transport provider. While we work to keep bookings on schedule, we are not responsible for delays caused by road closures, border delays, weather, or other external disruptions.</p>
+            <p>{company.legalName} acts as the transport provider. While we work to keep bookings on schedule, road closures, border delays, weather, law-enforcement checks, and other external disruptions can affect arrival times.</p>
           </div>
         </section>
       </motion.div>

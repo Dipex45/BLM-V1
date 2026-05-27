@@ -8,14 +8,16 @@ import { useCurrency } from '../hooks/useCurrency';
 import { logAudit, AuditAction } from '../lib/audit';
 import RouteMap from '../components/RouteMap';
 import { apiPost } from '../lib/api';
+import { company } from '../lib/company';
 
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { formatPrice, symbol } = useCurrency();
+  const { formatPrice } = useCurrency();
   const [bookings, setBookings] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [submittingReview, setSubmittingReview] = useState<string | null>(null);
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, { rating: number; comment: string }>>({});
 
   useEffect(() => {
     if (!user) return;
@@ -38,17 +40,46 @@ export default function Dashboard() {
   }, [user]);
 
   const stats = [
-    { label: 'Active trips', val: bookings.filter(b => b.status === 'Paid' || b.status === 'Dispatched').length.toString().padStart(2, '0'), icon: 'local_taxi', color: 'bg-primary/10 text-primary' },
+    { label: 'Active trips', val: bookings.filter(b => ['Paid', 'Confirmed', 'Dispatched', 'InTransit'].includes(b.status)).length.toString().padStart(2, '0'), icon: 'local_taxi', color: 'bg-primary/10 text-primary' },
     { label: 'Total bookings', val: bookings.length.toString().padStart(2, '0'), icon: 'book_online', color: 'bg-primary/10 text-primary' },
-    { label: 'Saved Locations', val: '08', icon: 'bookmark', color: 'bg-primary/10 text-primary' },
-    { label: 'Account Status', val: 'Stable', icon: 'check_circle', color: 'bg-primary/10 text-primary' },
+    { label: 'Completed trips', val: bookings.filter(b => b.status === 'Completed').length.toString().padStart(2, '0'), icon: 'task_alt', color: 'bg-primary/10 text-primary' },
+    { label: 'Reviews sent', val: bookings.filter(b => b.reviewId).length.toString().padStart(2, '0'), icon: 'reviews', color: 'bg-primary/10 text-primary' },
   ];
 
-  const shipments = [
-    { id: 'BLM-9021', destination: 'Cape Town, ZA', status: 'On the way', ETA: '2h 14m', carrier: 'Mercedes Sedan' },
-    { id: 'BLM-9044', destination: 'Nairobi, KE', status: 'Preparing', ETA: '14h 30m', carrier: 'Standard SUV' },
-    { id: 'BLM-9051', destination: 'Lagos, NG', status: 'Delayed', ETA: 'Waiting', carrier: 'Luxury Truck' },
-  ];
+  const updateReviewDraft = (bookingId: string, patch: Partial<{ rating: number; comment: string }>) => {
+    setReviewDrafts(prev => ({
+      ...prev,
+      [bookingId]: { rating: 0, comment: '', ...(prev[bookingId] || {}), ...patch }
+    }));
+  };
+
+  const submitReview = async (booking: any) => {
+    const draft = reviewDrafts[booking.id];
+    if (!draft?.rating || !draft.comment.trim() || submittingReview) return;
+
+    setSubmittingReview(booking.id);
+    try {
+      const reviewDoc = await addDoc(collection(db, 'reviews'), {
+        bookingId: booking.id,
+        customerId: user?.uid,
+        rating: draft.rating,
+        comment: draft.comment.trim(),
+        createdAt: new Date().toISOString()
+      });
+      await updateDoc(doc(db, 'bookings', booking.id), { reviewId: reviewDoc.id });
+      await logAudit(user?.uid || 'sys', user?.email || 'unknown', AuditAction.UPDATE_BOOKING, {
+        bookingId: booking.id,
+        action: 'SUBMIT_REVIEW',
+        reviewId: reviewDoc.id,
+        rating: draft.rating
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Review could not be submitted. Please try again.');
+    } finally {
+      setSubmittingReview(null);
+    }
+  };
 
   return (
     <div className="p-4 md:p-12 flex flex-col gap-8 md:gap-12 bg-background min-h-screen">
@@ -60,7 +91,7 @@ export default function Dashboard() {
           </div>
           <h1 className="text-4xl md:text-5xl font-sans font-bold leading-none mb-4">My dashboard.</h1>
           <p className="text-on-surface-variant font-semibold text-sm">
-            Account ID: {user?.uid?.slice(-8).toUpperCase() || 'ANONYMOUS'} | Service status: available
+            Account ID: {user?.uid?.slice(-8).toUpperCase() || 'ANONYMOUS'} | Nigeria operations desk
           </p>
         </div>
         <div className="flex gap-4">
@@ -125,7 +156,7 @@ export default function Dashboard() {
                 </p>
               </div>
               <button 
-                onClick={() => bookings.length > 0 && navigate(`/tracking?id=${bookings[0].id}`)}
+                onClick={() => bookings.length > 0 && navigate(`/tracking?booking=${bookings[0].id}`)}
                 className="px-5 py-2 bg-on-surface text-white text-sm font-bold rounded-md hover:bg-black transition-colors"
               >
                 View tracking
@@ -148,7 +179,7 @@ export default function Dashboard() {
             ) : bookings.slice(0, 10).map((booking, i) => (
               <div 
                 key={booking.id} 
-                onClick={() => navigate(`/tracking?id=${booking.id}`)}
+                onClick={() => navigate(`/tracking?booking=${booking.id}`)}
                 className="p-8 border-b border-outline last:border-none flex items-center justify-between hover:bg-surface-container transition-all cursor-pointer group"
               >
                 <div>
@@ -238,33 +269,32 @@ export default function Dashboard() {
                          {[1,2,3,4,5].map(star => (
                            <button 
                              key={star}
-                             onClick={async () => {
-                               if (submittingReview) return;
-                               setSubmittingReview(booking.id);
-                               try {
-                                 const reviewDoc = await addDoc(collection(db, 'reviews'), {
-                                   bookingId: booking.id,
-                                   customerId: user?.uid,
-                                   rating: star,
-                                   comment: 'Booking feedback recorded.',
-                                   createdAt: new Date().toISOString()
-                                 });
-                                 await updateDoc(doc(db, 'bookings', booking.id), { reviewId: reviewDoc.id });
-                               } catch (err) {
-                                 console.error(err);
-                               } finally {
-                                 setSubmittingReview(null);
-                               }
-                             }}
+                             type="button"
+                             onClick={() => updateReviewDraft(booking.id, { rating: star })}
                              className="text-primary hover:scale-125 transition-transform"
+                             aria-label={`Rate ${star} out of 5`}
                            >
                              <span className="material-symbols-outlined text-sm">
-                               {star <= (booking.tempRating || 0) ? 'star' : 'star_outline'}
+                               {star <= (reviewDrafts[booking.id]?.rating || 0) ? 'star' : 'star_outline'}
                              </span>
                            </button>
                          ))}
                       </div>
-                      <p className="text-xs text-on-surface-variant font-medium">Feedback helps improve service.</p>
+                      <textarea
+                        value={reviewDrafts[booking.id]?.comment || ''}
+                        onChange={(event) => updateReviewDraft(booking.id, { comment: event.target.value })}
+                        className="mb-3 min-h-20 w-full rounded-md border border-outline bg-white p-3 text-xs font-medium"
+                        placeholder="Tell us how the trip went"
+                        maxLength={500}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => submitReview(booking)}
+                        disabled={submittingReview === booking.id || !reviewDrafts[booking.id]?.rating || !reviewDrafts[booking.id]?.comment?.trim()}
+                        className="rounded-md bg-primary px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+                      >
+                        {submittingReview === booking.id ? 'Submitting...' : 'Submit review'}
+                      </button>
                     </motion.div>
                   )}
 
@@ -298,7 +328,7 @@ export default function Dashboard() {
                     <div>
                       <p className="text-xs font-bold text-on-surface-variant mb-1">Booking total</p>
                       <p className="text-lg font-bold text-on-surface">
-                        {symbol} {formatPrice(booking.totalAmount)}
+                        {formatPrice(booking.totalAmount)}
                       </p>
                     </div>
                     <div className="flex gap-2">
@@ -311,7 +341,7 @@ export default function Dashboard() {
                          </button>
                        )}
                        <button 
-                         onClick={() => navigate(`/tracking?id=${booking.id}`)}
+                         onClick={() => navigate(`/tracking?booking=${booking.id}`)}
                          className="w-10 h-10 bg-surface-container border border-outline text-on-surface rounded-xl flex items-center justify-center hover:bg-outline/10 transition-all"
                        >
                          <span className="material-symbols-outlined text-lg">near_me</span>
@@ -365,7 +395,6 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Security & Account Management */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 md:gap-12">
         <div className="bg-white rounded-lg border border-outline p-8 md:p-10 shadow-sm overflow-hidden relative group">
           <div className="absolute top-0 right-0 p-8">
@@ -373,24 +402,22 @@ export default function Dashboard() {
           </div>
           <h3 className="font-bold text-sm flex items-center gap-2 mb-8">
             <span className="material-symbols-outlined text-primary text-sm">security</span> 
-            Account security
+            Account status
           </h3>
           <div className="space-y-6">
             <div className="flex items-center justify-between p-4 rounded-lg bg-surface-container/30 border border-outline">
               <div>
-                <p className="text-sm font-bold mb-1 text-on-surface">Two-factor authentication (2FA)</p>
-                <p className="text-xs text-on-surface-variant">Add an extra layer of protection to your account.</p>
+                <p className="text-sm font-bold mb-1 text-on-surface">Email verification</p>
+                <p className="text-xs text-on-surface-variant">{user?.emailVerified ? 'Verified and ready for bookings.' : 'Please verify your email before checkout.'}</p>
               </div>
-              <button className="px-5 py-2 bg-primary/10 text-primary text-sm font-bold rounded-md border border-primary/20 hover:bg-primary hover:text-white transition-colors">
-                Enable
-              </button>
+              <span className={`material-symbols-outlined ${user?.emailVerified ? 'text-green-500' : 'text-primary'}`}>{user?.emailVerified ? 'check_circle' : 'mark_email_unread'}</span>
             </div>
             <div className="flex items-center justify-between p-4 rounded-lg bg-surface-container/30 border border-outline">
               <div>
-                <p className="text-sm font-bold mb-1 text-on-surface">Active sessions</p>
-                <p className="text-xs text-on-surface-variant text-link">Current IP: 192.XXX.XX.X | Last login: available</p>
+                <p className="text-sm font-bold mb-1 text-on-surface">Support line</p>
+                <a href={`tel:${company.phone}`} className="text-xs text-on-surface-variant hover:text-primary">{company.phoneDisplay}</a>
               </div>
-              <span className="material-symbols-outlined text-green-500">check_circle</span>
+              <span className="material-symbols-outlined text-primary">call</span>
             </div>
           </div>
         </div>
@@ -409,9 +436,6 @@ export default function Dashboard() {
               <p className="text-sm font-semibold text-on-surface-variant">Account type: {user?.role || 'Customer'}</p>
             </div>
           </div>
-          <button className="w-full py-4 bg-outline/10 text-on-surface font-bold text-sm rounded-md hover:bg-outline/20 transition-colors border border-outline">
-            Update profile
-          </button>
         </div>
       </div>
     </div>
