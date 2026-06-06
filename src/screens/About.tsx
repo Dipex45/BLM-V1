@@ -17,11 +17,11 @@ export default function About() {
     <div className="flex min-h-screen flex-col overflow-x-hidden bg-background">
       <section className="relative min-h-[calc(100vh-5rem)] overflow-hidden bg-black text-white">
         <img
-          src={company.heroImage}
-          alt="BLM Motors transport service flyer"
-          className="absolute inset-0 h-full w-full object-cover object-center opacity-80"
+          src={company.servicesImage}
+          alt="BLM Motors transport services overview"
+          className="absolute inset-0 h-full w-full object-cover object-center opacity-75"
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-black via-black/78 to-black/20" />
+        <div className="absolute inset-0 bg-gradient-to-r from-black via-black/75 to-black/25" />
         <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black to-transparent" />
 
         <div className="relative z-10 mx-auto flex min-h-[calc(100vh-5rem)] max-w-7xl flex-col justify-end px-4 pb-8 pt-20 md:px-8 lg:px-12">
@@ -31,7 +31,7 @@ export default function About() {
               animate={{ opacity: 1, y: 0 }}
               src={company.logo}
               alt="BLM Motors logo"
-              className="mb-6 h-20 w-44 object-contain"
+              className="mb-6 h-24 w-52 object-contain"
             />
             <motion.p
               initial={{ opacity: 0, y: 12 }}
@@ -63,11 +63,11 @@ export default function About() {
               className="mt-9 flex flex-col gap-3 sm:flex-row"
             >
               <Link to="/booking" className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-primary-container">
-                Book now
+                Book
                 <span className="material-symbols-outlined text-base">arrow_forward</span>
               </Link>
-              <a href={`https://wa.me/${company.whatsapp.replace('+', '')}`} className="inline-flex items-center justify-center rounded-md border border-white/40 bg-white/10 px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-white hover:text-on-surface">
-                WhatsApp {company.whatsappDisplay}
+              <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="inline-flex items-center justify-center rounded-md border border-white/40 bg-white/10 px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-white hover:text-on-surface">
+                WhatsApp
               </a>
             </motion.div>
           </div>
@@ -126,7 +126,7 @@ export default function About() {
           <img
             src={company.servicesImage}
             alt="BLM Motors weekend services flyer"
-            className="min-h-[420px] w-full rounded-lg border border-outline object-cover shadow-sm"
+            className="min-h-[420px] w-full rounded-lg border border-outline object-cover object-center shadow-sm"
           />
         </div>
       </section>
@@ -138,9 +138,6 @@ export default function About() {
               <p className="mb-3 text-sm font-bold text-primary">Vehicle classes</p>
               <h2 className="text-3xl font-bold md:text-5xl">Book the vehicle that fits the job.</h2>
             </div>
-            <p className="max-w-md text-sm leading-6 text-white/68">
-              Prices are listed in Nigerian naira and can be adjusted by an admin from the pricing panel.
-            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
@@ -186,13 +183,16 @@ export default function About() {
           <div className="max-w-2xl">
             <h2 className="text-3xl font-bold md:text-5xl">Ready to move?</h2>
             <p className="mt-4 text-base leading-7 text-white/82">
-              Call {company.phoneDisplay}, WhatsApp {company.whatsappDisplay}, or book online.
+              Call +2290142439626 or send a booking request directly on WhatsApp.
             </p>
           </div>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
             <Link to="/booking" className="inline-flex items-center justify-center rounded-md bg-white px-6 py-3 text-sm font-bold text-primary transition-colors hover:bg-surface-container">
               Book now
             </Link>
+            <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="inline-flex items-center justify-center rounded-md border border-white/45 px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-white hover:text-primary">
+              WhatsApp
+            </a>
             <Link to="/tracking" className="inline-flex items-center justify-center rounded-md border border-white/45 px-6 py-3 text-sm font-bold text-white transition-colors hover:bg-white hover:text-primary">
               Track booking
             </Link>

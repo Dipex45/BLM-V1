@@ -28,6 +28,13 @@ const progressByStatus: Record<string, number> = {
   Cancelled: 100,
 };
 
+const defaultTrackingLocations = [
+  'Package in Badagry',
+  'Package on route to Cotonou',
+  'Package in Ikeja',
+  'Package on route to Togo',
+];
+
 function labelEvent(type: string) {
   return type.replace(/[._]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -82,9 +89,9 @@ export default function Tracking() {
               Enter the booking ID from checkout or your dashboard to see the latest recorded status.
             </p>
           </div>
-          <a href={`tel:${company.phone}`} className="inline-flex items-center justify-center gap-2 rounded-md border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface hover:border-primary hover:text-primary">
+          <a href={`tel:${company.beninPhone}`} className="inline-flex items-center justify-center gap-2 rounded-md border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface hover:border-primary hover:text-primary">
             <span className="material-symbols-outlined text-base">call</span>
-            {company.phoneDisplay}
+            {company.beninPhoneDisplay}
           </a>
         </header>
 
@@ -111,6 +118,20 @@ export default function Tracking() {
         {error && (
           <div className="max-w-3xl rounded-lg border border-error/20 bg-error-container p-5 text-sm font-bold text-on-error-container">
             {error}
+          </div>
+        )}
+
+        {!record && !error && trackingId.trim() === '' && (
+          <div className="grid max-w-3xl gap-4 rounded-lg border border-outline bg-white p-6 text-sm text-on-surface-variant shadow-sm">
+            <h2 className="text-base font-bold text-on-surface">Available package locations</h2>
+            <p className="text-sm text-on-surface-variant">The tracking page shows status updates for current routes and package movement.</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {defaultTrackingLocations.map((location) => (
+                <div key={location} className="rounded-2xl border border-outline bg-surface-container p-4 text-sm font-medium text-on-surface">
+                  {location}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

@@ -37,12 +37,26 @@
 }
 
 @layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
   html {
     scroll-behavior: smooth;
+    overflow-x: hidden;
   }
 
   body {
     @apply antialiased bg-background text-on-background;
+    overflow-x: hidden;
+  }
+
+  img, video, canvas, svg {
+    max-width: 100%;
+  }
+
+  p, h1, h2, h3, h4, h5, h6, a, span, button, label, input, textarea, select, dd, dt {
+    min-width: 0;
   }
 
   h1, h2, h3, h4, h5, h6 {
@@ -80,4 +94,9 @@
 
 .animate-pulse-red {
   animation: pulse-red 2s infinite;
+}
+
+.safe-text {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }

@@ -15,7 +15,7 @@ export default function SplashScreen({ onFinish }: { onFinish: () => void }) {
         animate={{ opacity: 1, y: 0 }}
         className="flex flex-col items-center gap-5"
       >
-        <img src={company.logo} alt="BLM Motors logo" className="h-20 w-44 object-contain" />
+        <img src={company.logo} alt="BLM Motors logo" className="h-24 w-52 object-contain" />
         <div className="h-1 w-36 overflow-hidden rounded-md bg-surface-container">
           <motion.div
             initial={{ width: '20%' }}

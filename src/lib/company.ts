@@ -12,6 +12,7 @@ export const company = {
   beninPhoneDisplay: '+229 01 42 43 96 26',
   whatsapp: '+2349064090276',
   whatsappDisplay: '+234 906 409 0276',
+  whatsappMessage: 'Good day BLM, I want to book your services',
   address: 'Nigeria operations desk',
   logo: '/brand/blm-logo.png',
   heroImage: '/brand/transport-service.png',
@@ -68,10 +69,11 @@ export const company = {
 };
 
 export const defaultVehicles = [
-  { title: 'City Ride', desc: 'Pickup, errands, short trips, and city movement.', price: 25000, icon: 'directions_car' },
-  { title: 'Interstate SUV', desc: 'Comfortable long-distance and interstate travel.', price: 85000, icon: 'airport_shuttle' },
-  { title: 'Touring Van', desc: 'Group touring, airport pickup, and multi-stop movement.', price: 120000, icon: 'travel_explore' },
-  { title: 'Logistics Van', desc: 'Parcel, retail, and business pickup support.', price: 65000, icon: 'local_shipping' },
-  { title: 'Cross-Border Trip', desc: 'Nigeria, Benin Republic, Togo, and Ghana routes.', price: 180000, icon: 'route' },
-  { title: 'Car Hire', desc: 'Scheduled private hire for events, meetings, and family movement.', price: 70000, icon: 'car_rental' },
+  { title: 'Economy', desc: 'Affordable city rides and short-distance transport.', price: 25000, icon: 'directions_car' },
+  { title: 'Business', desc: 'Premium executive transport for city and interstate travel.', price: 65000, icon: 'airport_shuttle' },
+  { title: 'Cross-Border transit', desc: 'Nigeria, Benin Republic, Togo, and Ghana cross-border trips.', price: 180000, icon: 'route' },
+  { title: 'Touring Van', desc: 'Group touring, airport pickup, and multi-stop journeys.', price: 120000, icon: 'travel_explore' },
+  { title: 'Pickup & Logistics', desc: 'Parcel, retail, and business pickup with traceable tracking.', price: 65000, icon: 'local_shipping' },
+  { title: 'Car Hire', desc: 'Private hire with caution fee and damage consent protection.', price: 70000, icon: 'car_rental' },
+  { title: 'International Tour', desc: 'Benin, Ghana, and Togo touring with pricing by stops.', price: 220000, icon: 'public' },
 ];

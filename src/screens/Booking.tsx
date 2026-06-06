@@ -11,9 +11,17 @@ import { useCurrency } from '../hooks/useCurrency';
 import { BookingSchema } from '../lib/schemas';
 import { company, defaultVehicles } from '../lib/company';
 
+const touringStates = ['Lagos', 'Abuja', 'Port Harcourt', 'Kano', 'Enugu', 'Ibadan', 'Benin City', 'Owerri'];
+const internationalTourCountries = ['Benin Republic', 'Ghana', 'Togo'];
+const availableCarOptions = [
+  { id: 'toyota-corolla', name: 'Toyota Corolla', seats: 4, desc: 'Clean sedan for airport pickup, meetings and short local travel.' },
+  { id: 'toyota-highlander', name: 'Toyota Highlander', seats: 6, desc: 'Spacious crossover for family trips and executive group movement.' },
+  { id: 'bus-mini', name: 'Mini Bus', seats: 14, desc: 'Group car hire for multi-stop city movement and touring.' },
+];
+
 export default function Booking() {
   const { user } = useAuth();
-  const { formatPrice } = useCurrency();
+  const { formatPrice, currency } = useCurrency();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -28,6 +36,13 @@ export default function Booking() {
     date: '',
     time: '',
     vehicleClass: '',
+    serviceType: 'Economy',
+    touringSpots: 1,
+    touringState: 'Lagos',
+    internationalCountry: 'Benin Republic',
+    logisticsDetails: '',
+    carHireVehicle: 'toyota-corolla',
+    carConsent: false,
     isReturn: false,
     isRecurring: false,
     recurringFrequency: 'None' as 'None' | 'Weekly' | 'Monthly',
@@ -51,14 +66,14 @@ export default function Booking() {
         const vData = settingsSnap.data().value;
         setVehicles(vData);
         if (vData.length > 0) {
-          setFormData(prev => ({ ...prev, vehicleClass: vData[0].title }));
+          setFormData(prev => ({ ...prev, vehicleClass: vData[0].title, serviceType: vData[0].title }));
         }
       } else {
         const defaults = [
           ...defaultVehicles,
         ];
         setVehicles(defaults);
-        setFormData(prev => ({ ...prev, vehicleClass: 'Economy' }));
+        setFormData(prev => ({ ...prev, vehicleClass: 'Economy', serviceType: 'Economy' }));
       }
 
       // Load Hubs
@@ -113,7 +128,45 @@ export default function Booking() {
     try {
       const selectedVehicle = vehicles.find(v => v.title === formData.vehicleClass);
       const basePrice = selectedVehicle?.price || 0;
-      const totalAmount = (formData.isReturn ? basePrice * 2 : basePrice) + 45;
+      const regionFactors: Record<string, number> = {
+        Lagos: 1,
+        Abuja: 1.1,
+        'Port Harcourt': 1.15,
+        Kano: 1.2,
+        Enugu: 1.15,
+        Ibadan: 1.05,
+        'Benin Republic': 1.4,
+        Lome: 1.45,
+        Accra: 1.55,
+      };
+      const distanceFactor = regionFactors[formData.pickup] || 1.2;
+
+      if (formData.vehicleClass === 'Pickup & Logistics' && !formData.logisticsDetails.trim()) {
+        setBookingError('Please describe the package contents or logistics details so we can serve you safely.');
+        setLoading(false);
+        return;
+      }
+
+      if (formData.vehicleClass === 'Car Hire' && !formData.carConsent) {
+        setBookingError('To book a car hire service you must agree to the consent terms and caution fee policy.');
+        setLoading(false);
+        return;
+      }
+
+      let extraFee = 45;
+      if (formData.vehicleClass === 'Touring Van') {
+        extraFee = formData.touringSpots * 15000;
+      } else if (formData.vehicleClass === 'International Tour') {
+        extraFee = formData.touringSpots * 22000;
+      } else if (formData.vehicleClass === 'Pickup & Logistics') {
+        extraFee = 25000;
+      } else if (formData.vehicleClass === 'Car Hire') {
+        extraFee = 25000;
+      } else if (formData.vehicleClass === 'Cross-Border transit') {
+        extraFee = 30000;
+      }
+
+      const totalAmount = Math.round((formData.isReturn ? basePrice * 2 : basePrice) * distanceFactor + extraFee);
 
       const bookingPayload = {
         pickup: formData.pickup.trim(),
@@ -121,9 +174,15 @@ export default function Booking() {
         vehicleClass: formData.vehicleClass,
         date: formData.date,
         time: formData.time,
-        totalAmount: totalAmount,
+        totalAmount,
         isReturn: formData.isReturn,
-        notes: formData.notes
+        notes: formData.notes,
+        serviceType: formData.vehicleClass,
+        touringSpots: formData.touringSpots,
+        touringState: formData.touringState,
+        internationalCountry: formData.internationalCountry,
+        logisticsDetails: formData.logisticsDetails,
+        carHireVehicle: formData.carHireVehicle,
       };
 
       // Server-side validation call
@@ -149,12 +208,18 @@ export default function Booking() {
         date: formData.date,
         time: formData.time,
         totalAmount,
-        currency: 'NGN',
+        currency,
         isReturn: formData.isReturn,
         isRecurring: formData.isRecurring,
         recurringFrequency: formData.recurringFrequency,
         notes: DOMPurify.sanitize(formData.notes),
         status: 'Quoted',
+        serviceType: formData.vehicleClass,
+        touringSpots: formData.touringSpots,
+        touringState: formData.touringState,
+        internationalCountry: formData.internationalCountry,
+        logisticsDetails: DOMPurify.sanitize(formData.logisticsDetails),
+        carHireVehicle: formData.carHireVehicle,
         createdAt: new Date().toISOString()
       };
 

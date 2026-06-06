@@ -52,7 +52,7 @@ export default function SupportChat() {
         whileHover={{ scale: 1.1 }}
         whileTap={{ scale: 0.9 }}
         onClick={() => setIsOpen(!isOpen)}
-        className="fixed bottom-8 right-8 z-50 flex h-14 w-14 items-center justify-center rounded-md border border-white bg-primary text-white shadow-lg transition-colors hover:bg-primary-container"
+        className="fixed bottom-6 right-4 z-50 flex h-14 w-14 items-center justify-center rounded-md border border-white bg-primary text-white shadow-lg transition-colors hover:bg-primary-container md:bottom-8 md:right-8"
         aria-label={isOpen ? 'Close support chat' : 'Open support chat'}
       >
         <span className="material-symbols-outlined text-2xl">
@@ -67,17 +67,17 @@ export default function SupportChat() {
             initial={{ opacity: 0, y: 100, scale: 0.8 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 100, scale: 0.8 }}
-            className="fixed bottom-28 right-4 z-50 flex h-[500px] w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-outline bg-white shadow-2xl md:right-8 md:w-[400px]"
+            className="fixed bottom-24 right-4 z-50 flex h-[500px] max-h-[calc(100vh-7rem)] w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-lg border border-outline bg-white shadow-2xl md:bottom-28 md:right-8 md:w-[400px]"
           >
             {/* Header */}
-            <div className="bg-on-surface p-6 text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-md bg-primary flex items-center justify-center">
+            <div className="flex items-center justify-between gap-3 bg-on-surface p-4 text-white sm:p-6">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary">
                    <span className="material-symbols-outlined text-lg">headset_mic</span>
                 </div>
-                <div>
+                <div className="min-w-0">
                    <h3 className="text-sm font-bold leading-none">BLM support</h3>
-                   <span className="text-xs text-white/70 font-medium">Bookings, touring, and tracking</span>
+                   <span className="safe-text text-xs font-medium text-white/70">Bookings, touring, and tracking</span>
                 </div>
               </div>
               <div className="flex gap-2">
@@ -89,7 +89,7 @@ export default function SupportChat() {
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 no-scrollbar bg-surface-container/40">
               {messages.map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] rounded-lg p-4 text-sm leading-relaxed ${
+                  <div className={`safe-text max-w-[86%] rounded-lg p-4 text-sm leading-relaxed ${
                     msg.role === 'user' 
                       ? 'bg-primary text-white' 
                       : 'bg-white border border-outline shadow-sm font-medium'

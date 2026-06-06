@@ -12,6 +12,7 @@ export default function Register() {
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
 
   const handleRegister = async (e: FormEvent) => {
@@ -62,8 +63,22 @@ export default function Register() {
 
       navigate('/dashboard');
     } catch (err: any) {
-      console.error(err);
-      setError('Google registration failed. Please check that popups are allowed and try again.');
+      console.error('Google register error:', err.code, err.message);
+      
+      // Detect specific error types
+      if (err.code === 'auth/popup-blocked') {
+        setError('Popup was blocked by your browser. Please: 1) Disable popup blockers (including ad blockers), 2) Try a different browser, or 3) Use incognito/private mode.');
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        setError('Google sign up was cancelled. Please try again and complete the sign-in process.');
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        setError('Another popup request is pending. Please wait a moment and try again.');
+      } else if (err.code === 'auth/network-request-failed') {
+        setError('Network connection error. Please check your internet and try again.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('Google Sign-In is not configured for this domain. The website administrator needs to add this domain to Firebase Console settings (Project Settings > Authorized domains). Please contact support or try email/password registration.');
+      } else {
+        setError(`Google sign up failed (${err.code}). Please try again or use email/password registration.`);
+      }
     } finally {
       setLoading(false);
     }
@@ -73,13 +88,13 @@ export default function Register() {
     <div className="flex min-h-screen bg-background">
       <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
         <img
-          src={company.heroImage}
+          src={company.servicesImage}
           alt="BLM Motors transport service flyer"
-          className="absolute inset-0 h-full w-full object-cover opacity-55"
+          className="absolute inset-0 h-full w-full object-cover object-center opacity-60"
         />
-        <div className="absolute inset-0 bg-black/55" />
+        <div className="absolute inset-0 bg-black/50" />
         <div className="relative z-10 max-w-lg text-white">
-          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-20 w-44 object-contain" />
+          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-24 w-52 object-contain" />
           <h2 className="mb-6 text-5xl font-bold leading-tight">Create your BLM account.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
             Book transport, touring, car hire, pickup, and cross-border trips from one account.
@@ -150,14 +165,23 @@ export default function Register() {
             </div>
             <div>
               <label className="mb-2 block text-sm font-bold text-on-surface-variant">Password</label>
-              <input
-                type="password"
-                required
-                className="w-full rounded-md border border-outline bg-surface-container px-4 py-3.5 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
-                placeholder="Password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  className="w-full rounded-md border border-outline bg-surface-container px-4 py-3.5 pr-24 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
+                  placeholder="Password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-primary hover:text-primary/80"
+                >
+                  {showPassword ? 'Hide' : 'Show'}
+                </button>
+              </div>
             </div>
 
             <button

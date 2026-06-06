@@ -13,6 +13,7 @@ export default function Login() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
 
   const handleLogin = async (e: FormEvent) => {
@@ -93,8 +94,22 @@ export default function Login() {
 
       navigate('/dashboard');
     } catch (err: any) {
-      console.error(err);
-      setError('Google login failed. Please check that popups are allowed and try again.');
+      console.error('Google login error:', err.code, err.message);
+      
+      // Detect specific error types
+      if (err.code === 'auth/popup-blocked') {
+        setError('Popup was blocked by your browser. Please: 1) Disable popup blockers (including ad blockers), 2) Try a different browser, or 3) Use incognito/private mode.');
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        setError('Google login was cancelled. Please try again and complete the sign-in process.');
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        setError('Another popup request is pending. Please wait a moment and try again.');
+      } else if (err.code === 'auth/network-request-failed') {
+        setError('Network connection error. Please check your internet and try again.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('Google Sign-In is not configured for this domain. The website administrator needs to add this domain to Firebase Console settings (Project Settings > Authorized domains). Please contact support or try email/password login.');
+      } else {
+        setError(`Google login failed (${err.code}). Please try again or use email/password login.`);
+      }
     } finally {
       setLoading(false);
     }
@@ -106,11 +121,11 @@ export default function Login() {
         <img
           src={company.servicesImage}
           alt="BLM Motors services flyer"
-          className="absolute inset-0 h-full w-full object-cover opacity-55"
+          className="absolute inset-0 h-full w-full object-cover object-center opacity-60"
         />
-        <div className="absolute inset-0 bg-black/55" />
+        <div className="absolute inset-0 bg-black/50" />
         <div className="relative z-10 max-w-lg text-white">
-          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-20 w-44 object-contain" />
+          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-24 w-52 object-contain" />
           <h2 className="mb-6 text-5xl font-bold leading-tight">Welcome back.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
             Manage Nigerian transport, touring, car hire, pickup, and cross-border bookings.
@@ -183,13 +198,20 @@ export default function Login() {
               <div className="relative">
                 <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-lg text-primary">lock</span>
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   required
-                  className="w-full rounded-md border border-outline bg-surface-container py-3.5 pl-12 pr-4 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
+                  className="w-full rounded-md border border-outline bg-surface-container py-3.5 pl-12 pr-16 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
                   placeholder="Password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-primary hover:text-primary/80"
+                >
+                  {showPassword ? 'Hide' : 'Show'}
+                </button>
               </div>
               <div className="mt-2 text-right">
                 <button type="button" onClick={handleForgotPassword} className="text-sm font-bold text-primary hover:underline">

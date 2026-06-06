@@ -22,8 +22,8 @@ export default function Navbar() {
 
   return (
     <>
-      <nav className="fixed top-0 z-50 flex h-20 w-full items-center justify-between border-b border-outline bg-white/96 px-3 backdrop-blur md:px-8">
-        <div className="flex min-w-0 items-center gap-3 md:gap-5">
+      <nav className="fixed top-0 z-50 flex h-20 w-full items-center justify-between gap-2 border-b border-outline bg-white/96 px-2 backdrop-blur sm:px-3 md:px-8">
+        <div className="flex min-w-0 shrink items-center gap-2 md:gap-5">
           {user && (
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -34,8 +34,8 @@ export default function Navbar() {
             </button>
           )}
 
-          <Link to="/" className="flex min-w-0 items-center gap-3" aria-label="BLM Motors home">
-            <img src={company.logo} alt="BLM Motors logo" className="h-12 w-20 shrink-0 object-contain md:w-28" />
+          <Link to="/" className="flex min-w-0 items-center gap-2 md:gap-3" aria-label="BLM Motors home">
+            <img src={company.logo} alt="BLM Motors logo" className="h-10 w-20 shrink-0 object-contain sm:h-12 sm:w-24 md:h-14 md:w-32" />
             <span className="hidden h-8 w-px bg-outline lg:block" />
             <span className="hidden max-w-[220px] text-xs font-semibold leading-tight text-on-surface-variant lg:block">
               {company.tagline}
@@ -52,10 +52,10 @@ export default function Navbar() {
           </a>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-4">
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-3 lg:gap-4">
           <a
             href={`tel:${company.phone}`}
-            className="hidden rounded-md border border-outline px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:border-primary hover:text-primary md:block"
+            className="hidden rounded-md border border-outline px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:border-primary hover:text-primary xl:block"
           >
             {company.phoneDisplay}
           </a>
@@ -82,9 +82,9 @@ export default function Navbar() {
             </div>
           ) : (
             <div className="flex items-center gap-2 sm:gap-3">
-              <Link to="/login" className="px-2 py-2 text-sm font-bold hover:text-primary">Log in</Link>
-              <Link to="/register" className="rounded-md bg-secondary px-3 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary md:px-4">
-                Create account
+              <Link to="/login" className="px-1.5 py-2 text-sm font-bold hover:text-primary sm:px-2">Log in</Link>
+              <Link to="/register" className="rounded-md bg-secondary px-2.5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary sm:px-3 md:px-4">
+                Create<span className="hidden sm:inline"> account</span>
               </Link>
             </div>
           )}
@@ -110,7 +110,7 @@ export default function Navbar() {
             >
               <div className="flex h-full flex-col">
                 <div className="flex items-center justify-between border-b border-outline p-6">
-                  <img src={company.logo} alt="BLM Motors logo" className="h-12 w-28 object-contain" />
+                  <img src={company.logo} alt="BLM Motors logo" className="h-14 w-32 object-contain" />
                   <button onClick={() => setIsMobileMenuOpen(false)} aria-label="Close navigation">
                     <span className="material-symbols-outlined">close</span>
                   </button>
