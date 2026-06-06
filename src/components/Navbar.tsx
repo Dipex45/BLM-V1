@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
 import { auth } from '../lib/firebase';
 import { company } from '../lib/company';
+import CurrencySelector from './CurrencySelector';
 import Sidebar from './Sidebar';
 
 export default function Navbar() {
@@ -46,19 +47,13 @@ export default function Navbar() {
         <div className="hidden items-center gap-8 text-sm font-semibold text-on-surface-variant lg:flex">
           <Link to="/" className="transition-colors hover:text-primary">Services</Link>
           <Link to="/tracking" className="transition-colors hover:text-primary">Track booking</Link>
-          <Link to="/booking" className="transition-colors hover:text-primary">Book now</Link>
-          <a href={`https://wa.me/${company.whatsapp.replace('+', '')}`} className="transition-colors hover:text-primary">
+          <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="transition-colors hover:text-primary">
             WhatsApp
           </a>
         </div>
 
         <div className="flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-3 lg:gap-4">
-          <a
-            href={`tel:${company.phone}`}
-            className="hidden rounded-md border border-outline px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:border-primary hover:text-primary xl:block"
-          >
-            {company.phoneDisplay}
-          </a>
+          <CurrencySelector compact={true} />
 
           <Link
             to="/booking"
@@ -122,9 +117,8 @@ export default function Navbar() {
                     <div className="flex flex-col gap-2 p-6 text-sm font-bold">
                       <Link to="/" className="rounded-md p-4 hover:bg-surface-container">Services</Link>
                       <Link to="/tracking" className="rounded-md p-4 hover:bg-surface-container">Track booking</Link>
-                      <Link to="/booking" className="rounded-md p-4 hover:bg-surface-container">Book now</Link>
-                      <a href={`https://wa.me/${company.whatsapp.replace('+', '')}`} className="rounded-md p-4 hover:bg-surface-container">
-                        WhatsApp {company.whatsappDisplay}
+                      <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="rounded-md p-4 hover:bg-surface-container">
+                        WhatsApp
                       </a>
                     </div>
                   )}

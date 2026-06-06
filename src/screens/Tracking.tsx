@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { apiGet } from '../lib/api';
 import { company } from '../lib/company';
+import { db } from '../lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 
 type TrackingRecord = {
   id: string;
@@ -44,6 +46,8 @@ export default function Tracking() {
   const [trackingId, setTrackingId] = useState('');
   const [loading, setLoading] = useState(false);
   const [record, setRecord] = useState<TrackingRecord | null>(null);
+  const [trackingLocations, setTrackingLocations] = useState<string[]>(defaultTrackingLocations);
+  const [activeLocationIndex, setActiveLocationIndex] = useState(0);
   const [error, setError] = useState('');
 
   const loadTracking = async (reference: string) => {
@@ -63,13 +67,37 @@ export default function Tracking() {
     }
   };
 
+  const loadTrackingLocations = async () => {
+    try {
+      const snap = await getDoc(doc(db, 'settings', 'tracking_locations'));
+      if (snap.exists()) {
+        const value = snap.data().value;
+        if (Array.isArray(value) && value.length > 0) {
+          setTrackingLocations(value);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Could not load tracking locations from settings', err);
+    }
+    setTrackingLocations(defaultTrackingLocations);
+  };
+
   useEffect(() => {
     const reference = searchParams.get('booking');
     if (reference) {
       setTrackingId(reference);
       loadTracking(reference);
     }
+    loadTrackingLocations();
   }, [searchParams]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setActiveLocationIndex((prev) => (prev + 1) % trackingLocations.length);
+    }, 3500);
+    return () => window.clearInterval(interval);
+  }, [trackingLocations.length]);
 
   const handleTrack = async (e: FormEvent) => {
     e.preventDefault();
@@ -89,9 +117,9 @@ export default function Tracking() {
               Enter the booking ID from checkout or your dashboard to see the latest recorded status.
             </p>
           </div>
-          <a href={`tel:${company.beninPhone}`} className="inline-flex items-center justify-center gap-2 rounded-md border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface hover:border-primary hover:text-primary">
+          <a href={`tel:${company.whatsapp}`} className="inline-flex items-center justify-center gap-2 rounded-md border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface hover:border-primary hover:text-primary">
             <span className="material-symbols-outlined text-base">call</span>
-            {company.beninPhoneDisplay}
+            {company.whatsapp}
           </a>
         </header>
 
@@ -125,11 +153,17 @@ export default function Tracking() {
           <div className="grid max-w-3xl gap-4 rounded-lg border border-outline bg-white p-6 text-sm text-on-surface-variant shadow-sm">
             <h2 className="text-base font-bold text-on-surface">Available package locations</h2>
             <p className="text-sm text-on-surface-variant">The tracking page shows status updates for current routes and package movement.</p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {defaultTrackingLocations.map((location) => (
-                <div key={location} className="rounded-2xl border border-outline bg-surface-container p-4 text-sm font-medium text-on-surface">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {trackingLocations.map((location, index) => (
+                <motion.div
+                  key={location}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: index === activeLocationIndex ? 1 : 0.45, y: 0 }}
+                  transition={{ duration: 0.4 }}
+                  className={`rounded-2xl border border-outline p-4 text-sm font-medium ${index === activeLocationIndex ? 'bg-primary/5 text-on-surface' : 'bg-surface-container text-on-surface-variant'}`}
+                >
                   {location}
-                </div>
+                </motion.div>
               ))}
             </div>
           </div>

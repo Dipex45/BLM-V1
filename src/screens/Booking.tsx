@@ -30,6 +30,9 @@ export default function Booking() {
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
   const [blockedDates, setBlockedDates] = useState<string[]>([]);
+  const [touringStatesList, setTouringStatesList] = useState<any[]>(company.touringStates || []);
+  const [internationalTourList, setInternationalTourList] = useState<any[]>(company.internationalTours || []);
+  const [carHireOptionsState, setCarHireOptionsState] = useState<any[]>(company.carHireOptions || []);
   const [formData, setFormData] = useState({
     pickup: '',
     destination: '',
@@ -48,6 +51,12 @@ export default function Booking() {
     recurringFrequency: 'None' as 'None' | 'Weekly' | 'Monthly',
     notes: ''
   });
+
+  const normalizedVehicleSelection = (formData.vehicleClass || '').toLowerCase();
+  const isPickupLogistics = normalizedVehicleSelection.includes('pickup') || normalizedVehicleSelection.includes('logistics');
+  const isCarHire = normalizedVehicleSelection.includes('car hire');
+  const isInternationalTour = normalizedVehicleSelection.includes('international');
+  const isTouringService = normalizedVehicleSelection.includes('touring') && !isInternationalTour;
 
   const loadData = async () => {
     setInitialLoading(true);
@@ -74,6 +83,45 @@ export default function Booking() {
         ];
         setVehicles(defaults);
         setFormData(prev => ({ ...prev, vehicleClass: 'Economy', serviceType: 'Economy' }));
+      }
+
+      const touringPath = 'settings/touring_states';
+      try {
+        const touringSnap = await getDoc(doc(db, 'settings', 'touring_states'));
+        if (touringSnap.exists()) {
+          setTouringStatesList(touringSnap.data().value || company.touringStates);
+        } else {
+          setTouringStatesList(company.touringStates);
+        }
+      } catch (err) {
+        console.warn('Unable to load touring states settings', err);
+        setTouringStatesList(company.touringStates);
+      }
+
+      const internationalPath = 'settings/international_tours';
+      try {
+        const internationalSnap = await getDoc(doc(db, 'settings', 'international_tours'));
+        if (internationalSnap.exists()) {
+          setInternationalTourList(internationalSnap.data().value || company.internationalTours);
+        } else {
+          setInternationalTourList(company.internationalTours);
+        }
+      } catch (err) {
+        console.warn('Unable to load international tour settings', err);
+        setInternationalTourList(company.internationalTours);
+      }
+
+      const carHirePath = 'settings/car_hire_options';
+      try {
+        const carHireSnap = await getDoc(doc(db, 'settings', 'car_hire_options'));
+        if (carHireSnap.exists()) {
+          setCarHireOptionsState(carHireSnap.data().value || company.carHireOptions);
+        } else {
+          setCarHireOptionsState(company.carHireOptions);
+        }
+      } catch (err) {
+        console.warn('Unable to load car hire options settings', err);
+        setCarHireOptionsState(company.carHireOptions);
       }
 
       // Load Hubs
@@ -135,34 +183,43 @@ export default function Booking() {
         Kano: 1.2,
         Enugu: 1.15,
         Ibadan: 1.05,
+        'Benin City': 1.12,
+        Owerri: 1.16,
         'Benin Republic': 1.4,
         Lome: 1.45,
         Accra: 1.55,
       };
       const distanceFactor = regionFactors[formData.pickup] || 1.2;
+      const touringStateFactor = touringStatesList.find((state) => state.name === formData.touringState)?.factor || 1.15;
+      const internationalTourFactor = internationalTourList.find((country) => country.name === formData.internationalCountry)?.factor || 1.2;
+      const normalizedClass = (formData.vehicleClass || '').toLowerCase();
+      const isPickupLogistics = normalizedClass.includes('pickup') || normalizedClass.includes('logistics');
+      const isCarHire = normalizedClass.includes('car hire');
+      const isInternationalTour = normalizedClass.includes('international');
+      const isTouringService = normalizedClass.includes('touring') && !isInternationalTour;
 
-      if (formData.vehicleClass === 'Pickup & Logistics' && !formData.logisticsDetails.trim()) {
+      if (isPickupLogistics && !formData.logisticsDetails.trim()) {
         setBookingError('Please describe the package contents or logistics details so we can serve you safely.');
         setLoading(false);
         return;
       }
 
-      if (formData.vehicleClass === 'Car Hire' && !formData.carConsent) {
+      if (isCarHire && !formData.carConsent) {
         setBookingError('To book a car hire service you must agree to the consent terms and caution fee policy.');
         setLoading(false);
         return;
       }
 
-      let extraFee = 45;
-      if (formData.vehicleClass === 'Touring Van') {
-        extraFee = formData.touringSpots * 15000;
-      } else if (formData.vehicleClass === 'International Tour') {
-        extraFee = formData.touringSpots * 22000;
-      } else if (formData.vehicleClass === 'Pickup & Logistics') {
+      let extraFee = 4500;
+      if (isInternationalTour) {
+        extraFee = Math.round(formData.touringSpots * 25000 * internationalTourFactor);
+      } else if (isTouringService) {
+        extraFee = Math.round(formData.touringSpots * 15000 * touringStateFactor);
+      } else if (isPickupLogistics) {
+        extraFee = 22000;
+      } else if (isCarHire) {
         extraFee = 25000;
-      } else if (formData.vehicleClass === 'Car Hire') {
-        extraFee = 25000;
-      } else if (formData.vehicleClass === 'Cross-Border transit') {
+      } else if (normalizedClass.includes('cross-border transit')) {
         extraFee = 30000;
       }
 
@@ -453,6 +510,123 @@ export default function Booking() {
               </div>
            </div>
 
+           {(isTouringService || isInternationalTour) && (
+             <div className="space-y-6 rounded-2xl border border-outline bg-surface-container px-6 py-6">
+               <div className="grid gap-6 md:grid-cols-2">
+                 {isTouringService && (
+                   <div>
+                     <label htmlFor="touringState" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Touring state</label>
+                     <select
+                       id="touringState"
+                       className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
+                       value={formData.touringState}
+                       onChange={(e) => setFormData({ ...formData, touringState: e.target.value })}
+                     >
+                       {touringStatesList.map((state) => (
+                         <option key={state.name} value={state.name}>{state.name}</option>
+                       ))}
+                     </select>
+                   </div>
+                 )}
+
+                 {isInternationalTour && (
+                   <div>
+                     <label htmlFor="internationalCountry" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">International tour</label>
+                     <select
+                       id="internationalCountry"
+                       className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
+                       value={formData.internationalCountry}
+                       onChange={(e) => setFormData({ ...formData, internationalCountry: e.target.value })}
+                     >
+                       {internationalTourList.map((country) => (
+                         <option key={country.name} value={country.name}>{country.name}</option>
+                       ))}
+                     </select>
+                   </div>
+                 )}
+
+                 <div>
+                   <label htmlFor="touringSpots" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Number of locations</label>
+                   <input
+                     id="touringSpots"
+                     type="number"
+                     min={1}
+                     max={20}
+                     value={formData.touringSpots}
+                     onChange={(e) => setFormData({ ...formData, touringSpots: Number(e.target.value) })}
+                     className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
+                   />
+                 </div>
+               </div>
+               <p className="text-xs text-on-surface-variant">
+                 Touring pricing is calculated by the number of locations and route complexity. Lagos is the most affordable state, and farther routes adjust automatically.
+               </p>
+             </div>
+           )}
+
+           {isPickupLogistics && (
+             <div className="space-y-4 rounded-2xl border border-outline bg-surface-container px-6 py-6">
+               <div>
+                 <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Pickup & logistics details</p>
+                 <p className="text-sm text-on-surface-variant">Describe pickup location, drop-off point, package contents, and any special handling notes.</p>
+               </div>
+               <textarea
+                 rows={4}
+                 value={formData.logisticsDetails}
+                 onChange={(e) => setFormData({ ...formData, logisticsDetails: e.target.value })}
+                 className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
+                 placeholder="Package description and drop-off instructions"
+               />
+               <p className="text-xs text-on-surface-variant">
+                 BLM Motors does not carry illegal or prohibited materials. We reserve the right to verify package contents before dispatch.
+               </p>
+             </div>
+           )}
+
+           {isCarHire && (
+             <div className="space-y-6 rounded-2xl border border-outline bg-surface-container px-6 py-6">
+               <div>
+                 <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Car hire options</p>
+                 <p className="text-sm text-on-surface-variant">Select the available car you want and agree to the caution fee consent terms.</p>
+               </div>
+               <div className="grid gap-4">
+                 {carHireOptionsState.map((car) => (
+                   <label key={car.id} className={`group flex items-center gap-4 rounded-2xl border p-4 transition-all ${formData.carHireVehicle === car.id ? 'border-primary bg-white shadow-sm' : 'border-outline bg-surface-container'}`}>
+                     <input
+                       type="radio"
+                       name="carHireVehicle"
+                       value={car.id}
+                       checked={formData.carHireVehicle === car.id}
+                       onChange={() => setFormData({ ...formData, carHireVehicle: car.id })}
+                       className="h-4 w-4 text-primary"
+                     />
+                     <div className="flex-1">
+                       <div className="flex items-center justify-between gap-4">
+                         <p className="font-bold text-on-surface">{car.name}</p>
+                         <span className="text-xs uppercase text-on-surface-variant">{car.seats} seats</span>
+                       </div>
+                       <p className="mt-2 text-sm text-on-surface-variant">{car.desc}</p>
+                     </div>
+                     {car.image && (
+                       <img src={car.image} alt={car.name} className="h-16 w-24 rounded-xl object-cover" />
+                     )}
+                   </label>
+                 ))}
+               </div>
+               <label className="inline-flex items-start gap-3 text-sm text-on-surface">
+                 <input
+                   type="checkbox"
+                   checked={formData.carConsent}
+                   onChange={(e) => setFormData({ ...formData, carConsent: e.target.checked })}
+                   className="mt-1 h-4 w-4 text-primary"
+                 />
+                 <span>
+                   I consent to the car hire terms, including payment of a caution fee and responsibility for any damage or misuse of the vehicle.
+                 </span>
+               </label>
+             </div>
+           )}
+
            <button 
              type="submit" 
              disabled={loading}
@@ -507,7 +681,7 @@ export default function Booking() {
               </div>
               <div>
                  <p className="text-sm font-bold text-on-surface">Secure checkout</p>
-                 <p className="text-xs text-on-surface-variant mt-1">Your booking uses server-side payment verification and Nigerian naira pricing.</p>
+                 <p className="text-xs text-on-surface-variant mt-1">Your booking uses server-side payment verification and live pricing in {currency}.</p>
               </div>
            </div>
         </div>

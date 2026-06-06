@@ -37,10 +37,17 @@ import { logAudit, AuditAction } from '../lib/audit';
 import { apiDelete, apiPost } from '../lib/api';
 import { company, defaultVehicles } from '../lib/company';
 
+const defaultTrackingLocations = [
+  'Package in Badagry',
+  'Package on route to Cotonou',
+  'Package in Ikeja',
+  'Package on route to Togo',
+];
+
 export default function AdminDashboard() {
   const { user } = useAuth();
   const { formatPrice } = useCurrency();
-  const [activeTab, setActiveTab] = useState<'bookings' | 'prices' | 'hubs' | 'schedules' | 'admins' | 'drivers' | 'analytics' | 'maintenance' | 'reviews'>('bookings');
+  const [activeTab, setActiveTab] = useState<'bookings' | 'prices' | 'settings' | 'hubs' | 'schedules' | 'admins' | 'drivers' | 'analytics' | 'maintenance' | 'reviews'>('bookings');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -51,6 +58,10 @@ export default function AdminDashboard() {
   const [bookings, setBookings] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
   const [prices, setPrices] = useState<any[]>([]);
+  const [touringStates, setTouringStates] = useState<any[]>([]);
+  const [internationalTours, setInternationalTours] = useState<any[]>([]);
+  const [carHireOptions, setCarHireOptions] = useState<any[]>([]);
+  const [trackingLocationsSettings, setTrackingLocationsSettings] = useState<string[]>([]);
   const [blockedDays, setBlockedDays] = useState<any[]>([]);
   const [admins, setAdmins] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
@@ -105,6 +116,17 @@ export default function AdminDashboard() {
         } else {
            setPrices(p);
         }
+      } else if (activeTab === 'settings') {
+        const snap = await getDocs(collection(db, 'settings'));
+        const touringSettings = snap.docs.find(d => d.id === 'touring_states')?.data()?.value || company.touringStates;
+        const internationalSettings = snap.docs.find(d => d.id === 'international_tours')?.data()?.value || company.internationalTours;
+        const carHireSettings = snap.docs.find(d => d.id === 'car_hire_options')?.data()?.value || company.carHireOptions;
+        const trackingSettings = snap.docs.find(d => d.id === 'tracking_locations')?.data()?.value || defaultTrackingLocations;
+        setTouringStates(Array.isArray(touringSettings) ? touringSettings : company.touringStates);
+        setInternationalTours(Array.isArray(internationalSettings) ? internationalSettings : company.internationalTours);
+        setCarHireOptions(Array.isArray(carHireSettings) ? carHireSettings : company.carHireOptions);
+        setTrackingLocationsSettings(Array.isArray(trackingSettings) ? trackingSettings : defaultTrackingLocations);
+      } else if (activeTab === 'schedules') {
       } else if (activeTab === 'schedules') {
         const snap = await getDocs(collection(db, 'blocked_dates'));
         setBlockedDays(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -181,6 +203,89 @@ export default function AdminDashboard() {
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'settings/vehicle_types');
     }
+  };
+
+  const handleUpdateTouringStates = async (updated: any[]) => {
+    try {
+      setTouringStates(updated);
+      await setDoc(doc(db, 'settings', 'touring_states'), { key: 'touring_states', value: updated });
+      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_TOURING_STATES',
+        count: updated.length
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/touring_states');
+    }
+  };
+
+  const handleUpdateInternationalTours = async (updated: any[]) => {
+    try {
+      setInternationalTours(updated);
+      await setDoc(doc(db, 'settings', 'international_tours'), { key: 'international_tours', value: updated });
+      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_INTERNATIONAL_TOURS',
+        count: updated.length
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/international_tours');
+    }
+  };
+
+  const handleUpdateCarHireOptions = async (updated: any[]) => {
+    try {
+      setCarHireOptions(updated);
+      await setDoc(doc(db, 'settings', 'car_hire_options'), { key: 'car_hire_options', value: updated });
+      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_CAR_HIRE_OPTIONS',
+        count: updated.length
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/car_hire_options');
+    }
+  };
+
+  const handleUpdateTrackingLocations = async (updated: string[]) => {
+    try {
+      setTrackingLocationsSettings(updated);
+      await setDoc(doc(db, 'settings', 'tracking_locations'), { key: 'tracking_locations', value: updated });
+      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_TRACKING_LOCATIONS',
+        count: updated.length
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/tracking_locations');
+    }
+  };
+
+  const handleAddTouringState = async () => {
+    const name = window.prompt('New touring state name?');
+    if (!name?.trim()) return;
+    const factor = parseFloat(window.prompt('Price multiplier for this state? (e.g. 1.15)') || '1');
+    if (Number.isNaN(factor)) return;
+    await handleUpdateTouringStates([...touringStates, { name: name.trim(), factor }]);
+  };
+
+  const handleAddInternationalTour = async () => {
+    const name = window.prompt('New international tour name?');
+    if (!name?.trim()) return;
+    const factor = parseFloat(window.prompt('Price multiplier for this route? (e.g. 1.2)') || '1');
+    if (Number.isNaN(factor)) return;
+    await handleUpdateInternationalTours([...internationalTours, { name: name.trim(), factor }]);
+  };
+
+  const handleAddCarHireOption = async () => {
+    const name = window.prompt('New car hire option name?');
+    if (!name?.trim()) return;
+    const seats = parseInt(window.prompt('Number of seats?') || '4');
+    const desc = window.prompt('Short description for this car option?') || '';
+    const image = window.prompt('Optional image URL for this car option?') || '';
+    await handleUpdateCarHireOptions([...carHireOptions, { id: name.trim().toLowerCase().replace(/\s+/g, '-'), name: name.trim(), seats: isNaN(seats) ? 4 : seats, desc, image }]);
+  };
+
+  const handleAddTrackingLocation = async () => {
+    const location = window.prompt('New tracking location label?');
+    if (!location?.trim()) return;
+    await handleUpdateTrackingLocations([...trackingLocationsSettings, location.trim()]);
   };
 
   const handleAddHub = async (e: any) => {
@@ -371,7 +476,7 @@ export default function AdminDashboard() {
 
         <nav className="flex items-center justify-between bg-white p-1 rounded-lg border border-outline shadow-sm overflow-x-auto no-scrollbar scroll-smooth gap-4">
           <div className="flex gap-1">
-            {(['bookings', 'prices', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
+            {(['bookings', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -694,6 +799,215 @@ export default function AdminDashboard() {
                   </div>
                 </div>
               ))}
+            </motion.div>
+          )}
+
+          {activeTab === 'settings' && (
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-8"
+            >
+              <div className="grid gap-8 lg:grid-cols-2">
+                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                  <div className="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold">Touring states</h3>
+                      <p className="text-xs text-on-surface-variant">Editable state-based touring multipliers.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddTouringState}
+                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
+                    >
+                      Add state
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {touringStates.map((state, index) => (
+                      <div key={state.name + index} className="grid gap-3 md:grid-cols-[1fr_0.9fr_0.6fr] items-end">
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
+                          <input
+                            type="text"
+                            value={state.name}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateTouringStates(touringStates.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Multiplier</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={state.factor}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateTouringStates(touringStates.map((item, idx) => idx === index ? { ...item, factor: parseFloat(e.target.value) || 1 } : item))}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
+                          onClick={() => handleUpdateTouringStates(touringStates.filter((_, idx) => idx !== index))}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                  <div className="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold">International tours</h3>
+                      <p className="text-xs text-on-surface-variant">Editable international tour routes and multipliers.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddInternationalTour}
+                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
+                    >
+                      Add route
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {internationalTours.map((tour, index) => (
+                      <div key={tour.name + index} className="grid gap-3 md:grid-cols-[1fr_0.9fr_0.6fr] items-end">
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
+                          <input
+                            type="text"
+                            value={tour.name}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateInternationalTours(internationalTours.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Multiplier</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={tour.factor}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateInternationalTours(internationalTours.map((item, idx) => idx === index ? { ...item, factor: parseFloat(e.target.value) || 1 } : item))}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
+                          onClick={() => handleUpdateInternationalTours(internationalTours.filter((_, idx) => idx !== index))}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <div className="grid gap-8 lg:grid-cols-2">
+                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                  <div className="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold">Car hire fleet</h3>
+                      <p className="text-xs text-on-surface-variant">Manage available cars, seats, description, and image.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddCarHireOption}
+                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
+                    >
+                      Add car
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {carHireOptions.map((car, index) => (
+                      <div key={car.id + index} className="grid gap-3 md:grid-cols-[1fr_0.7fr_0.7fr_0.6fr] items-end">
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
+                          <input
+                            type="text"
+                            value={car.name}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Seats</label>
+                          <input
+                            type="number"
+                            value={car.seats}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, seats: parseInt(e.target.value) || 1 } : item))}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Image URL</label>
+                          <input
+                            type="text"
+                            value={car.image || ''}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: e.target.value } : item))}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
+                          onClick={() => handleUpdateCarHireOptions(carHireOptions.filter((_, idx) => idx !== index))}
+                        >
+                          Remove
+                        </button>
+                        <div className="md:col-span-4">
+                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Description</label>
+                          <input
+                            type="text"
+                            value={car.desc}
+                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, desc: e.target.value } : item))}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                  <div className="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold">Tracking locations</h3>
+                      <p className="text-xs text-on-surface-variant">Editable tracking labels for the booking tracker.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddTrackingLocation}
+                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
+                    >
+                      Add label
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    {trackingLocationsSettings.map((label, index) => (
+                      <div key={label + index} className="flex items-center gap-3">
+                        <input
+                          type="text"
+                          value={label}
+                          className="flex-1 bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                          onChange={(e) => handleUpdateTrackingLocations(trackingLocationsSettings.map((item, idx) => idx === index ? e.target.value : item))}
+                        />
+                        <button
+                          type="button"
+                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
+                          onClick={() => handleUpdateTrackingLocations(trackingLocationsSettings.filter((_, idx) => idx !== index))}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
             </motion.div>
           )}
 

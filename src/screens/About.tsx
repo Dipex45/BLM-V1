@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { company, defaultVehicles } from '../lib/company';
 import { useCurrency } from '../hooks/useCurrency';
+import CurrencySelector from '../components/CurrencySelector';
 
 const steps = [
   { title: 'Choose the route', desc: 'Select pickup, destination, travel date, and any notes for the driver or logistics desk.' },
@@ -131,6 +132,12 @@ export default function About() {
         </div>
       </section>
 
+      <section className="bg-white px-4 py-16 md:px-8 lg:px-12">
+        <div className="mx-auto max-w-7xl">
+          <CurrencySelector />
+        </div>
+      </section>
+
       <section className="bg-secondary px-4 py-16 text-white md:px-8 lg:px-12">
         <div className="mx-auto max-w-7xl">
           <div className="mb-10 flex flex-col justify-between gap-6 md:flex-row md:items-end">
@@ -183,7 +190,7 @@ export default function About() {
           <div className="max-w-2xl">
             <h2 className="text-3xl font-bold md:text-5xl">Ready to move?</h2>
             <p className="mt-4 text-base leading-7 text-white/82">
-              Call +2290142439626 or send a booking request directly on WhatsApp.
+              Call <a href={`tel:${company.whatsapp}`} className="font-bold text-white underline">{company.whatsapp}</a> or message us on WhatsApp.
             </p>
           </div>
           <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">

@@ -119,16 +119,16 @@ export default function Login() {
     <div className="flex min-h-screen bg-background">
       <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
         <img
-          src={company.servicesImage}
-          alt="BLM Motors services flyer"
-          className="absolute inset-0 h-full w-full object-cover object-center opacity-60"
+          src={company.heroImage}
+          alt="BLM Motors transport service"
+          className="absolute inset-0 h-full w-full object-cover object-center opacity-70"
         />
-        <div className="absolute inset-0 bg-black/50" />
+        <div className="absolute inset-0 bg-black/60" />
         <div className="relative z-10 max-w-lg text-white">
           <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-24 w-52 object-contain" />
           <h2 className="mb-6 text-5xl font-bold leading-tight">Welcome back.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
-            Manage Nigerian transport, touring, car hire, pickup, and cross-border bookings.
+            Sign in to manage bookings for transport, touring, car hire, pickup, and cross-border trips.
           </p>
         </div>
       </div>

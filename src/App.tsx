@@ -6,6 +6,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { useAuth } from './hooks/useAuth';
+import { CurrencyProvider } from './contexts/CurrencyContext';
 import Dashboard from './screens/Dashboard';
 import AdminDashboard from './screens/AdminDashboard';
 import Login from './screens/Login';
@@ -45,34 +46,36 @@ export default function App() {
   const isVerified = user?.emailVerified || user?.isAnonymous || user?.providerData?.some((p: any) => p.providerId === 'google.com');
 
   return (
-    <Router>
-      <div className="min-h-screen bg-background text-on-surface font-sans flex flex-col selection:bg-primary selection:text-white overflow-x-hidden">
-        <Navbar />
-        <div className="flex flex-1 pt-20">
-          {user && isVerified && <Sidebar />}
-          <main className={`flex-1 transition-all duration-300 ${user && isVerified ? 'md:ml-64' : ''}`}>
-            <ErrorBoundary>
-              <Routes>
-                <Route path="/" element={<About />} />
-                <Route path="/login" element={!user ? <Login /> : <Navigate to={isUserAdmin ? "/admin" : "/dashboard"} />} />
-                <Route path="/register" element={!user ? <Register /> : <Navigate to="/dashboard" />} />
-                <Route path="/verify-email" element={user && !isVerified ? <VerifyEmail /> : <Navigate to="/dashboard" />} />
-                <Route path="/dashboard" element={user ? (!isVerified ? <Navigate to="/verify-email" /> : (isUserAdmin ? <Navigate to="/admin" /> : <Dashboard />)) : <Navigate to="/login" />} />
-                <Route path="/admin" element={user && isUserAdmin ? (isVerified ? <AdminDashboard /> : <Navigate to="/verify-email" />) : <Navigate to="/login" />} />
-                <Route path="/tracking" element={<Tracking />} />
-                <Route path="/booking" element={<Booking />} />
-                <Route path="/checkout/:bookingId" element={<Checkout />} />
-                <Route path="/legal" element={<Legal />} />
-                <Route path="/reports" element={user ? <Reports /> : <Navigate to="/login" />} />
-                <Route path="*" element={<Navigate to="/" />} />
-              </Routes>
-            </ErrorBoundary>
-          </main>
+    <CurrencyProvider>
+      <Router>
+        <div className="min-h-screen bg-background text-on-surface font-sans flex flex-col selection:bg-primary selection:text-white overflow-x-hidden">
+          <Navbar />
+          <div className="flex flex-1 pt-20">
+            {user && isVerified && <Sidebar />}
+            <main className={`flex-1 transition-all duration-300 ${user && isVerified ? 'md:ml-64' : ''}`}>
+              <ErrorBoundary>
+                <Routes>
+                  <Route path="/" element={<About />} />
+                  <Route path="/login" element={!user ? <Login /> : <Navigate to={isUserAdmin ? "/admin" : "/dashboard"} />} />
+                  <Route path="/register" element={!user ? <Register /> : <Navigate to="/dashboard" />} />
+                  <Route path="/verify-email" element={user && !isVerified ? <VerifyEmail /> : <Navigate to="/dashboard" />} />
+                  <Route path="/dashboard" element={user ? (!isVerified ? <Navigate to="/verify-email" /> : (isUserAdmin ? <Navigate to="/admin" /> : <Dashboard />)) : <Navigate to="/login" />} />
+                  <Route path="/admin" element={user && isUserAdmin ? (isVerified ? <AdminDashboard /> : <Navigate to="/verify-email" />) : <Navigate to="/login" />} />
+                  <Route path="/tracking" element={<Tracking />} />
+                  <Route path="/booking" element={<Booking />} />
+                  <Route path="/checkout/:bookingId" element={<Checkout />} />
+                  <Route path="/legal" element={<Legal />} />
+                  <Route path="/reports" element={user ? <Reports /> : <Navigate to="/login" />} />
+                  <Route path="*" element={<Navigate to="/" />} />
+                </Routes>
+              </ErrorBoundary>
+            </main>
+          </div>
+          <Footer />
+          <CookieNotice />
+          {user && <SupportChat />}
         </div>
-        <Footer />
-        <CookieNotice />
-        {user && <SupportChat />}
-      </div>
-    </Router>
+      </Router>
+    </CurrencyProvider>
   );
 }

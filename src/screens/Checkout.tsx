@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { useCurrency } from '../hooks/useCurrency';
+import { useCurrencyContext, CURRENCY_CONFIG } from '../contexts/CurrencyContext';
+import CurrencySelector from '../components/CurrencySelector';
 import { loadStripe } from '@stripe/stripe-js';
 import {
   Elements,
@@ -24,7 +26,7 @@ const getStripePromise = () => {
 
 const stripePromise = getStripePromise();
 
-function StripeForm({ bookingId, onSuccess, onLoading }: { bookingId: string, amount: number, onSuccess: (id: string) => Promise<void> | void, onLoading: (status: boolean) => void }) {
+function StripeForm({ bookingId, amountInBaseCurrency, selectedCurrency, onSuccess, onLoading }: { bookingId: string, amountInBaseCurrency: number, selectedCurrency: string, onSuccess: (id: string) => Promise<void> | void, onLoading: (status: boolean) => void }) {
   const stripe = useStripe();
   const elements = useElements();
   const { user } = useAuth();
@@ -38,10 +40,12 @@ function StripeForm({ bookingId, onSuccess, onLoading }: { bookingId: string, am
     setError(null);
 
     try {
-      // 1. Create Payment Intent on server
+      // 1. Create Payment Intent on server with currency
       const { data } = await apiPost('/api/payment/stripe/create-intent', {
         bookingId,
-        email: user.email
+        email: user.email,
+        currency: selectedCurrency,
+        amountInBaseCurrency
       });
 
       const { clientSecret } = data;
@@ -62,7 +66,8 @@ function StripeForm({ bookingId, onSuccess, onLoading }: { bookingId: string, am
       } else {
         if (result.paymentIntent.status === 'succeeded') {
           await apiPost('/api/payment/stripe/reconcile', {
-            paymentIntentId: result.paymentIntent.id
+            paymentIntentId: result.paymentIntent.id,
+            currency: selectedCurrency
           });
           await onSuccess(result.paymentIntent.id);
         }
@@ -107,9 +112,11 @@ export default function Checkout() {
   const { bookingId } = useParams();
   const { user } = useAuth();
   const { formatPrice } = useCurrency();
+  const { displayCurrency, convertPrice, symbol } = useCurrencyContext();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [booking, setBooking] = useState<any>(null);
+  const [selectedCurrency, setSelectedCurrency] = useState(displayCurrency);
   const [paymentMethod, setPaymentMethod] = useState<'stripe' | 'paystack'>('stripe');
   const [paying, setPaying] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -132,7 +139,10 @@ export default function Checkout() {
       try {
         const snap = await getDoc(doc(db, 'bookings', bookingId));
         if (snap.exists()) {
-          setBooking(snap.data());
+          const bookingData = snap.data();
+          // Use stored currency if available, otherwise use current display currency
+          setSelectedCurrency(bookingData.checkoutCurrency || displayCurrency);
+          setBooking(bookingData);
         }
       } catch (error) {
         console.error("Error fetching booking:", error);
@@ -141,12 +151,18 @@ export default function Checkout() {
       }
     }
     fetchBooking();
-  }, [bookingId]);
+  }, [bookingId, displayCurrency]);
 
   const handleSuccess = async (_paymentIntentId?: string) => {
     if (!user || !bookingId) return;
     
     try {
+      // Update booking with checkout currency
+      await updateDoc(doc(db, 'bookings', bookingId), {
+        checkoutCurrency: selectedCurrency,
+        paymentStatus: 'Paid',
+        updatedAt: new Date().toISOString()
+      });
       setSuccess(true);
     } catch (error) {
       console.error("Error finalizing booking status:", error);
@@ -165,20 +181,23 @@ export default function Checkout() {
         return;
       }
 
-      // 1. Initialize on server to get transaction details
+      // 1. Initialize on server to get transaction details with currency
       const { data } = await apiPost('/api/payment/paystack/initialize', {
         email: user.email,
-        bookingId
+        bookingId,
+        currency: selectedCurrency,
+        amountInBaseCurrency: booking.totalAmount
       });
 
       const { data: { reference } } = data;
+      const convertedAmount = Math.round(convertPrice(booking.totalAmount, selectedCurrency as any) * 100);
 
       // 2. Use Paystack Popup
       // @ts-ignore
       const handler = PaystackPop.setup({
         key: paystackKey,
         email: user.email,
-        amount: Math.round(booking.totalAmount * 100),
+        amount: convertedAmount,
         ref: reference,
         onClose: () => {
           setPaying(false);
@@ -238,10 +257,21 @@ export default function Checkout() {
                         <p className="font-bold text-sm">{booking?.destination}</p>
                      </div>
                   </div>
+                  <div className="flex justify-between items-center">
+                     <span className="text-on-surface-variant text-sm font-bold">Base price (NGN)</span>
+                     <span className="font-bold text-sm">₦{booking?.totalAmount?.toLocaleString()}</span>
+                  </div>
                   <div className="pt-10 border-t border-outline flex justify-between items-baseline">
-                     <span className="font-bold text-sm text-primary">Total amount</span>
+                     <div>
+                        <span className="font-bold text-sm text-primary">Pay in {selectedCurrency}</span>
+                        <p className="text-xs text-on-surface-variant mt-1">
+                          {CURRENCY_CONFIG[selectedCurrency as keyof typeof CURRENCY_CONFIG]?.name}
+                        </p>
+                     </div>
                      <div className="flex items-baseline gap-1">
-                        <span className="font-bold text-4xl text-on-surface md:text-5xl">{formatPrice(booking?.totalAmount || 0)}</span>
+                        <span className="font-bold text-4xl text-on-surface md:text-5xl">
+                          {CURRENCY_CONFIG[selectedCurrency as keyof typeof CURRENCY_CONFIG]?.symbol} {convertPrice(booking?.totalAmount || 0, selectedCurrency as any).toFixed(selectedCurrency === 'NGN' ? 0 : 2)}
+                        </span>
                      </div>
                   </div>
                </div>
@@ -249,6 +279,24 @@ export default function Checkout() {
 
             {/* Payment Fields */}
             <div className="p-12 flex flex-col bg-white">
+               <div className="mb-8 pb-8 border-b border-outline">
+                  <p className="text-sm font-bold text-on-surface-variant mb-4">Payment currency</p>
+                  <select
+                    value={selectedCurrency}
+                    onChange={(e) => setSelectedCurrency(e.target.value)}
+                    className="w-full px-4 py-3 rounded-md border border-outline bg-surface-container text-sm font-bold text-on-surface focus:ring-2 focus:ring-primary/20"
+                  >
+                    {['NGN', 'XOF', 'GHS', 'USD', 'EUR', 'GBP'].map((curr) => (
+                      <option key={curr} value={curr}>
+                        {curr} - {CURRENCY_CONFIG[curr as keyof typeof CURRENCY_CONFIG]?.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-on-surface-variant mt-3">
+                    Amount to pay: <span className="font-bold text-primary">{CURRENCY_CONFIG[selectedCurrency as keyof typeof CURRENCY_CONFIG]?.symbol} {convertPrice(booking?.totalAmount || 0, selectedCurrency as any).toFixed(selectedCurrency === 'NGN' ? 0 : 2)}</span>
+                  </p>
+               </div>
+
                <div className="mb-12">
                   <p className="text-sm font-bold text-on-surface-variant mb-6">Payment method</p>
                   <div className="flex gap-4">
@@ -280,7 +328,8 @@ export default function Checkout() {
                          <Elements stripe={stripePromise}>
                            <StripeForm 
                              bookingId={bookingId || ''} 
-                             amount={booking?.totalAmount || 0} 
+                             amountInBaseCurrency={booking?.totalAmount || 0} 
+                             selectedCurrency={selectedCurrency}
                              onSuccess={handleSuccess} 
                              onLoading={setPaying}
                            />
