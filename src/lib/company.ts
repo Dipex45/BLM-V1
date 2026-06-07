@@ -15,8 +15,8 @@ export const company = {
   whatsappMessage: 'Good day BLM, I want to book your services',
   address: 'Nigeria operations desk',
   logo: '/brand/blm-logo.png',
-  heroImage: '/brand/transport-service.png',
-  servicesImage: '/brand/weekend-services.jpeg',
+  heroImage: '/brand/car-01.png',
+  servicesImage: '/brand/car-02.png',
   qualities: ['Fast', 'Secure', 'Reliable'],
   routes: [
     'Within Nigeria',
@@ -87,9 +87,9 @@ export const company = {
     { name: 'Togo', factor: 1.08 },
   ],
   carHireOptions: [
-    { id: 'toyota-corolla', name: 'Toyota Corolla', seats: 4, desc: 'Sedan for airport transfer, meetings, and city travel.', image: '/brand/transport-service.png' },
-    { id: 'toyota-highlander', name: 'Toyota Highlander', seats: 6, desc: 'Spacious crossover for family and executive movement.', image: '/brand/transport-service.png' },
-    { id: 'bus-mini', name: 'Mini Bus', seats: 14, desc: 'Group travel for events, tours, and shared pickups.', image: '/brand/transport-service.png' },
+    { id: 'toyota-corolla', name: 'Toyota Corolla', seats: 4, desc: 'Sedan for airport transfer, meetings, and city travel.', image: '/brand/car-01.png' },
+    { id: 'toyota-highlander', name: 'Toyota Highlander', seats: 6, desc: 'Spacious crossover for family and executive movement.', image: '/brand/car-02.png' },
+    { id: 'bus-mini', name: 'Mini Bus', seats: 14, desc: 'Group travel for events, tours, and shared pickups.', image: '/brand/car-03.png' },
   ],
 };
 
