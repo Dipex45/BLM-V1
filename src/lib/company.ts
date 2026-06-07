@@ -15,7 +15,7 @@ export const company = {
   whatsappMessage: 'Good day BLM, I want to book your services',
   address: 'Nigeria operations desk',
   logo: '/brand/blm-logo.png',
-  heroImage: '/brand/car-01.png',
+  heroImage: '/brand/login-hero.png',
   servicesImage: '/brand/car-02.png',
   qualities: ['Fast', 'Secure', 'Reliable'],
   routes: [
