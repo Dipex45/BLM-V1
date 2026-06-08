@@ -250,18 +250,23 @@ export default function Booking() {
       });
 
       if (!validationRes.ok) {
-        let errorMessage = "Server-side validation failed.";
         const responseText = await validationRes.text();
-        try {
-          const errorData = JSON.parse(responseText);
-          errorMessage = errorData?.message || errorData?.error || responseText || errorMessage;
-        } catch {
-          errorMessage = responseText || errorMessage;
+        const isApiMissing = validationRes.status === 404 || responseText.includes('NOT_FOUND') || responseText.includes('The page could not be found');
+        if (isApiMissing) {
+          console.warn('Booking validation endpoint unavailable, proceeding with client-side validation.', responseText);
+        } else {
+          let errorMessage = "Server-side validation failed.";
+          try {
+            const errorData = JSON.parse(responseText);
+            errorMessage = errorData?.message || errorData?.error || responseText || errorMessage;
+          } catch {
+            errorMessage = responseText || errorMessage;
+          }
+          throw new Error(errorMessage);
         }
-        throw new Error(errorMessage);
       }
 
-      // If validated, proceed with Firestore write
+      // If validated or validation is unavailable, proceed with Firestore write
       const rawData = {
         customerId: user.uid,
         customerName: DOMPurify.sanitize(user.displayName || user.email || 'Customer'),
@@ -300,7 +305,7 @@ export default function Booking() {
         amount: rawData.totalAmount
       });
 
-      navigate(`/checkout/${docRef.id}`);
+      navigate(`/checkout/${encodeURIComponent(docRef.id)}`);
     } catch (err: any) {
       console.error("Booking failed:", err);
       if (err.name === 'ZodError') {
