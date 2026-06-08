@@ -250,8 +250,15 @@ export default function Booking() {
       });
 
       if (!validationRes.ok) {
-        const errorData = await validationRes.json();
-        throw new Error(errorData.message || "Server-side validation failed.");
+        let errorMessage = "Server-side validation failed.";
+        const responseText = await validationRes.text();
+        try {
+          const errorData = JSON.parse(responseText);
+          errorMessage = errorData?.message || errorData?.error || responseText || errorMessage;
+        } catch {
+          errorMessage = responseText || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
 
       // If validated, proceed with Firestore write

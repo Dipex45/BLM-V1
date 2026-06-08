@@ -174,12 +174,7 @@ export default function Checkout() {
     setPaying(true);
 
     try {
-      const paystackKey = (import.meta as any).env.VITE_PAYSTACK_PUBLIC_KEY;
-      if (!paystackKey) {
-        alert("Paystack Public Key is missing. Please configure it in settings.");
-        setPaying(false);
-        return;
-      }
+      const paystackKey = (import.meta as any).env.VITE_PAYSTACK_PUBLIC_KEY || 'pk_test_cd117e6464dee4c75fecbe6adc667ef8f94aab3b';
 
       // 1. Initialize on server to get transaction details with currency
       const { data } = await apiPost('/api/payment/paystack/initialize', {
