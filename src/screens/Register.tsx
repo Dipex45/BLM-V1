@@ -11,14 +11,31 @@ export default function Register() {
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+
+  const getFriendlyAuthError = (code: string): string => {
+    switch (code) {
+      case 'auth/email-already-in-use':
+        return 'An account with this email already exists. Try signing in instead.';
+      case 'auth/weak-password':
+        return 'Password is too weak. Please use at least 6 characters.';
+      case 'auth/invalid-email':
+        return 'Please enter a valid email address.';
+      case 'auth/network-request-failed':
+        return 'Network connection error. Please check your internet and try again.';
+      default:
+        return 'Registration failed. Please try again or contact support.';
+    }
+  };
 
   const handleRegister = async (e: FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setMessage('');
 
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
@@ -32,11 +49,10 @@ export default function Register() {
         createdAt: new Date().toISOString(),
       });
 
-      setError('Account created. Please verify your email before logging in.');
-      setLoading(false);
-      setTimeout(() => navigate('/login'), 4000);
+      setMessage('Account created. Please verify your email to continue.');
+      navigate('/verify-email');
     } catch (err: any) {
-      setError(err.message);
+      setError(getFriendlyAuthError(err.code));
     } finally {
       setLoading(false);
     }
@@ -88,13 +104,19 @@ export default function Register() {
     <div className="flex min-h-screen bg-background">
       <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
         <img
-          src={company.servicesImage}
+          src={company.authImage}
           alt="BLM Motors transport service flyer"
           className="absolute inset-0 h-full w-full object-cover object-center opacity-60"
         />
         <div className="absolute inset-0 bg-black/50" />
         <div className="relative z-10 max-w-lg text-white">
-          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-24 w-52 object-contain" />
+          <div className="mb-10 inline-block">
+            <img
+              src={company.logo}
+              alt="BLM Motors logo"
+              className="h-20 w-64 object-contain md:h-24 md:w-72 [filter:drop-shadow(0_0_15px_rgba(255,255,255,1))_drop-shadow(0_0_35px_rgba(255,255,255,0.9))_drop-shadow(0_0_60px_rgba(255,255,255,0.6))]"
+            />
+          </div>
           <h2 className="mb-6 text-5xl font-bold leading-tight">Create your BLM account.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
             Book transport, touring, car hire, pickup, and cross-border trips from one account.
@@ -116,6 +138,12 @@ export default function Register() {
           {error && (
             <div className="mb-6 rounded-md bg-error-container p-4 text-sm font-medium text-on-error-container">
               {error}
+            </div>
+          )}
+
+          {message && (
+            <div className="mb-6 rounded-md bg-primary/10 p-4 text-sm font-medium text-primary">
+              {message}
             </div>
           )}
 

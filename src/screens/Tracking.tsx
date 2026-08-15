@@ -93,6 +93,7 @@ export default function Tracking() {
   }, [searchParams]);
 
   useEffect(() => {
+    if (trackingLocations.length === 0) return;
     const interval = window.setInterval(() => {
       setActiveLocationIndex((prev) => (prev + 1) % trackingLocations.length);
     }, 3500);
@@ -117,9 +118,9 @@ export default function Tracking() {
               Enter the booking ID from checkout or your dashboard to see the latest recorded status.
             </p>
           </div>
-          <a href={`tel:${company.whatsapp}`} className="inline-flex items-center justify-center gap-2 rounded-md border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface hover:border-primary hover:text-primary">
+          <a href={`tel:${company.phone}`} className="inline-flex items-center justify-center gap-2 rounded-md border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface hover:border-primary hover:text-primary">
             <span className="material-symbols-outlined text-base">call</span>
-            {company.whatsapp}
+            {company.phoneDisplay}
           </a>
         </header>
 
@@ -149,12 +150,11 @@ export default function Tracking() {
           </div>
         )}
 
-        {!record && !error && trackingId.trim() === '' && (
-          <div className="grid max-w-3xl gap-4 rounded-lg border border-outline bg-white p-6 text-sm text-on-surface-variant shadow-sm">
-            <h2 className="text-base font-bold text-on-surface">Available package locations</h2>
-            <p className="text-sm text-on-surface-variant">The tracking page shows status updates for current routes and package movement.</p>
+        <div className="grid max-w-3xl gap-4 rounded-lg border border-outline bg-white p-6 text-sm text-on-surface-variant shadow-sm">
+            <h2 className="text-base font-bold text-on-surface">Available movement locations</h2>
+            <p className="text-sm text-on-surface-variant">These labels are controlled by the admin tracking settings and animate through current route examples.</p>
             <div className="grid gap-4 sm:grid-cols-2">
-              {trackingLocations.map((location, index) => (
+              {(trackingLocations.length > 0 ? trackingLocations : defaultTrackingLocations).map((location, index) => (
                 <motion.div
                   key={location}
                   initial={{ opacity: 0, y: 8 }}
@@ -167,7 +167,6 @@ export default function Tracking() {
               ))}
             </div>
           </div>
-        )}
 
         <AnimatePresence>
           {record && (

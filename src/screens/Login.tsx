@@ -8,6 +8,7 @@ import { AuditAction, logAudit } from '../lib/audit';
 import { company } from '../lib/company';
 
 export default function Login() {
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -15,6 +16,25 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+
+  const getFriendlyAuthError = (code: string): string => {
+    switch (code) {
+      case 'auth/invalid-credential':
+      case 'auth/wrong-password':
+      case 'auth/user-not-found':
+        return 'Invalid email or password. Please verify your credentials and try again.';
+      case 'auth/too-many-requests':
+        return 'Too many failed attempts. Your account has been temporarily locked. Please reset your password or try again later.';
+      case 'auth/user-disabled':
+        return 'This account has been disabled. Please contact support.';
+      case 'auth/network-request-failed':
+        return 'Network connection error. Please check your internet and try again.';
+      case 'auth/invalid-email':
+        return 'Please enter a valid email address.';
+      default:
+        return 'Sign in failed. Please verify your email and password and try again.';
+    }
+  };
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -25,22 +45,31 @@ export default function Login() {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
 
+      if (!userCredential.user.emailVerified) {
+        setMessage('Please verify your email address. We sent a verification link to your inbox.');
+        return;
+      }
+
+      // Update name in user document if provided
+      if (fullName.trim()) {
+        const userRef = doc(db, 'users', userCredential.user.uid);
+        const userDoc = await getDoc(userRef);
+        if (userDoc.exists()) {
+          await setDoc(userRef, { fullName: fullName.trim() }, { merge: true });
+        }
+      }
+
       const adminDoc = await getDoc(doc(db, 'admins', userCredential.user.uid));
       if (adminDoc.exists()) {
         await logAudit(userCredential.user.uid, userCredential.user.email || 'admin', AuditAction.ADMIN_LOGIN, {
           method: 'email',
         });
+        navigate('/admin');
+      } else {
+        navigate('/dashboard');
       }
-
-      if (!userCredential.user.emailVerified) {
-        setMessage('Please verify your email address. Check your inbox.');
-        setLoading(false);
-        return;
-      }
-
-      navigate('/dashboard');
     } catch (err: any) {
-      setError(err.message);
+      setError(getFriendlyAuthError(err.code));
     } finally {
       setLoading(false);
     }
@@ -60,7 +89,14 @@ export default function Login() {
       await sendPasswordResetEmail(auth, email);
       setMessage('Password reset link sent to your inbox.');
     } catch (err: any) {
-      setError(err.message);
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-email') {
+        // Don't reveal whether the email exists — show a neutral message for security
+        setMessage('If an account with that email exists, a reset link has been sent.');
+      } else if (err.code === 'auth/too-many-requests') {
+        setError('Too many reset attempts. Please wait a few minutes before trying again.');
+      } else {
+        setError('Failed to send reset email. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -119,13 +155,19 @@ export default function Login() {
     <div className="flex min-h-screen bg-background">
       <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
         <img
-          src={company.heroImage}
+          src={company.authImage}
           alt="BLM Motors transport service"
           className="absolute inset-0 h-full w-full object-cover object-center opacity-70"
         />
         <div className="absolute inset-0 bg-black/60" />
         <div className="relative z-10 max-w-lg text-white">
-          <img src={company.logo} alt="BLM Motors logo" className="mb-12 h-24 w-52 object-contain" />
+          <div className="mb-10 inline-block">
+            <img
+              src={company.logo}
+              alt="BLM Motors logo"
+              className="h-20 w-64 object-contain md:h-24 md:w-72 [filter:drop-shadow(0_0_15px_rgba(255,255,255,1))_drop-shadow(0_0_35px_rgba(255,255,255,0.9))_drop-shadow(0_0_60px_rgba(255,255,255,0.6))]"
+            />
+          </div>
           <h2 className="mb-6 text-5xl font-bold leading-tight">Welcome back.</h2>
           <p className="text-lg font-medium leading-relaxed text-white/82">
             Sign in to manage bookings for transport, touring, car hire, pickup, and cross-border trips.
@@ -177,7 +219,21 @@ export default function Login() {
             </div>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-6">
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div>
+              <label className="mb-2 block text-sm font-bold text-on-surface-variant">Full name (for verification)</label>
+              <div className="relative">
+                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-lg text-primary">badge</span>
+                <input
+                  type="text"
+                  className="w-full rounded-md border border-outline bg-surface-container py-3.5 pl-12 pr-4 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
+                  placeholder="Your full name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                />
+              </div>
+            </div>
+
             <div>
               <label className="mb-2 block text-sm font-bold text-on-surface-variant">Email address</label>
               <div className="relative">

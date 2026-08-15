@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
+import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
   collection, 
   getDocs, 
@@ -61,6 +62,7 @@ export default function AdminDashboard() {
   const [touringStates, setTouringStates] = useState<any[]>([]);
   const [internationalTours, setInternationalTours] = useState<any[]>([]);
   const [carHireOptions, setCarHireOptions] = useState<any[]>([]);
+  const [pricingRulesSettings, setPricingRulesSettings] = useState(company.pricingRules);
   const [trackingLocationsSettings, setTrackingLocationsSettings] = useState<string[]>([]);
   const [blockedDays, setBlockedDays] = useState<any[]>([]);
   const [admins, setAdmins] = useState<any[]>([]);
@@ -121,12 +123,13 @@ export default function AdminDashboard() {
         const touringSettings = snap.docs.find(d => d.id === 'touring_states')?.data()?.value || company.touringStates;
         const internationalSettings = snap.docs.find(d => d.id === 'international_tours')?.data()?.value || company.internationalTours;
         const carHireSettings = snap.docs.find(d => d.id === 'car_hire_options')?.data()?.value || company.carHireOptions;
+        const pricingRules = snap.docs.find(d => d.id === 'pricing_rules')?.data()?.value || company.pricingRules;
         const trackingSettings = snap.docs.find(d => d.id === 'tracking_locations')?.data()?.value || defaultTrackingLocations;
         setTouringStates(Array.isArray(touringSettings) ? touringSettings : company.touringStates);
         setInternationalTours(Array.isArray(internationalSettings) ? internationalSettings : company.internationalTours);
         setCarHireOptions(Array.isArray(carHireSettings) ? carHireSettings : company.carHireOptions);
+        setPricingRulesSettings({ ...company.pricingRules, ...(pricingRules || {}) });
         setTrackingLocationsSettings(Array.isArray(trackingSettings) ? trackingSettings : defaultTrackingLocations);
-      } else if (activeTab === 'schedules') {
       } else if (activeTab === 'schedules') {
         const snap = await getDocs(collection(db, 'blocked_dates'));
         setBlockedDays(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -202,6 +205,45 @@ export default function AdminDashboard() {
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'settings/vehicle_types');
+    }
+  };
+
+  const handleUpdateVehicleTypes = async (updated: any[]) => {
+    try {
+      setPrices(updated);
+      await setDoc(doc(db, 'settings', 'vehicle_types'), { key: 'vehicle_types', value: updated });
+      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_VEHICLE_TYPES',
+        count: updated.length
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/vehicle_types');
+    }
+  };
+
+  const handleAddVehicleType = async () => {
+    const title = window.prompt('New service or vehicle class name?');
+    if (!title?.trim()) return;
+    const price = parseInt(window.prompt('Base price in NGN?') || '0');
+    const desc = window.prompt('Short description?') || '';
+    const icon = window.prompt('Material icon name?') || 'directions_car';
+    await handleUpdateVehicleTypes([...prices, {
+      title: title.trim(),
+      desc,
+      price: Number.isFinite(price) && price > 0 ? price : 10000,
+      icon,
+    }]);
+  };
+
+  const handleUpdatePricingRules = async (updated: typeof company.pricingRules) => {
+    try {
+      setPricingRulesSettings(updated);
+      await setDoc(doc(db, 'settings', 'pricing_rules'), { key: 'pricing_rules', value: updated });
+      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_PRICING_RULES'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'settings/pricing_rules');
     }
   };
 
@@ -774,31 +816,74 @@ export default function AdminDashboard() {
               key="prices"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 md:grid-cols-3 gap-8"
+              className="space-y-6"
             >
-              {prices.map((p, i) => (
-                <div key={i} className="bg-white p-8 rounded-lg border border-outline shadow-sm flex flex-col gap-6">
-                  <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-                    <span className="material-symbols-outlined text-3xl">{p.icon}</span>
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-xl mb-1">{p.title}</h4>
-                    <p className="text-xs text-on-surface-variant font-medium">{p.desc}</p>
-                  </div>
-                  <div className="mt-auto">
-                    <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Base price (NGN)</label>
-                    <div className="flex flex-col gap-2">
-                       <p className="text-[10px] font-bold text-primary uppercase">Localized: {formatPrice(p.price)}</p>
-                       <input 
-                         type="number" 
-                         className="w-full bg-surface-container border border-outline p-4 rounded-xl font-bold text-2xl text-on-surface"
-                         value={p.price}
-                         onChange={(e) => handleUpdatePrice(i, parseInt(e.target.value))}
-                       />
-                    </div>
-                  </div>
+              <div className="flex flex-col justify-between gap-4 rounded-lg border border-outline bg-white p-6 shadow-sm sm:flex-row sm:items-center">
+                <div>
+                  <h3 className="text-xl font-bold">Booking service classes</h3>
+                  <p className="mt-1 text-xs text-on-surface-variant">These services, labels, icons, descriptions, and NGN base prices load directly on the booking page.</p>
                 </div>
-              ))}
+                <button type="button" onClick={handleAddVehicleType} className="rounded-md bg-primary px-5 py-3 text-sm font-bold text-white">
+                  Add service
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
+                {prices.map((p, i) => (
+                  <div key={i} className="bg-white p-8 rounded-lg border border-outline shadow-sm flex flex-col gap-6">
+                    <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+                      <span className="material-symbols-outlined text-3xl">{p.icon}</span>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Service name</label>
+                        <input
+                          type="text"
+                          className="w-full rounded-xl border border-outline bg-surface-container p-3 text-sm font-bold"
+                          value={p.title}
+                          onChange={(e) => handleUpdateVehicleTypes(prices.map((item, idx) => idx === i ? { ...item, title: e.target.value } : item))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Icon</label>
+                        <input
+                          type="text"
+                          className="w-full rounded-xl border border-outline bg-surface-container p-3 text-sm font-bold"
+                          value={p.icon}
+                          onChange={(e) => handleUpdateVehicleTypes(prices.map((item, idx) => idx === i ? { ...item, icon: e.target.value } : item))}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Description</label>
+                        <textarea
+                          rows={3}
+                          className="w-full rounded-xl border border-outline bg-surface-container p-3 text-sm font-medium"
+                          value={p.desc}
+                          onChange={(e) => handleUpdateVehicleTypes(prices.map((item, idx) => idx === i ? { ...item, desc: e.target.value } : item))}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-auto">
+                      <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Base price (NGN)</label>
+                      <div className="flex flex-col gap-2">
+                         <p className="text-[10px] font-bold text-primary uppercase">Localized: {formatPrice(p.price)}</p>
+                         <input 
+                           type="number" 
+                           className="w-full bg-surface-container border border-outline p-4 rounded-xl font-bold text-2xl text-on-surface"
+                           value={p.price}
+                           onChange={(e) => handleUpdatePrice(i, parseInt(e.target.value))}
+                         />
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateVehicleTypes(prices.filter((_, idx) => idx !== i))}
+                      className="rounded-md border border-error/20 bg-error/10 px-4 py-3 text-xs font-bold text-error"
+                    >
+                      Remove service
+                    </button>
+                  </div>
+                ))}
+              </div>
             </motion.div>
           )}
 
@@ -912,7 +997,7 @@ export default function AdminDashboard() {
                   <div className="flex items-center justify-between gap-4 mb-6">
                     <div>
                       <h3 className="text-xl font-bold">Car hire fleet</h3>
-                      <p className="text-xs text-on-surface-variant">Manage available cars, seats, description, and image.</p>
+                      <p className="text-xs text-on-surface-variant">Manage available cars, seats, descriptions, image URL, or upload image files.</p>
                     </div>
                     <button
                       type="button"
@@ -922,51 +1007,96 @@ export default function AdminDashboard() {
                       Add car
                     </button>
                   </div>
-                  <div className="space-y-4">
+                  <div className="space-y-6">
                     {carHireOptions.map((car, index) => (
-                      <div key={car.id + index} className="grid gap-3 md:grid-cols-[1fr_0.7fr_0.7fr_0.6fr] items-end">
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
-                          <input
-                            type="text"
-                            value={car.name}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
-                          />
+                      <div key={car.id + index} className="p-4 rounded-xl border border-outline bg-surface-container/30 space-y-4">
+                        <div className="grid gap-3 md:grid-cols-[1fr_0.7fr_0.6fr] items-end">
+                          <div>
+                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
+                            <input
+                              type="text"
+                              value={car.name}
+                              className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
+                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Seats</label>
+                            <input
+                              type="number"
+                              value={car.seats}
+                              className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
+                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, seats: parseInt(e.target.value) || 1 } : item))}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
+                            onClick={() => handleUpdateCarHireOptions(carHireOptions.filter((_, idx) => idx !== index))}
+                          >
+                            Remove car
+                          </button>
                         </div>
+
                         <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Seats</label>
-                          <input
-                            type="number"
-                            value={car.seats}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, seats: parseInt(e.target.value) || 1 } : item))}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Image URL</label>
-                          <input
-                            type="text"
-                            value={car.image || ''}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: e.target.value } : item))}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
-                          onClick={() => handleUpdateCarHireOptions(carHireOptions.filter((_, idx) => idx !== index))}
-                        >
-                          Remove
-                        </button>
-                        <div className="md:col-span-4">
                           <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Description</label>
                           <input
                             type="text"
                             value={car.desc}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
+                            className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
                             onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, desc: e.target.value } : item))}
                           />
+                        </div>
+
+                        <div className="grid gap-4 md:grid-cols-[1fr_auto_auto] items-center pt-2 border-t border-outline/50">
+                          <div>
+                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant block mb-1">Image URL (External or Local)</label>
+                            <input
+                              type="text"
+                              placeholder="https://... or /brand/car-01.jpg"
+                              value={car.image || ''}
+                              className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
+                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: e.target.value } : item))}
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant block mb-1">Upload File (Firebase Storage)</label>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="text-xs file:mr-3 file:py-2.5 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                try {
+                                  setLoading(true);
+                                  const sRef = storageRef(storage, `car_hire/${Date.now()}_${file.name}`);
+                                  await uploadBytes(sRef, file);
+                                  const url = await getDownloadURL(sRef);
+                                  await handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: url } : item));
+                                } catch (err) {
+                                  console.warn('Storage upload failed, converting to data URL', err);
+                                  const reader = new FileReader();
+                                  reader.onload = async (evt) => {
+                                    const dataUrl = evt.target?.result as string;
+                                    if (dataUrl) {
+                                      await handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: dataUrl } : item));
+                                    }
+                                  };
+                                  reader.readAsDataURL(file);
+                                } finally {
+                                  setLoading(false);
+                                }
+                              }}
+                            />
+                          </div>
+
+                          {car.image && (
+                            <div className="shrink-0">
+                              <img src={car.image} alt={car.name} className="h-14 w-20 rounded-lg object-cover border border-outline" />
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1005,6 +1135,166 @@ export default function AdminDashboard() {
                         </button>
                       </div>
                     ))}
+                  </div>
+                </section>
+              </div>
+
+              {/* Currency Rates & Global Pricing Rules */}
+              <div className="grid gap-8 lg:grid-cols-2">
+                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                  <div className="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold">Exchange Rates Control</h3>
+                      <p className="text-xs text-on-surface-variant">Configure real-time multipliers against 1 NGN for all supported currencies.</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {[
+                      { code: 'XOF', name: 'West African CFA (XOF)', defaultRate: 0.41 },
+                      { code: 'GHS', name: 'Ghana Cedi (GHS)', defaultRate: 0.0097 },
+                      { code: 'USD', name: 'US Dollar (USD)', defaultRate: 0.00067 },
+                      { code: 'EUR', name: 'Euro (EUR)', defaultRate: 0.00062 },
+                      { code: 'GBP', name: 'British Pound (GBP)', defaultRate: 0.00053 },
+                    ].map((curr) => (
+                      <div key={curr.code} className="p-4 bg-surface-container/40 rounded-xl border border-outline">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">
+                          {curr.name}
+                        </label>
+                        <input
+                          type="number"
+                          step="0.000001"
+                          placeholder={curr.defaultRate.toString()}
+                          className="w-full bg-white border border-outline rounded-lg p-2.5 text-sm font-bold"
+                          onBlur={async (e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val) && val > 0) {
+                              try {
+                                const snap = await getDoc(doc(db, 'settings', 'currency_rates'));
+                                const curRates = snap.exists() ? snap.data().value || {} : {};
+                                curRates[curr.code] = val;
+                                await setDoc(doc(db, 'settings', 'currency_rates'), { key: 'currency_rates', value: curRates });
+                                alert(`${curr.code} exchange rate updated to ${val}`);
+                              } catch (err) {
+                                console.error('Failed to update currency rate', err);
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                  <div className="flex items-center justify-between gap-4 mb-6">
+                    <div>
+                      <h3 className="text-xl font-bold">Extra Fees & Caution Rules</h3>
+                      <p className="text-xs text-on-surface-variant">Manage global service fees and refundable deposit rules.</p>
+                    </div>
+                  </div>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Standard Service Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.standardServiceFee}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, standardServiceFee: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Pickup & Logistics Handling Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.pickupLogisticsFee}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, pickupLogisticsFee: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Logistics Price Per KG (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.pricePerKg}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, pricePerKg: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Car Hire Caution Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.carHireCautionFee}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, carHireCautionFee: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Cross-Border Processing Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.crossBorderProcessingFee}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, crossBorderProcessingFee: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Touring Per Location Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.touringPerLocation}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, touringPerLocation: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        International Tour Per Location Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.internationalTourPerLocation}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, internationalTourPerLocation: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                          Return Trip Multiplier
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={pricingRulesSettings.returnMultiplier}
+                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, returnMultiplier: parseFloat(e.target.value) || 1 })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                          Max Touring Locations
+                        </label>
+                        <input
+                          type="number"
+                          value={pricingRulesSettings.maxTouringLocations}
+                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, maxTouringLocations: parseInt(e.target.value) || 1 })}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </section>
               </div>

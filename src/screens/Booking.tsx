@@ -1,27 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, addDoc, getDocs, doc, getDoc } from 'firebase/firestore';
 import DOMPurify from 'dompurify';
 import { logAudit, AuditAction } from '../lib/audit';
-
 import { useCurrency } from '../hooks/useCurrency';
 import { BookingSchema } from '../lib/schemas';
 import { company, defaultVehicles } from '../lib/company';
 
-const touringStates = ['Lagos', 'Abuja', 'Port Harcourt', 'Kano', 'Enugu', 'Ibadan', 'Benin City', 'Owerri'];
-const internationalTourCountries = ['Benin Republic', 'Ghana', 'Togo'];
-const availableCarOptions = [
-  { id: 'toyota-corolla', name: 'Toyota Corolla', seats: 4, desc: 'Clean sedan for airport pickup, meetings and short local travel.' },
-  { id: 'toyota-highlander', name: 'Toyota Highlander', seats: 6, desc: 'Spacious crossover for family trips and executive group movement.' },
-  { id: 'bus-mini', name: 'Mini Bus', seats: 14, desc: 'Group car hire for multi-stop city movement and touring.' },
-];
-
 export default function Booking() {
   const { user } = useAuth();
-  const { formatPrice, currency } = useCurrency();
+  const { formatPrice, displayCurrency } = useCurrency();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -33,6 +24,7 @@ export default function Booking() {
   const [touringStatesList, setTouringStatesList] = useState<any[]>(company.touringStates || []);
   const [internationalTourList, setInternationalTourList] = useState<any[]>(company.internationalTours || []);
   const [carHireOptionsState, setCarHireOptionsState] = useState<any[]>(company.carHireOptions || []);
+  const [pricingRules, setPricingRules] = useState(company.pricingRules);
   const [formData, setFormData] = useState({
     pickup: '',
     destination: '',
@@ -44,6 +36,7 @@ export default function Booking() {
     touringState: 'Lagos',
     internationalCountry: 'Benin Republic',
     logisticsDetails: '',
+    packageWeightKg: 1,
     carHireVehicle: 'toyota-corolla',
     carConsent: false,
     isReturn: false,
@@ -51,6 +44,8 @@ export default function Booking() {
     recurringFrequency: 'None' as 'None' | 'Weekly' | 'Monthly',
     notes: ''
   });
+
+  const [searchParams] = useSearchParams();
 
   const normalizedVehicleSelection = (formData.vehicleClass || '').toLowerCase();
   const isPickupLogistics = normalizedVehicleSelection.includes('pickup') || normalizedVehicleSelection.includes('logistics');
@@ -63,29 +58,33 @@ export default function Booking() {
     setError(null);
     try {
       // Load Vehicles/Prices
-      const settingsPath = 'settings/vehicle_types';
-      let settingsSnap;
+      let availableVehicles = defaultVehicles;
       try {
-        settingsSnap = await getDoc(doc(db, 'settings', 'vehicle_types'));
-      } catch (err) {
-        handleFirestoreError(err, OperationType.GET, settingsPath);
-      }
-
-      if (settingsSnap && settingsSnap.exists()) {
-        const vData = settingsSnap.data().value;
-        setVehicles(vData);
-        if (vData.length > 0) {
-          setFormData(prev => ({ ...prev, vehicleClass: vData[0].title, serviceType: vData[0].title }));
+        const settingsSnap = await getDoc(doc(db, 'settings', 'vehicle_types'));
+        if (settingsSnap.exists() && Array.isArray(settingsSnap.data().value) && settingsSnap.data().value.length > 0) {
+          availableVehicles = settingsSnap.data().value;
         }
-      } else {
-        const defaults = [
-          ...defaultVehicles,
-        ];
-        setVehicles(defaults);
-        setFormData(prev => ({ ...prev, vehicleClass: 'Economy', serviceType: 'Economy' }));
+      } catch (err) {
+        console.warn('Unable to load vehicle types from settings', err);
       }
 
-      const touringPath = 'settings/touring_states';
+      setVehicles(availableVehicles);
+
+      const requestedService = searchParams.get('service') || searchParams.get('vehicle');
+      let selectedClass = availableVehicles[0]?.title || 'Economy';
+      if (requestedService) {
+        const target = requestedService.toLowerCase();
+        const match = availableVehicles.find((v: any) => 
+          v.title.toLowerCase().includes(target) || target.includes(v.title.toLowerCase())
+        );
+        if (match) {
+          selectedClass = match.title;
+        }
+      }
+
+      setFormData(prev => ({ ...prev, vehicleClass: selectedClass, serviceType: selectedClass }));
+
+      // Load Touring States
       try {
         const touringSnap = await getDoc(doc(db, 'settings', 'touring_states'));
         if (touringSnap.exists()) {
@@ -98,7 +97,7 @@ export default function Booking() {
         setTouringStatesList(company.touringStates);
       }
 
-      const internationalPath = 'settings/international_tours';
+      // Load International Tours
       try {
         const internationalSnap = await getDoc(doc(db, 'settings', 'international_tours'));
         if (internationalSnap.exists()) {
@@ -111,7 +110,7 @@ export default function Booking() {
         setInternationalTourList(company.internationalTours);
       }
 
-      const carHirePath = 'settings/car_hire_options';
+      // Load Car Hire Options
       try {
         const carHireSnap = await getDoc(doc(db, 'settings', 'car_hire_options'));
         if (carHireSnap.exists()) {
@@ -124,32 +123,44 @@ export default function Booking() {
         setCarHireOptionsState(company.carHireOptions);
       }
 
-      // Load Hubs
-      const hubsPath = 'hubs';
-      let hubsSnap;
+      // Load Pricing Rules
       try {
-        hubsSnap = await getDocs(collection(db, 'hubs'));
+        const pricingRulesSnap = await getDoc(doc(db, 'settings', 'pricing_rules'));
+        if (pricingRulesSnap.exists()) {
+          setPricingRules({ ...company.pricingRules, ...(pricingRulesSnap.data().value || {}) });
+        } else {
+          setPricingRules(company.pricingRules);
+        }
       } catch (err) {
-        handleFirestoreError(err, OperationType.LIST, hubsPath);
+        console.warn('Unable to load pricing rules settings', err);
+        setPricingRules(company.pricingRules);
       }
 
-      const hData = hubsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const resolvedHubs = hData.length > 0 ? hData : company.hubs.map((hub, index) => ({ id: `default-${index}`, ...hub }));
+      // Load Hubs
+      let resolvedHubs = company.hubs.map((hub, index) => ({ id: `default-${index}`, ...hub }));
+      try {
+        const hubsSnap = await getDocs(collection(db, 'hubs'));
+        const hData = hubsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (hData.length > 0) resolvedHubs = hData;
+      } catch (err) {
+        console.warn('Unable to load hubs', err);
+      }
+
       setHubs(resolvedHubs);
       if (resolvedHubs.length > 0) {
         setFormData(prev => ({ ...prev, pickup: resolvedHubs[0].name, destination: resolvedHubs[1]?.name || resolvedHubs[0].name }));
       }
 
       // Load Blocked Dates
-      const blockedSnap = await getDocs(collection(db, 'blocked_dates'));
-      setBlockedDates(blockedSnap.docs.map(d => d.data().date));
+      try {
+        const blockedSnap = await getDocs(collection(db, 'blocked_dates'));
+        setBlockedDates(blockedSnap.docs.map(d => d.data().date));
+      } catch (err) {
+        console.warn('Unable to load blocked dates', err);
+      }
     } catch (err: any) {
       console.error("Error loading booking data:", err);
-      if (err.message.includes('the client is offline')) {
-        setError("Network connection issue detected. Please check if Firebase is correctly provisioned or your internet connection.");
-      } else {
-        setError("Failed to load transport data. Please try again.");
-      }
+      setError("Failed to load transport data. Please try again.");
     } finally {
       setInitialLoading(false);
     }
@@ -158,6 +169,54 @@ export default function Booking() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const calculateBookingQuote = () => {
+    const selectedVehicle = vehicles.find(v => v.title === formData.vehicleClass);
+    const basePrice = Number(selectedVehicle?.price || 0);
+    const normalizedClass = (formData.vehicleClass || '').toLowerCase();
+    const isPickupLogisticsQuote = normalizedClass.includes('pickup') || normalizedClass.includes('logistics');
+    const isCarHireQuote = normalizedClass.includes('car hire');
+    const isInternationalTourQuote = normalizedClass.includes('international');
+    const isTouringQuote = normalizedClass.includes('touring') && !isInternationalTourQuote;
+    const routeFactor = Number(pricingRules.defaultRouteFactor || 1);
+    const returnMultiplier = formData.isReturn ? Number(pricingRules.returnMultiplier || 2) : 1;
+    const spots = Math.min(
+      Math.max(Number(formData.touringSpots) || 1, 1),
+      Number(pricingRules.maxTouringLocations || 20)
+    );
+    const touringStateFactor = touringStatesList.find((state) => state.name === formData.touringState)?.factor || 1;
+    const internationalTourFactor = internationalTourList.find((country) => country.name === formData.internationalCountry)?.factor || 1;
+
+    let variableFee = Number(pricingRules.standardServiceFee || 0);
+    let variableFeeLabel = 'Service fee';
+
+    if (isInternationalTourQuote) {
+      variableFee = Math.round(spots * Number(pricingRules.internationalTourPerLocation || 0) * internationalTourFactor);
+      variableFeeLabel = `${spots} international tour location${spots === 1 ? '' : 's'}`;
+    } else if (isTouringQuote) {
+      variableFee = Math.round(spots * Number(pricingRules.touringPerLocation || 0) * touringStateFactor);
+      variableFeeLabel = `${spots} touring location${spots === 1 ? '' : 's'}`;
+    } else if (isPickupLogisticsQuote) {
+      const weightKg = Math.max(Number(formData.packageWeightKg) || 1, 1);
+      variableFee = Number(pricingRules.pickupLogisticsFee || 0) + Math.round(weightKg * Number(pricingRules.pricePerKg || 0));
+      variableFeeLabel = `Pickup handling + ${weightKg}kg cargo`;
+    } else if (isCarHireQuote) {
+      variableFee = Number(pricingRules.carHireCautionFee || 0);
+      variableFeeLabel = 'Car hire caution fee';
+    } else if (normalizedClass.includes('cross-border transit')) {
+      variableFee = Number(pricingRules.crossBorderProcessingFee || 0);
+      variableFeeLabel = 'Cross-border processing';
+    }
+
+    return {
+      basePrice,
+      routeFactor,
+      returnMultiplier,
+      variableFee,
+      variableFeeLabel,
+      totalAmount: Math.round((basePrice * returnMultiplier * routeFactor) + variableFee),
+    };
+  };
 
   const handleBooking = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -174,29 +233,10 @@ export default function Booking() {
 
     setLoading(true);
     try {
-      const selectedVehicle = vehicles.find(v => v.title === formData.vehicleClass);
-      const basePrice = selectedVehicle?.price || 0;
-      const regionFactors: Record<string, number> = {
-        Lagos: 1,
-        Abuja: 1.1,
-        'Port Harcourt': 1.15,
-        Kano: 1.2,
-        Enugu: 1.15,
-        Ibadan: 1.05,
-        'Benin City': 1.12,
-        Owerri: 1.16,
-        'Benin Republic': 1.4,
-        Lome: 1.45,
-        Accra: 1.55,
-      };
-      const distanceFactor = regionFactors[formData.pickup] || 1.2;
-      const touringStateFactor = touringStatesList.find((state) => state.name === formData.touringState)?.factor || 1.15;
-      const internationalTourFactor = internationalTourList.find((country) => country.name === formData.internationalCountry)?.factor || 1.2;
       const normalizedClass = (formData.vehicleClass || '').toLowerCase();
       const isPickupLogistics = normalizedClass.includes('pickup') || normalizedClass.includes('logistics');
       const isCarHire = normalizedClass.includes('car hire');
-      const isInternationalTour = normalizedClass.includes('international');
-      const isTouringService = normalizedClass.includes('touring') && !isInternationalTour;
+      const quote = calculateBookingQuote();
 
       if (isPickupLogistics && !formData.logisticsDetails.trim()) {
         setBookingError('Please describe the package contents or logistics details so we can serve you safely.');
@@ -210,20 +250,7 @@ export default function Booking() {
         return;
       }
 
-      let extraFee = 4500;
-      if (isInternationalTour) {
-        extraFee = Math.round(formData.touringSpots * 25000 * internationalTourFactor);
-      } else if (isTouringService) {
-        extraFee = Math.round(formData.touringSpots * 15000 * touringStateFactor);
-      } else if (isPickupLogistics) {
-        extraFee = 22000;
-      } else if (isCarHire) {
-        extraFee = 25000;
-      } else if (normalizedClass.includes('cross-border transit')) {
-        extraFee = 30000;
-      }
-
-      const totalAmount = Math.round((formData.isReturn ? basePrice * 2 : basePrice) * distanceFactor + extraFee);
+      const totalAmount = quote.totalAmount;
 
       const bookingPayload = {
         pickup: formData.pickup.trim(),
@@ -239,6 +266,7 @@ export default function Booking() {
         touringState: formData.touringState,
         internationalCountry: formData.internationalCountry,
         logisticsDetails: formData.logisticsDetails,
+        packageWeightKg: formData.packageWeightKg,
         carHireVehicle: formData.carHireVehicle,
       };
 
@@ -251,22 +279,17 @@ export default function Booking() {
 
       if (!validationRes.ok) {
         const responseText = await validationRes.text();
-        const isApiMissing = validationRes.status === 404 || responseText.includes('NOT_FOUND') || responseText.includes('The page could not be found');
-        if (isApiMissing) {
-          console.warn('Booking validation endpoint unavailable, proceeding with client-side validation.', responseText);
-        } else {
-          let errorMessage = "Server-side validation failed.";
-          try {
-            const errorData = JSON.parse(responseText);
-            errorMessage = errorData?.message || errorData?.error || responseText || errorMessage;
-          } catch {
-            errorMessage = responseText || errorMessage;
-          }
-          throw new Error(errorMessage);
+        let errorMessage = "Server-side validation failed.";
+        try {
+          const errorData = JSON.parse(responseText);
+          errorMessage = errorData?.message || errorData?.error || responseText || errorMessage;
+        } catch {
+          errorMessage = responseText || errorMessage;
         }
+        throw new Error(errorMessage);
       }
 
-      // If validated or validation is unavailable, proceed with Firestore write
+      // If validated, proceed with Firestore write
       const rawData = {
         customerId: user.uid,
         customerName: DOMPurify.sanitize(user.displayName || user.email || 'Customer'),
@@ -277,7 +300,8 @@ export default function Booking() {
         date: formData.date,
         time: formData.time,
         totalAmount,
-        currency,
+        currency: 'NGN',
+        displayCurrency,
         isReturn: formData.isReturn,
         isRecurring: formData.isRecurring,
         recurringFrequency: formData.recurringFrequency,
@@ -288,7 +312,16 @@ export default function Booking() {
         touringState: formData.touringState,
         internationalCountry: formData.internationalCountry,
         logisticsDetails: DOMPurify.sanitize(formData.logisticsDetails),
+        packageWeightKg: formData.packageWeightKg,
         carHireVehicle: formData.carHireVehicle,
+        pricingSnapshot: {
+          basePrice: quote.basePrice,
+          routeFactor: quote.routeFactor,
+          returnMultiplier: quote.returnMultiplier,
+          variableFee: quote.variableFee,
+          variableFeeLabel: quote.variableFeeLabel,
+          pricingRules,
+        },
         createdAt: new Date().toISOString()
       };
 
@@ -342,6 +375,8 @@ export default function Booking() {
        </div>
     </div>
   );
+
+  const quote = calculateBookingQuote();
 
   return (
     <div className="p-8 md:p-12 max-w-7xl mx-auto flex flex-col gap-12 bg-background">
@@ -489,12 +524,12 @@ export default function Booking() {
               <label id="vehicle-type-label" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">Select Vehicle Type</label>
               <div className="grid grid-cols-1 gap-4">
                 {vehicles.map((v) => (
-                  <label key={v.title} className={`group cursor-pointer flex items-center justify-between p-6 rounded-2xl border-2 transition-all ${
+                  <label key={v.title} className={`group cursor-pointer flex flex-col gap-5 p-6 rounded-2xl border-2 transition-all sm:flex-row sm:items-center sm:justify-between ${
                     formData.vehicleClass === v.title 
                       ? 'border-primary bg-primary/5 shadow-md' 
                       : 'border-outline bg-white hover:border-primary/40'
                   }`}>
-                    <div className="flex items-center gap-6">
+                    <div className="flex min-w-0 items-center gap-6">
                        <input 
                          type="radio" 
                          name="vehicle" 
@@ -508,12 +543,12 @@ export default function Booking() {
                        }`}>
                          <span className="material-symbols-outlined text-2xl">{v.icon}</span>
                        </div>
-                       <div>
+                       <div className="min-w-0">
                          <p className="font-bold text-base">{v.title}</p>
-                         <p className="text-xs text-on-surface-variant mt-1 font-medium">{v.desc}</p>
+                         <p className="safe-text text-xs text-on-surface-variant mt-1 font-medium">{v.desc}</p>
                        </div>
                     </div>
-                    <div className="text-right">
+                    <div className="w-full text-left sm:w-auto sm:text-right">
                        <p className="text-2xl font-bold text-primary">{formatPrice(v.price)}</p>
                        <p className="text-[10px] font-bold text-on-surface-variant mt-1 uppercase">Starting at</p>
                     </div>
@@ -563,9 +598,15 @@ export default function Booking() {
                      id="touringSpots"
                      type="number"
                      min={1}
-                     max={20}
+                     max={pricingRules.maxTouringLocations}
                      value={formData.touringSpots}
-                     onChange={(e) => setFormData({ ...formData, touringSpots: Number(e.target.value) })}
+                     onChange={(e) => setFormData({
+                       ...formData,
+                       touringSpots: Math.min(
+                         Math.max(Number(e.target.value) || 1, 1),
+                         Number(pricingRules.maxTouringLocations || 20),
+                       ),
+                     })}
                      className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
                    />
                  </div>
@@ -581,6 +622,23 @@ export default function Booking() {
                <div>
                  <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Pickup & logistics details</p>
                  <p className="text-sm text-on-surface-variant">Describe pickup location, drop-off point, package contents, and any special handling notes.</p>
+               </div>
+               <div>
+                 <label htmlFor="packageWeightKg" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">
+                   Declared weight (kg)
+                 </label>
+                 <input
+                   id="packageWeightKg"
+                   type="number"
+                   min={1}
+                   max={10000}
+                   value={formData.packageWeightKg}
+                   onChange={(e) => setFormData({ ...formData, packageWeightKg: Math.max(Number(e.target.value) || 1, 1) })}
+                   className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
+                 />
+                 <p className="mt-2 text-xs text-on-surface-variant">
+                   Weight is calculated at {formatPrice(pricingRules.pricePerKg || 0)} per kg.
+                 </p>
                </div>
                <textarea
                  rows={4}
@@ -665,22 +723,26 @@ export default function Booking() {
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-primary mb-8">Booking summary</h3>
                 <div className="flex items-baseline gap-2 mb-8">
                   <span className="text-5xl font-bold text-on-surface">
-                    {formatPrice(vehicles.find(v => v.title === formData.vehicleClass)?.price || 0)}
+                    {formatPrice(quote.basePrice)}
                   </span>
                 </div>
                 <div className="space-y-4">
                   <div className="flex justify-between items-center text-sm font-medium border-b border-outline pb-4">
-                    <span className="text-on-surface-variant">Service Fee</span>
-                    <span>{formatPrice(45)}</span>
+                    <span className="text-on-surface-variant">{quote.variableFeeLabel}</span>
+                    <span>{formatPrice(quote.variableFee)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm font-medium border-b border-outline pb-4">
+                    <span className="text-on-surface-variant">Route multiplier</span>
+                    <span>{quote.routeFactor.toFixed(2)}x</span>
                   </div>
                   <div className="flex justify-between items-center text-sm font-medium border-b border-outline pb-4">
                     <span className="text-on-surface-variant">Insurance</span>
                     <span className="text-primary font-bold italic">Included</span>
                   </div>
-                  <div className="flex justify-between items-center text-lg font-bold pt-4 text-on-surface">
+                  <div className="flex flex-col gap-2 pt-4 text-lg font-bold text-on-surface sm:flex-row sm:items-center sm:justify-between">
                     <span>Total Amount</span>
-                    <span className="text-primary text-2xl">
-                      {formatPrice((formData.isReturn ? (vehicles.find(v => v.title === formData.vehicleClass)?.price || 0) * 2 : (vehicles.find(v => v.title === formData.vehicleClass)?.price || 0)) + 45)}
+                    <span className="safe-text text-primary text-2xl">
+                      {formatPrice(quote.totalAmount)}
                     </span>
                   </div>
                 </div>
@@ -693,7 +755,7 @@ export default function Booking() {
               </div>
               <div>
                  <p className="text-sm font-bold text-on-surface">Secure checkout</p>
-                 <p className="text-xs text-on-surface-variant mt-1">Your booking uses server-side payment verification and live pricing in {currency}.</p>
+                 <p className="text-xs text-on-surface-variant mt-1">Your booking uses server-side payment verification and live pricing in {displayCurrency}.</p>
               </div>
            </div>
         </div>

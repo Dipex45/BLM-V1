@@ -6,7 +6,6 @@ import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, onSnapshot, orderBy, updateDoc, doc, addDoc } from 'firebase/firestore';
 import { useCurrency } from '../hooks/useCurrency';
 import { logAudit, AuditAction } from '../lib/audit';
-import RouteMap from '../components/RouteMap';
 import { apiPost } from '../lib/api';
 import { company } from '../lib/company';
 
@@ -45,6 +44,7 @@ export default function Dashboard() {
     { label: 'Completed trips', val: bookings.filter(b => b.status === 'Completed').length.toString().padStart(2, '0'), icon: 'task_alt', color: 'bg-primary/10 text-primary' },
     { label: 'Reviews sent', val: bookings.filter(b => b.reviewId).length.toString().padStart(2, '0'), icon: 'reviews', color: 'bg-primary/10 text-primary' },
   ];
+  const latestBooking = bookings[0];
 
   const updateReviewDraft = (bookingId: string, patch: Partial<{ rating: number; comment: string }>) => {
     setReviewDrafts(prev => ({
@@ -126,23 +126,34 @@ export default function Dashboard() {
             <div className="flex justify-between items-center mb-8 relative z-10">
               <h3 className="font-bold text-sm flex items-center gap-2">
                 <span className="material-symbols-outlined text-primary text-sm md:text-base">explore</span> 
-                Active tracking
+                Recorded movement
               </h3>
-              {bookings.find(b => b.status === 'Dispatched') && (
-                <span className="px-3 py-1 rounded-full bg-green-500/10 text-green-600 text-[10px] font-bold uppercase tracking-widest border border-green-500/20 animate-pulse">Live Tracking</span>
+              {latestBooking && (
+                <span className="px-3 py-1 rounded-full bg-primary/10 text-primary text-[10px] font-bold uppercase tracking-widest border border-primary/20">{latestBooking.status}</span>
               )}
             </div>
             
             <div className="flex-1 min-h-[300px]">
-              {bookings.length > 0 ? (
-                <RouteMap 
-                  pickup={bookings[0].pickup} 
-                  destination={bookings[0].destination} 
-                  height="100%" 
-                />
+              {latestBooking ? (
+                <div className="grid h-full gap-4 rounded-lg border border-outline bg-surface-container/30 p-5 sm:grid-cols-3">
+                  {[
+                    { label: 'Pickup', value: latestBooking.pickup || 'Not recorded', icon: 'trip_origin' },
+                    { label: 'Current status', value: latestBooking.status || 'Awaiting update', icon: 'route' },
+                    { label: 'Destination', value: latestBooking.destination || 'Not recorded', icon: 'flag' },
+                  ].map((item, index) => (
+                    <div key={item.label} className="relative rounded-lg border border-outline bg-white p-5">
+                      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-primary">
+                        <span className="material-symbols-outlined">{item.icon}</span>
+                      </div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">{item.label}</p>
+                      <p className="safe-text mt-2 text-sm font-bold text-on-surface">{item.value}</p>
+                      {index < 2 && <div className="absolute right-[-18px] top-1/2 hidden h-px w-9 bg-outline sm:block" />}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="w-full h-full bg-surface-container/30 rounded-lg flex flex-col items-center justify-center p-8 text-center border border-outline border-dashed">
-                  <span className="material-symbols-outlined text-4xl text-outline mb-4">map</span>
+                  <span className="material-symbols-outlined text-4xl text-outline mb-4">route</span>
                   <p className="text-sm text-on-surface-variant font-bold">No active delivery found</p>
                 </div>
               )}
@@ -152,11 +163,11 @@ export default function Dashboard() {
               <div>
                 <p className="text-xs font-bold text-on-surface-variant mb-1">Last known pickup</p>
                 <p className="text-sm font-bold">
-                  {bookings.length > 0 ? bookings[0].pickup : 'No pickup yet'}
+                  {latestBooking ? latestBooking.pickup : 'No pickup yet'}
                 </p>
               </div>
               <button 
-                onClick={() => bookings.length > 0 && navigate(`/tracking?booking=${bookings[0].id}`)}
+                onClick={() => latestBooking && navigate(`/tracking?booking=${latestBooking.id}`)}
                 className="px-5 py-2 bg-on-surface text-white text-sm font-bold rounded-md hover:bg-black transition-colors"
               >
                 View tracking

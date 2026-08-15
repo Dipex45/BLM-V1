@@ -470,7 +470,7 @@ export default function About() {
               to="/services"
               className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-8 py-4 text-sm font-bold text-primary transition-all hover:bg-surface-container"
             >
-              Book now
+              View services
             </Link>
           </div>
         </div>

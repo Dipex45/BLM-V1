@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom';
 import { company } from '../lib/company';
 
+const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
 export default function Footer() {
   return (
     <footer className="z-50 mt-auto border-t border-outline-variant bg-white px-4 py-10 md:px-8">
@@ -35,7 +37,7 @@ export default function Footer() {
           <ul className="flex flex-col gap-2 text-sm text-on-surface-variant">
             {company.services.slice(0, 6).map((service) => (
               <li key={service.title}>
-                <Link to="/booking" className="hover:text-primary">{service.title}</Link>
+                <Link to={`/services/${slugify(service.title)}`} className="hover:text-primary transition-colors">{service.title}</Link>
               </li>
             ))}
           </ul>

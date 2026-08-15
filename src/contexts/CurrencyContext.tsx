@@ -1,18 +1,20 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 export type SupportedCurrency = 'NGN' | 'XOF' | 'GHS' | 'USD' | 'EUR' | 'GBP';
 
 export const CURRENCY_CONFIG: Record<SupportedCurrency, { name: string; symbol: string; rate: number }> = {
-  NGN: { name: 'Nigerian Naira', symbol: '₦', rate: 1 },
+  NGN: { name: 'Nigerian Naira', symbol: 'NGN', rate: 1 },
   XOF: { name: 'West African CFA Franc', symbol: 'CFA', rate: 0.41 },
-  GHS: { name: 'Ghanaian Cedi', symbol: 'GH₵', rate: 0.0097 },
+  GHS: { name: 'Ghanaian Cedi', symbol: 'GHS', rate: 0.0097 },
   USD: { name: 'US Dollar', symbol: '$', rate: 0.00067 },
-  EUR: { name: 'Euro', symbol: '€', rate: 0.00062 },
-  GBP: { name: 'British Pound', symbol: '£', rate: 0.00053 },
+  EUR: { name: 'Euro', symbol: 'EUR', rate: 0.00062 },
+  GBP: { name: 'British Pound', symbol: 'GBP', rate: 0.00053 },
 };
 
 interface CurrencyContextType {
-  baseCurrency: 'NGN'; // All prices stored in NGN
+  baseCurrency: 'NGN';
   displayCurrency: SupportedCurrency;
   setDisplayCurrency: (currency: SupportedCurrency) => void;
   detectedCurrency: SupportedCurrency;
@@ -27,30 +29,51 @@ const CurrencyContext = createContext<CurrencyContextType | undefined>(undefined
 export function CurrencyProvider({ children }: { children: React.ReactNode }) {
   const [displayCurrency, setDisplayCurrency] = useState<SupportedCurrency>('NGN');
   const [detectedCurrency, setDetectedCurrency] = useState<SupportedCurrency>('NGN');
+  const [rates, setRates] = useState<Record<SupportedCurrency, number>>({
+    NGN: 1,
+    XOF: 0.41,
+    GHS: 0.0097,
+    USD: 0.00067,
+    EUR: 0.00062,
+    GBP: 0.00053,
+  });
 
-  // Auto-detect currency on mount
   useEffect(() => {
     const detected = detectCurrency();
-    setDetectedCurrency(detected);
-    setDisplayCurrency(detected);
-    // Persist user's manual selection to localStorage
     const saved = localStorage.getItem('blm-currency');
-    if (saved && isSupportedCurrency(saved)) {
-      setDisplayCurrency(saved);
-    } else {
-      setDisplayCurrency(detected);
-    }
+    const nextCurrency = saved && isSupportedCurrency(saved) ? saved : detected;
+
+    setDetectedCurrency(detected);
+    setDisplayCurrency(nextCurrency);
+
+    const loadRates = async () => {
+      try {
+        const snap = await getDoc(doc(db, 'settings', 'currency_rates'));
+        if (snap.exists() && snap.data().value) {
+          setRates((prev) => ({ ...prev, ...snap.data().value }));
+        }
+      } catch (err) {
+        console.warn('Using default currency rates');
+      }
+    };
+
+    loadRates();
   }, []);
 
-  // Save currency preference to localStorage when it changes
   const handleSetDisplayCurrency = (currency: SupportedCurrency) => {
     setDisplayCurrency(currency);
     localStorage.setItem('blm-currency', currency);
   };
 
+  const convertPrice = (amountInBaseCurrency: number, toCurrency: SupportedCurrency = displayCurrency): number => {
+    const rate = rates[toCurrency] ?? CURRENCY_CONFIG[toCurrency]?.rate ?? 1;
+    return amountInBaseCurrency * rate;
+  };
+
   const formatPrice = (amountInBaseCurrency: number): string => {
     const converted = convertPrice(amountInBaseCurrency, displayCurrency);
     const decimals = displayCurrency === 'NGN' ? 0 : 2;
+
     try {
       return new Intl.NumberFormat(undefined, {
         style: 'currency',
@@ -59,14 +82,9 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
         minimumFractionDigits: decimals,
       }).format(converted);
     } catch (error) {
-      const symbol = CURRENCY_CONFIG[displayCurrency]?.symbol || '₦';
-      return `${symbol}${converted.toFixed(decimals)}`;
+      const symbol = CURRENCY_CONFIG[displayCurrency]?.symbol || 'NGN';
+      return `${symbol} ${converted.toFixed(decimals)}`;
     }
-  };
-
-  const convertPrice = (amountInBaseCurrency: number, toCurrency: SupportedCurrency = displayCurrency): number => {
-    const rate = CURRENCY_CONFIG[toCurrency]?.rate || 1;
-    return amountInBaseCurrency * rate;
   };
 
   return (
@@ -78,8 +96,8 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
         detectedCurrency,
         formatPrice,
         convertPrice,
-        symbol: CURRENCY_CONFIG[displayCurrency]?.symbol || '₦',
-        rate: CURRENCY_CONFIG[displayCurrency]?.rate || 1,
+        symbol: CURRENCY_CONFIG[displayCurrency]?.symbol || 'NGN',
+        rate: rates[displayCurrency] ?? CURRENCY_CONFIG[displayCurrency]?.rate ?? 1,
       }}
     >
       {children}
@@ -95,13 +113,11 @@ export function useCurrencyContext() {
   return context;
 }
 
-// Keep the old hook for backward compatibility
 export function useCurrency() {
   return useCurrencyContext();
 }
 
 function detectCurrency(): SupportedCurrency {
-  // Try timezone detection first
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const tzMap: Record<string, SupportedCurrency> = {
@@ -118,14 +134,11 @@ function detectCurrency(): SupportedCurrency {
       'Europe/Brussels': 'EUR',
       'Europe/Vienna': 'EUR',
     };
-    if (tz && isSupportedCurrency(tzMap[tz])) {
-      return tzMap[tz];
-    }
+    if (tz && isSupportedCurrency(tzMap[tz])) return tzMap[tz];
   } catch (error) {
-    // Continue to locale detection
+    // Use locale detection below.
   }
 
-  // Try locale detection
   try {
     const locale = (navigator.language || '').toUpperCase();
     if (locale.includes('NG') || locale.includes('NGA')) return 'NGN';
@@ -133,16 +146,16 @@ function detectCurrency(): SupportedCurrency {
     if (locale.includes('GH') || locale.includes('GHA')) return 'GHS';
     if (locale.includes('US') || locale.includes('USA')) return 'USD';
     if (locale.includes('GB') || locale.includes('GBR')) return 'GBP';
-    if (['FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'AT', 'PT', 'GR', 'FI', 'SE', 'DK', 'LU', 'IE', 'CY', 'MT', 'SK', 'SI'].some(code => locale.includes(code))) {
+    if (['FR', 'DE', 'ES', 'IT', 'NL', 'BE', 'AT', 'PT', 'GR', 'FI', 'SE', 'DK', 'LU', 'IE', 'CY', 'MT', 'SK', 'SI'].some((code) => locale.includes(code))) {
       return 'EUR';
     }
   } catch (error) {
-    // Use default
+    // Use default currency.
   }
 
-  return 'NGN'; // Default to Nigerian Naira
+  return 'NGN';
 }
 
-function isSupportedCurrency(value: any): value is SupportedCurrency {
-  return ['NGN', 'XOF', 'GHS', 'USD', 'EUR', 'GBP'].includes(value);
+function isSupportedCurrency(value: unknown): value is SupportedCurrency {
+  return typeof value === 'string' && ['NGN', 'XOF', 'GHS', 'USD', 'EUR', 'GBP'].includes(value);
 }

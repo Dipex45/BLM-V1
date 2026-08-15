@@ -1,12 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
-import { useCurrency } from '../hooks/useCurrency';
 import { useCurrencyContext, CURRENCY_CONFIG } from '../contexts/CurrencyContext';
-import CurrencySelector from '../components/CurrencySelector';
 import { loadStripe } from '@stripe/stripe-js';
 import {
   Elements,
@@ -111,8 +109,7 @@ function StripeForm({ bookingId, amountInBaseCurrency, selectedCurrency, onSucce
 export default function Checkout() {
   const { bookingId } = useParams();
   const { user } = useAuth();
-  const { formatPrice } = useCurrency();
-  const { displayCurrency, convertPrice, symbol } = useCurrencyContext();
+  const { displayCurrency, convertPrice } = useCurrencyContext();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [booking, setBooking] = useState<any>(null);
@@ -157,12 +154,6 @@ export default function Checkout() {
     if (!user || !bookingId) return;
     
     try {
-      // Update booking with checkout currency
-      await updateDoc(doc(db, 'bookings', bookingId), {
-        checkoutCurrency: selectedCurrency,
-        paymentStatus: 'Paid',
-        updatedAt: new Date().toISOString()
-      });
       setSuccess(true);
     } catch (error) {
       console.error("Error finalizing booking status:", error);
@@ -174,7 +165,18 @@ export default function Checkout() {
     setPaying(true);
 
     try {
-      const paystackKey = (import.meta as any).env.VITE_PAYSTACK_PUBLIC_KEY || 'pk_test_cd117e6464dee4c75fecbe6adc667ef8f94aab3b';
+      const paystackKey = (import.meta as any).env.VITE_PAYSTACK_PUBLIC_KEY;
+      if (!paystackKey) {
+        alert("Paystack public key is missing. Add VITE_PAYSTACK_PUBLIC_KEY before accepting Paystack payments.");
+        setPaying(false);
+        return;
+      }
+
+      if (!['NGN', 'GHS'].includes(selectedCurrency)) {
+        alert("Paystack is configured here for NGN and GHS only. Please use Stripe for this currency.");
+        setPaying(false);
+        return;
+      }
 
       // 1. Initialize on server to get transaction details with currency
       const { data } = await apiPost('/api/payment/paystack/initialize', {
@@ -185,14 +187,15 @@ export default function Checkout() {
       });
 
       const { data: { reference } } = data;
-      const convertedAmount = Math.round(convertPrice(booking.totalAmount, selectedCurrency as any) * 100);
+      const paymentAmountMinor = Number(data?.data?.amount || Math.round(convertPrice(booking.totalAmount, selectedCurrency as any) * 100));
 
       // 2. Use Paystack Popup
       // @ts-ignore
       const handler = PaystackPop.setup({
         key: paystackKey,
         email: user.email,
-        amount: convertedAmount,
+        amount: paymentAmountMinor,
+        currency: selectedCurrency,
         ref: reference,
         onClose: () => {
           setPaying(false);
@@ -254,7 +257,7 @@ export default function Checkout() {
                   </div>
                   <div className="flex justify-between items-center">
                      <span className="text-on-surface-variant text-sm font-bold">Base price (NGN)</span>
-                     <span className="font-bold text-sm">₦{booking?.totalAmount?.toLocaleString()}</span>
+                     <span className="font-bold text-sm">NGN {Number(booking?.totalAmount || 0).toLocaleString()}</span>
                   </div>
                   <div className="pt-10 border-t border-outline flex justify-between items-baseline">
                      <div>

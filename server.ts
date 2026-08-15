@@ -6,7 +6,6 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
 import { z } from "zod";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import Stripe from "stripe";
 import axios from "axios";
 import { applicationDefault, cert, getApps, initializeApp } from "firebase-admin/app";
@@ -51,7 +50,6 @@ declare global {
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === "production";
 const DEFAULT_EMAIL_FROM = process.env.NOTIFICATION_EMAIL_FROM || "BLM Motors <bookings@blmmotors.ng>";
-const AI_DAILY_PROMPT_LIMIT = Number(process.env.AI_DAILY_PROMPT_LIMIT || 50);
 
 const BookingStatusSchema = z.enum([
   "Quoted",
@@ -70,12 +68,23 @@ const BookingValidationSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   time: z.string().regex(/^\d{2}:\d{2}$/),
   vehicleClass: z.string().trim().min(1).max(80),
-  totalAmount: z.number().positive().max(1_000_000),
+  totalAmount: z.number().positive().max(50_000_000),
 });
+
+const SupportedCurrencySchema = z.enum(["NGN", "XOF", "GHS", "USD", "EUR", "GBP"]);
+const CURRENCY_RATES_FROM_NGN: Record<z.infer<typeof SupportedCurrencySchema>, number> = {
+  NGN: 1,
+  XOF: 0.41,
+  GHS: 0.0097,
+  USD: 0.00067,
+  EUR: 0.00062,
+  GBP: 0.00053,
+};
 
 const StripeIntentSchema = z.object({
   bookingId: z.string().trim().min(3).max(160),
   email: z.string().email().optional(),
+  currency: SupportedCurrencySchema.optional(),
 });
 
 const StripeReconcileSchema = z.object({
@@ -91,6 +100,7 @@ const RefundSchema = z.object({
 const PaystackInitializeSchema = z.object({
   bookingId: z.string().trim().min(3).max(160),
   email: z.string().email().optional(),
+  currency: SupportedCurrencySchema.optional(),
 });
 
 const StatusUpdateSchema = z.object({
@@ -127,12 +137,6 @@ const DriverLocationSchema = z.object({
   longitude: z.number().min(-180).max(180),
   heading: z.number().min(0).max(360).optional(),
   speedKph: z.number().min(0).max(240).optional(),
-});
-
-const AIRequestSchema = z.object({
-  prompt: z.string().trim().min(1).max(1200),
-  context: z.string().trim().max(1000).optional(),
-  conversationId: z.string().trim().min(3).max(160).optional(),
 });
 
 class HttpError extends Error {
@@ -229,14 +233,6 @@ function getStripe() {
     stripeClient = new Stripe(key);
   }
   return stripeClient;
-}
-
-let genAI: GoogleGenerativeAI | null | undefined;
-function getGemini() {
-  if (genAI === undefined) {
-    genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
-  }
-  return genAI;
 }
 
 function initializeFirebaseAdmin() {
@@ -358,15 +354,6 @@ function authenticate(req: Request, _res: Response, next: NextFunction) {
       next();
     })
     .catch(next);
-}
-
-function optionalAuthenticate(req: Request, _res: Response, next: NextFunction) {
-  buildAuthenticatedUser(req, false)
-    .then((auth) => {
-      req.auth = auth;
-      next();
-    })
-    .catch(() => next());
 }
 
 function requireRoles(...roles: Role[]) {
@@ -625,6 +612,11 @@ function toMinorUnits(amount: number, currency: string) {
   return zeroDecimal.has(currency.toLowerCase()) ? Math.round(amount) : Math.round(amount * 100);
 }
 
+function convertFromNgn(amountInNgn: number, currency: z.infer<typeof SupportedCurrencySchema>) {
+  const rate = CURRENCY_RATES_FROM_NGN[currency] || 1;
+  return Number((amountInNgn * rate).toFixed(currency === "NGN" || currency === "XOF" ? 0 : 2));
+}
+
 async function loadBooking(bookingId: string, auth: AuthenticatedUser, adminAccessRoles: Role[] = adminRoles) {
   const ref = getAdminDb().collection("bookings").doc(bookingId);
   const snap = await ref.get();
@@ -830,39 +822,6 @@ async function publishRealtime(event: Omit<RealtimeEvent, "id" | "createdAt">) {
   }
 }
 
-const aiQuota = new Map<string, { day: string; count: number }>();
-const aiCache = new Map<string, { expiresAt: number; text: string; confidence: number; escalate: boolean }>();
-
-async function consumeAiQuota(key: string) {
-  const day = new Date().toISOString().slice(0, 10);
-  if (operationsQueue?.connection) {
-    const redisKey = `ai-quota:${day}:${key}`;
-    const count = await operationsQueue.connection.incr(redisKey);
-    if (count === 1) await operationsQueue.connection.expire(redisKey, 36 * 60 * 60);
-    return count <= AI_DAILY_PROMPT_LIMIT;
-  }
-
-  const current = aiQuota.get(key);
-  if (!current || current.day !== day) {
-    aiQuota.set(key, { day, count: 1 });
-    return true;
-  }
-  current.count += 1;
-  return current.count <= AI_DAILY_PROMPT_LIMIT;
-}
-
-function sanitizePrompt(prompt: string) {
-  return prompt.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function looksLikePromptInjection(prompt: string) {
-  return /(ignore|override|bypass).{0,30}(previous|system|developer|instruction|policy)/i.test(prompt);
-}
-
-function shouldEscalate(prompt: string) {
-  return /(human|agent|refund|dispute|complaint|emergency|urgent|police|injur|stolen|fraud|chargeback)/i.test(prompt);
-}
-
 async function startServer() {
   const app = express();
   operationsQueue = new OperationsQueue();
@@ -964,15 +923,6 @@ async function startServer() {
     legacyHeaders: false,
     message: { error: "Too many payment attempts, please try again later" },
   });
-  const aiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 25,
-    keyGenerator: (req) => req.auth?.uid || getClientIp(req),
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "AI support rate limit exceeded" },
-  });
-
   app.use("/api", generalLimiter);
 
   app.get("/api/health", asyncHandler(async (_req, res) => {
@@ -1065,7 +1015,7 @@ async function startServer() {
     authenticate,
     requireCsrf,
     asyncHandler(async (req, res) => {
-      const { bookingId } = parseBody(StripeIntentSchema, req.body);
+      const { bookingId, currency: requestedCurrency } = parseBody(StripeIntentSchema, req.body);
       const { booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
       if (!["Quoted", "Booked"].includes(String(booking.status))) {
         throw new HttpError(409, "Booking is not payable in its current state");
@@ -1079,17 +1029,19 @@ async function startServer() {
         return res.json({ clientSecret: existing.data.clientSecret, paymentId: existing.id, reused: true });
       }
 
-      const currency = String(booking.currency || "NGN").toLowerCase();
-      const amount = Number(booking.totalAmount || 0);
-      if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Booking amount is invalid");
+      const baseAmount = Number(booking.totalAmount || 0);
+      if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Booking amount is invalid");
+      const currency = String(requestedCurrency || booking.checkoutCurrency || booking.displayCurrency || booking.currency || "NGN").toUpperCase() as z.infer<typeof SupportedCurrencySchema>;
+      SupportedCurrencySchema.parse(currency);
+      const amount = convertFromNgn(baseAmount, currency);
 
       const paymentRef = getAdminDb().collection("payments").doc();
       const idempotencyKey =
-        (req.get("x-idempotency-key") || `stripe-intent:${req.auth!.uid}:${bookingId}:${toMinorUnits(amount, currency)}`).slice(0, 255);
+        (req.get("x-idempotency-key") || `stripe-intent:${req.auth!.uid}:${bookingId}:${currency}:${toMinorUnits(amount, currency)}`).slice(0, 255);
       const paymentIntent = await getStripe().paymentIntents.create(
         {
           amount: toMinorUnits(amount, currency),
-          currency,
+          currency: currency.toLowerCase(),
           metadata: {
             paymentId: paymentRef.id,
             bookingId,
@@ -1106,9 +1058,11 @@ async function startServer() {
         providerPaymentId: paymentIntent.id,
         bookingId,
         customerId: req.auth!.uid,
+        baseAmount,
+        baseCurrency: "NGN",
         amount,
         amountMinor: toMinorUnits(amount, currency),
-        currency: currency.toUpperCase(),
+        currency,
         status: paymentIntent.status,
         providerStatus: paymentIntent.status,
         clientSecret: paymentIntent.client_secret,
@@ -1242,7 +1196,7 @@ async function startServer() {
     authenticate,
     requireCsrf,
     asyncHandler(async (req, res) => {
-      const { bookingId } = parseBody(PaystackInitializeSchema, req.body);
+      const { bookingId, currency: requestedCurrency } = parseBody(PaystackInitializeSchema, req.body);
       const secretKey = process.env.PAYSTACK_SECRET_KEY;
       if (!secretKey) throw new HttpError(503, "PAYSTACK_SECRET_KEY is missing");
 
@@ -1256,9 +1210,14 @@ async function startServer() {
         throw new HttpError(409, "Booking has already been paid");
       }
 
-      const currency = String(booking.currency || "NGN").toUpperCase();
-      const amount = Number(booking.totalAmount || 0);
-      if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Booking amount is invalid");
+      const baseAmount = Number(booking.totalAmount || 0);
+      if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Booking amount is invalid");
+      const currency = String(requestedCurrency || booking.checkoutCurrency || booking.displayCurrency || booking.currency || "NGN").toUpperCase() as z.infer<typeof SupportedCurrencySchema>;
+      SupportedCurrencySchema.parse(currency);
+      if (!["NGN", "GHS"].includes(currency)) {
+        throw new HttpError(400, "Paystack checkout is enabled for NGN and GHS only. Use Stripe for this currency.");
+      }
+      const amount = convertFromNgn(baseAmount, currency);
 
       const paymentRef = existing?.ref || getAdminDb().collection("payments").doc();
       const reference = existing?.data.providerReference || `BLM-${bookingId}-${crypto.randomBytes(5).toString("hex")}`;
@@ -1287,6 +1246,8 @@ async function startServer() {
           providerReference: reference,
           bookingId,
           customerId: req.auth!.uid,
+          baseAmount,
+          baseCurrency: "NGN",
           amount,
           amountMinor: toMinorUnits(amount, currency),
           currency,
@@ -1632,100 +1593,6 @@ async function startServer() {
       realtimeClients.delete(clientId);
     });
   }));
-
-  app.post(
-    "/api/ai/generate",
-    optionalAuthenticate,
-    aiLimiter,
-    requireCsrf,
-    asyncHandler(async (req, res) => {
-      const ai = getGemini();
-      if (!ai) throw new HttpError(503, "AI service is not configured on server");
-
-      const { prompt, context, conversationId } = parseBody(AIRequestSchema, req.body);
-      const sanitizedPrompt = sanitizePrompt(prompt);
-      const quotaKey = req.auth?.uid || getClientIp(req);
-      const hasQuota = await consumeAiQuota(quotaKey);
-      if (!hasQuota) throw new HttpError(429, "AI support daily quota exceeded");
-
-      if (looksLikePromptInjection(sanitizedPrompt)) {
-        const fallback = "I cannot follow requests to override safety or support instructions. I can still help with bookings, tracking, payments, touring, car hire, or connect this to a human support ticket.";
-        return res.json({ text: fallback, confidence: 0.2, escalate: true });
-      }
-
-      const cacheKey = crypto.createHash("sha256").update(`${context || ""}:${sanitizedPrompt}`).digest("hex");
-      const cached = aiCache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) {
-        return res.json({ ...cached, cached: true });
-      }
-
-      const escalate = shouldEscalate(sanitizedPrompt);
-      const model = ai.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-1.5-flash" });
-      const result = await model.generateContent([
-        `You are the BLM Motors Nigeria support assistant.
-Answer only about bookings, payments, refunds, tracking, dispatch, driver arrival, touring, car hire, pickup, interstate movement, cross-border transport, or account support.
-Do not make policy promises, legal claims, or payment confirmations without server records.
-Escalate uncertain, emergency, refund, dispute, fraud, or complaint cases to a human.
-Current user: ${req.auth?.email || "guest"}.
-Context: ${context || "General logistics support"}.
-User request: ${sanitizedPrompt}`,
-      ]);
-
-      const response = await result.response;
-      const text = response.text() || "I could not generate a reliable answer. I can create a support ticket for a human agent.";
-      const confidence = escalate ? 0.55 : 0.78;
-      const payload = { text, confidence, escalate };
-      aiCache.set(cacheKey, { ...payload, expiresAt: Date.now() + 10 * 60 * 1000 });
-
-      const db = getAdminDb();
-      const threadId = conversationId || crypto.randomUUID();
-      await db.collection("support_conversations").doc(threadId).set(
-        {
-          userId: req.auth?.uid || null,
-          email: req.auth?.email || null,
-          updatedAt: FieldValue.serverTimestamp(),
-          createdAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-      await db.collection("support_conversations").doc(threadId).collection("messages").add({
-        userPrompt: sanitizedPrompt,
-        assistantText: text,
-        confidence,
-        escalate,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-
-      if (escalate) {
-        await db.collection("support_tickets").add({
-          conversationId: threadId,
-          customerId: req.auth?.uid || null,
-          customerEmail: req.auth?.email || null,
-          state: "open",
-          priority: /emergency|urgent|fraud|stolen|injur/i.test(sanitizedPrompt) ? "high" : "normal",
-          escalation: {
-            source: "ai_support",
-            reason: "low_confidence_or_sensitive_intent",
-            escalatedAt: FieldValue.serverTimestamp(),
-          },
-          lastMessage: sanitizedPrompt,
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-      }
-
-      await getAdminDb().collection("ai_usage").add({
-        userId: req.auth?.uid || null,
-        promptLength: sanitizedPrompt.length,
-        confidence,
-        escalate,
-        cached: false,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-
-      res.json(payload);
-    }),
-  );
 
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const error = err instanceof HttpError ? err : new HttpError(500, "Internal server error");

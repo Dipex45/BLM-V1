@@ -45,7 +45,7 @@ export default function Navbar() {
         </div>
 
         <div className="hidden items-center gap-8 text-sm font-semibold text-on-surface-variant lg:flex">
-          <Link to="/" className="transition-colors hover:text-primary">Services</Link>
+          <Link to="/services" className="transition-colors hover:text-primary">Services</Link>
           <Link to="/tracking" className="transition-colors hover:text-primary">Track booking</Link>
           <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="transition-colors hover:text-primary">
             WhatsApp
@@ -56,7 +56,7 @@ export default function Navbar() {
           <CurrencySelector compact={true} />
 
           <Link
-            to="/booking"
+            to="/services"
             className="hidden items-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary-container sm:flex"
           >
             <span className="material-symbols-outlined text-base">event_available</span>
@@ -115,7 +115,7 @@ export default function Navbar() {
                     <Sidebar isMobile />
                   ) : (
                     <div className="flex flex-col gap-2 p-6 text-sm font-bold">
-                      <Link to="/" className="rounded-md p-4 hover:bg-surface-container">Services</Link>
+                      <Link to="/services" className="rounded-md p-4 hover:bg-surface-container">Services</Link>
                       <Link to="/tracking" className="rounded-md p-4 hover:bg-surface-container">Track booking</Link>
                       <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="rounded-md p-4 hover:bg-surface-container">
                         WhatsApp
