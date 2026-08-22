@@ -433,7 +433,7 @@ export default function ServiceOrder() {
           extraFee: quote.extraFee,
           feeLabel: quote.feeLabel,
           total: quote.total,
-          distanceKm: isDistanceTrips ? formData.distanceKm : undefined,
+          ...(isDistanceTrips ? { distanceKm: formData.distanceKm } : {}),
         },
         createdAt: new Date().toISOString(),
       };

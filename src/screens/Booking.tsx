@@ -330,7 +330,7 @@ export default function Booking() {
           returnMultiplier: quote.returnMultiplier,
           variableFee: quote.variableFee,
           variableFeeLabel: quote.variableFeeLabel,
-          distanceKm: isDistanceTrip ? formData.distanceKm : undefined,
+          ...(isDistanceTrip ? { distanceKm: formData.distanceKm } : {}),
           pricingRules,
         },
         createdAt: new Date().toISOString()
