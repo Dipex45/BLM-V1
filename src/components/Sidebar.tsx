@@ -14,13 +14,13 @@ export default function Sidebar({ isMobile = false }: SidebarProps) {
   const customerItems = [
     { path: '/dashboard', label: 'Dashboard', icon: 'grid_view' },
     { path: '/tracking', label: 'Track delivery', icon: 'location_on' },
-    { path: '/booking', label: 'Book transport', icon: 'calendar_month' },
+    { path: '/services?compact=1', label: 'Book transport', icon: 'calendar_month' },
     { path: '/reports', label: 'History', icon: 'history' },
   ];
 
   const adminItems = [
     { path: '/admin', label: 'Admin panel', icon: 'admin_panel_settings' },
-    { path: '/booking', label: 'Manual booking', icon: 'add_circle' },
+    { path: '/services?compact=1', label: 'Manual booking', icon: 'add_circle' },
     { path: '/reports', label: 'Reports', icon: 'analytics' },
   ];
 
@@ -38,7 +38,7 @@ export default function Sidebar({ isMobile = false }: SidebarProps) {
         </p>
         <div className="space-y-1">
           {menuItems.map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive = location.pathname === item.path.split('?')[0];
             return (
               <Link
                 key={item.path}
