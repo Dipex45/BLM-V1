@@ -49,7 +49,7 @@ export default function Dashboard() {
   const updateReviewDraft = (bookingId: string, patch: Partial<{ rating: number; comment: string }>) => {
     setReviewDrafts(prev => ({
       ...prev,
-      [bookingId]: { rating: 0, comment: '', ...(prev[bookingId] || {}), ...patch }
+      [bookingId]: { ...(prev[bookingId] || {}), rating: 0, comment: '', ...patch }
     }));
   };
 
@@ -95,7 +95,7 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex gap-4">
-          <Link to="/booking" className="flex-1 md:flex-none text-center px-8 py-4 bg-primary text-white rounded-md font-bold text-sm hover:bg-primary-container transition-colors">
+          <Link to="/services?compact=1" className="flex-1 md:flex-none text-center px-8 py-4 bg-primary text-white rounded-md font-bold text-sm hover:bg-primary-container transition-colors">
             Book transport
           </Link>
         </div>
@@ -222,7 +222,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between mb-8">
            <h2 className="text-2xl font-bold text-on-surface">Bookings</h2>
            <button 
-             onClick={() => navigate('/booking')} 
+             onClick={() => navigate('/services?compact=1')}
              className="px-6 py-3 bg-primary text-white text-sm font-bold rounded-md hover:bg-primary-container transition-colors"
            >
              New booking
@@ -239,7 +239,7 @@ export default function Dashboard() {
                 <span className="material-symbols-outlined text-outline text-4xl">local_shipping</span>
              </div>
              <p className="text-on-surface-variant font-semibold text-sm mb-8">No bookings yet.</p>
-             <button onClick={() => navigate('/booking')} className="px-8 py-3 border-2 border-primary text-primary font-bold text-sm rounded-md hover:bg-primary hover:text-white transition-colors">
+             <button onClick={() => navigate('/services?compact=1')} className="px-8 py-3 border-2 border-primary text-primary font-bold text-sm rounded-md hover:bg-primary hover:text-white transition-colors">
                 Book your first trip
              </button>
           </div>

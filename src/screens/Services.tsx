@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { company, defaultVehicles } from '../lib/company';
 import { useCurrency } from '../hooks/useCurrency';
 import { doc, getDoc } from 'firebase/firestore';
@@ -28,6 +28,8 @@ const fadeUp = {
 
 export default function Services() {
   const { formatPrice } = useCurrency();
+  const [searchParams] = useSearchParams();
+  const isCompactView = searchParams.get('compact') === '1';
   const [vehicles, setVehicles] = useState<any[]>(defaultVehicles);
 
   useEffect(() => {
@@ -58,7 +60,7 @@ export default function Services() {
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden bg-background">
       {/* Hero Section */}
-      <section className="relative overflow-hidden bg-secondary px-4 pb-20 pt-12 text-white sm:px-6 md:px-8 lg:px-12">
+      {!isCompactView && <section className="relative overflow-hidden bg-secondary px-4 pb-20 pt-12 text-white sm:px-6 md:px-8 lg:px-12">
         <img
           src={company.servicesImage}
           alt="BLM Motors transport service vehicle"
@@ -105,7 +107,7 @@ export default function Services() {
             </a>
           </motion.div>
         </div>
-      </section>
+      </section>}
 
       {/* Services Grid */}
       <section className="bg-white px-4 py-20 sm:px-6 md:px-8 lg:px-12">
