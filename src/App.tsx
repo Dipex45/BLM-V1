@@ -10,7 +10,6 @@ import AdminDashboard from './screens/AdminDashboard';
 import Login from './screens/Login';
 import Register from './screens/Register';
 import Tracking from './screens/Tracking';
-import Booking from './screens/Booking';
 import Checkout from './screens/Checkout';
 import About from './screens/About';
 import Services from './screens/Services';
@@ -67,7 +66,7 @@ export default function App() {
                   <Route path="/dashboard" element={user ? (!isVerified ? <Navigate to="/verify-email" /> : (isUserAdmin ? <Navigate to="/admin" /> : <Dashboard />)) : <Navigate to="/login" />} />
                   <Route path="/admin" element={user && isUserAdmin ? (isVerified ? <AdminDashboard /> : <Navigate to="/verify-email" />) : <Navigate to="/login" />} />
                   <Route path="/tracking" element={<Tracking />} />
-                  <Route path="/booking" element={<Booking />} />
+                  <Route path="/booking" element={<Navigate to="/services?compact=1" replace />} />
                   <Route path="/checkout/:bookingId" element={<Checkout />} />
                   <Route path="/legal" element={<Legal />} />
                   <Route path="/reports" element={user ? <Reports /> : <Navigate to="/login" />} />
