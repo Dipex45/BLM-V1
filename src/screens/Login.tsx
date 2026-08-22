@@ -1,14 +1,13 @@
 import { FormEvent, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { GoogleAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { motion } from 'framer-motion';
 import { auth, db } from '../lib/firebase';
 import { AuditAction, logAudit } from '../lib/audit';
 import { company } from '../lib/company';
 
 export default function Login() {
-  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -48,15 +47,6 @@ export default function Login() {
       if (!userCredential.user.emailVerified) {
         setMessage('Please verify your email address. We sent a verification link to your inbox.');
         return;
-      }
-
-      // Update name in user document if provided
-      if (fullName.trim()) {
-        const userRef = doc(db, 'users', userCredential.user.uid);
-        const userDoc = await getDoc(userRef);
-        if (userDoc.exists()) {
-          await setDoc(userRef, { fullName: fullName.trim() }, { merge: true });
-        }
       }
 
       const adminDoc = await getDoc(doc(db, 'admins', userCredential.user.uid));
@@ -220,20 +210,6 @@ export default function Login() {
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
-            <div>
-              <label className="mb-2 block text-sm font-bold text-on-surface-variant">Full name (for verification)</label>
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-lg text-primary">badge</span>
-                <input
-                  type="text"
-                  className="w-full rounded-md border border-outline bg-surface-container py-3.5 pl-12 pr-4 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
-                  placeholder="Your full name"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                />
-              </div>
-            </div>
-
             <div>
               <label className="mb-2 block text-sm font-bold text-on-surface-variant">Email address</label>
               <div className="relative">

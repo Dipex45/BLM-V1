@@ -22,6 +22,16 @@ export default defineConfig(({mode}) => {
       outDir: 'dist',
       sourcemap: mode === 'development',
       minify: mode === 'production' ? 'terser' : false,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+            'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
+            'vendor-motion': ['framer-motion'],
+            'vendor-stripe': ['@stripe/stripe-js', '@stripe/react-stripe-js'],
+          },
+        },
+      },
     },
     server: {
       port: 5173,

@@ -90,7 +90,7 @@ export default function Services() {
             className="mt-10 flex flex-wrap gap-4"
           >
             <Link
-              to="/services/24-7-transport-services"
+              to="/services/long-and-short-distance-trips"
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-8 py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-colors hover:bg-primary-container"
             >
               <span className="material-symbols-outlined text-lg">event_available</span>
@@ -139,22 +139,22 @@ export default function Services() {
                   to={`/services/${slugify(service.title)}`}
                   className="group relative flex h-full flex-col justify-between overflow-hidden rounded-lg border border-outline bg-surface-container-lowest p-7 shadow-sm transition-colors duration-200 hover:border-primary"
                 >
-                  <div>
-                    <div className="flex items-center justify-between mb-6">
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-4 mb-6">
                       <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors duration-200 group-hover:bg-primary group-hover:text-white">
                         <span className="material-symbols-outlined text-2xl">{service.icon}</span>
                       </div>
-                      <span className="rounded-full bg-primary/10 px-3.5 py-1 text-xs font-bold text-primary">
+                      <span className="max-w-full rounded-full bg-primary/10 px-3.5 py-1 text-center text-xs font-bold leading-relaxed text-primary">
                         From {getServiceStartingPrice(service.title, (service as any).vehicleClass)}
                       </span>
                     </div>
-                    <h3 className="text-xl font-bold text-on-surface transition-colors group-hover:text-primary">
+                    <h3 className="break-words text-xl font-bold leading-tight text-on-surface transition-colors group-hover:text-primary">
                       {service.title}
                     </h3>
-                    <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">{service.desc}</p>
+                    <p className="mt-3 break-words text-sm leading-relaxed text-on-surface-variant">{service.desc}</p>
                   </div>
-                  <div className="mt-8 flex items-center gap-2 text-sm font-bold text-primary">
-                    <span>Configure and pay</span>
+                  <div className="mt-8 flex min-w-0 items-center gap-2 text-sm font-bold text-primary">
+                    <span className="break-words">Order This Service</span>
                     <span className="material-symbols-outlined text-base transition-transform duration-300 group-hover:translate-x-1.5">
                       arrow_forward
                     </span>
@@ -199,7 +199,7 @@ export default function Services() {
                 whileInView={{ opacity: 1, scale: 1 }}
                 viewport={{ once: true }}
                 transition={{ delay: i * 0.05, duration: 0.3 }}
-                className="rounded-lg border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface shadow-sm transition-colors duration-200 hover:border-primary"
+                className="max-w-full break-words rounded-lg border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface shadow-sm transition-colors duration-200 hover:border-primary"
               >
                 {route}
               </motion.span>
@@ -214,10 +214,10 @@ export default function Services() {
             className="mt-12 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
           >
             {company.hubs.slice(0, 6).map((hub) => (
-              <div key={hub.name} className="rounded-xl border border-outline bg-white p-4 text-center shadow-sm">
+              <div key={hub.name} className="min-w-0 rounded-xl border border-outline bg-white p-4 text-center shadow-sm">
                 <span className="material-symbols-outlined mb-2 text-2xl text-primary">location_on</span>
-                <p className="text-sm font-bold text-on-surface">{hub.name}</p>
-                <p className="mt-1 text-xs text-on-surface-variant">{hub.address}</p>
+                <p className="break-words text-sm font-bold text-on-surface">{hub.name}</p>
+                <p className="mt-1 break-words text-xs text-on-surface-variant">{hub.address}</p>
               </div>
             ))}
           </motion.div>
@@ -246,12 +246,12 @@ export default function Services() {
               <span className="material-symbols-outlined text-base">chat</span>
               WhatsApp
             </a>
-            <Link
-              to="/booking"
+            <a
+              href="#services"
               className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-8 py-4 text-sm font-bold text-primary transition-colors hover:bg-surface-container"
             >
               Choose service
-            </Link>
+            </a>
           </div>
         </motion.div>
       </section>

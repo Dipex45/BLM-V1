@@ -5,7 +5,6 @@
 
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
-import { CurrencyProvider } from './contexts/CurrencyContext';
 import Dashboard from './screens/Dashboard';
 import AdminDashboard from './screens/AdminDashboard';
 import Login from './screens/Login';
@@ -30,17 +29,17 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-background px-6">
-        <div className="w-full max-w-md space-y-5">
-          <div className="h-14 w-44 animate-pulse rounded-xl bg-surface-container" />
-          <div className="space-y-3">
-            <div className="h-4 w-full animate-pulse rounded-full bg-surface-container" />
-            <div className="h-4 w-5/6 animate-pulse rounded-full bg-surface-container" />
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="h-20 animate-pulse rounded-xl bg-surface-container" />
-            <div className="h-20 animate-pulse rounded-xl bg-surface-container" />
-            <div className="h-20 animate-pulse rounded-xl bg-surface-container" />
+      <div className="flex h-screen w-screen items-center justify-center bg-white">
+        <div className="flex flex-col items-center gap-6">
+          <img
+            src="/brand/blm-logo.png"
+            alt="BLM Motors"
+            className="h-14 w-36 object-contain opacity-80"
+          />
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:0ms]" />
+            <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:150ms]" />
+            <span className="h-2 w-2 animate-bounce rounded-full bg-primary [animation-delay:300ms]" />
           </div>
         </div>
       </div>
@@ -51,8 +50,7 @@ export default function App() {
   const isVerified = user?.emailVerified || user?.isAnonymous || user?.providerData?.some((p: any) => p.providerId === 'google.com');
 
   return (
-    <CurrencyProvider>
-      <Router>
+    <Router>
         <div className="min-h-screen bg-background text-on-surface font-sans flex flex-col selection:bg-primary selection:text-white overflow-x-hidden">
           <Navbar />
           <div className="flex flex-1 pt-20">
@@ -81,7 +79,6 @@ export default function App() {
           <Footer />
           <CookieNotice />
         </div>
-      </Router>
-    </CurrencyProvider>
+    </Router>
   );
 }

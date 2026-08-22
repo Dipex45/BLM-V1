@@ -47,10 +47,31 @@ const defaultTrackingLocations = [
 
 export default function AdminDashboard() {
   const { user } = useAuth();
-  const { formatPrice } = useCurrency();
+  const { formatPrice, convertPrice, rates, isLiveRates, lastRateUpdate, refreshRates } = useCurrency();
   const [activeTab, setActiveTab] = useState<'bookings' | 'prices' | 'settings' | 'hubs' | 'schedules' | 'admins' | 'drivers' | 'analytics' | 'maintenance' | 'reviews'>('bookings');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [testNairaAmount, setTestNairaAmount] = useState<number>(50000);
+  const [refreshingLiveRates, setRefreshingLiveRates] = useState<boolean>(false);
+  const [rateFeedback, setRateFeedback] = useState<string | null>(null);
+
+  const handleSyncInternetRates = async () => {
+    setRefreshingLiveRates(true);
+    setRateFeedback(null);
+    try {
+      const ok = await refreshRates();
+      if (ok) {
+        setRateFeedback('Live exchange rates updated successfully from real-time internet feed.');
+      } else {
+        setRateFeedback('Unable to reach internet rate feed. Fallback rates in use.');
+      }
+    } catch (err) {
+      setRateFeedback('Error synchronizing rates.');
+    } finally {
+      setRefreshingLiveRates(false);
+      setTimeout(() => setRateFeedback(null), 6000);
+    }
+  };
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const isSuperAdmin = user?.role === 'super_admin' || user?.role === 'admin';
@@ -816,8 +837,134 @@ export default function AdminDashboard() {
               key="prices"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="space-y-6"
+              className="space-y-8"
             >
+              {/* Live Internet Currency Sync & Base Price Converter Simulator */}
+              <div className="rounded-2xl border border-outline bg-gradient-to-br from-white via-surface-container-lowest to-surface-container/30 p-6 md:p-8 shadow-sm space-y-6">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-outline pb-6">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="flex h-2.5 w-2.5 relative">
+                        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isLiveRates ? 'bg-green-400 opacity-75' : 'bg-amber-400 opacity-75'}`} />
+                        <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isLiveRates ? 'bg-green-500' : 'bg-amber-500'}`} />
+                      </span>
+                      <span className="text-xs font-bold uppercase tracking-wider text-on-surface">
+                        {isLiveRates ? 'Live Internet Exchange Rates Active' : 'Cached Exchange Rates Active'}
+                      </span>
+                      {lastRateUpdate && (
+                        <span className="text-[11px] text-on-surface-variant font-medium">
+                          (Synced: {new Date(lastRateUpdate).toLocaleTimeString()})
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-xl md:text-2xl font-bold text-on-surface">
+                      Currency Auto-Conversion & Real-Time Rates
+                    </h3>
+                    <p className="text-xs md:text-sm text-on-surface-variant mt-1 font-medium">
+                      All service prices are set in Naira (NGN) and auto-converted for international customers using live exchange rates.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={refreshingLiveRates}
+                      onClick={handleSyncInternetRates}
+                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-xs font-bold text-white shadow-md shadow-primary/20 hover:bg-primary-container transition-all disabled:opacity-50"
+                    >
+                      <span className={`material-symbols-outlined text-sm ${refreshingLiveRates ? 'animate-spin' : ''}`}>sync</span>
+                      {refreshingLiveRates ? 'Fetching live rates...' : 'Refresh live rates from internet'}
+                    </button>
+                  </div>
+                </div>
+
+                {rateFeedback && (
+                  <div className="p-4 rounded-xl bg-primary/10 border border-primary/20 text-xs font-bold text-primary flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sm">info</span>
+                    {rateFeedback}
+                  </div>
+                )}
+
+                {/* Active Multiplier Rates Grid */}
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-3">
+                    Current Live Multipliers (Base: 1 NGN)
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                    {[
+                      { code: 'USD' as const, name: 'US Dollar', symbol: '$', rate: rates.USD },
+                      { code: 'EUR' as const, name: 'Euro', symbol: '€', rate: rates.EUR },
+                      { code: 'GBP' as const, name: 'British Pound', symbol: '£', rate: rates.GBP },
+                      { code: 'XOF' as const, name: 'CFA Franc', symbol: 'CFA', rate: rates.XOF },
+                      { code: 'GHS' as const, name: 'Ghana Cedi', symbol: 'GH₵', rate: rates.GHS },
+                    ].map((curr) => (
+                      <div key={curr.code} className="p-3.5 rounded-xl border border-outline bg-white shadow-sm">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-bold text-on-surface">{curr.code}</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">{curr.symbol}</span>
+                        </div>
+                        <p className="text-xs font-mono font-bold text-primary">1 NGN = {curr.rate}</p>
+                        <p className="text-[10px] text-on-surface-variant mt-1 font-medium">{curr.name}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Interactive Naira Base Price Currency Tester */}
+                <div className="pt-4 border-t border-outline">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
+                    <div>
+                      <h4 className="text-sm font-bold text-on-surface flex items-center gap-2">
+                        <span className="material-symbols-outlined text-primary text-base">calculate</span>
+                        Naira Base Price Live Converter Tester
+                      </h4>
+                      <p className="text-xs text-on-surface-variant mt-0.5">
+                        Enter any base price in Naira to instantly test and verify how it converts across all currencies.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs font-bold text-on-surface-variant">Test NGN Amount:</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-on-surface-variant">₦</span>
+                        <input
+                          type="number"
+                          value={testNairaAmount || ''}
+                          onChange={(e) => setTestNairaAmount(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="pl-8 pr-3 py-2 bg-white border border-outline rounded-xl text-sm font-bold w-40 text-on-surface focus:ring-2 focus:ring-primary/20"
+                          placeholder="50000"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <div className="p-4 rounded-xl border-2 border-primary/40 bg-primary/5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-primary block mb-1">Base Price (NGN)</span>
+                      <p className="text-base md:text-lg font-black text-on-surface">{formatPrice(testNairaAmount, 'NGN')}</p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">US Dollar (USD)</span>
+                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'USD')}</p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">Euro (EUR)</span>
+                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'EUR')}</p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">British Pound (GBP)</span>
+                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'GBP')}</p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">CFA Franc (XOF)</span>
+                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'XOF')}</p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">Ghana Cedi (GHS)</span>
+                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'GHS')}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="flex flex-col justify-between gap-4 rounded-lg border border-outline bg-white p-6 shadow-sm sm:flex-row sm:items-center">
                 <div>
                   <h3 className="text-xl font-bold">Booking service classes</h3>
@@ -862,16 +1009,25 @@ export default function AdminDashboard() {
                         />
                       </div>
                     </div>
-                    <div className="mt-auto">
-                      <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Base price (NGN)</label>
+                    <div className="mt-auto space-y-3">
+                      <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Base price (NGN)</label>
                       <div className="flex flex-col gap-2">
-                         <p className="text-[10px] font-bold text-primary uppercase">Localized: {formatPrice(p.price)}</p>
                          <input 
                            type="number" 
                            className="w-full bg-surface-container border border-outline p-4 rounded-xl font-bold text-2xl text-on-surface"
                            value={p.price}
                            onChange={(e) => handleUpdatePrice(i, parseInt(e.target.value))}
                          />
+                         <div className="rounded-xl bg-surface-container/60 p-3.5 border border-outline space-y-2">
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Live Auto-Converted Previews:</p>
+                            <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
+                              <span className="text-on-surface">USD: <strong className="text-primary">{formatPrice(p.price, 'USD')}</strong></span>
+                              <span className="text-on-surface">EUR: <strong className="text-primary">{formatPrice(p.price, 'EUR')}</strong></span>
+                              <span className="text-on-surface">GBP: <strong className="text-primary">{formatPrice(p.price, 'GBP')}</strong></span>
+                              <span className="text-on-surface">CFA: <strong className="text-primary">{formatPrice(p.price, 'XOF')}</strong></span>
+                              <span className="text-on-surface col-span-2">GHS: <strong className="text-primary">{formatPrice(p.price, 'GHS')}</strong></span>
+                            </div>
+                         </div>
                       </div>
                     </div>
                     <button
@@ -1142,28 +1298,48 @@ export default function AdminDashboard() {
               {/* Currency Rates & Global Pricing Rules */}
               <div className="grid gap-8 lg:grid-cols-2">
                 <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
-                  <div className="flex items-center justify-between gap-4 mb-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                     <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`w-2 h-2 rounded-full ${isLiveRates ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                          {isLiveRates ? 'Internet Auto-Sync Connected' : 'Cached Rates Active'}
+                        </span>
+                      </div>
                       <h3 className="text-xl font-bold">Exchange Rates Control</h3>
-                      <p className="text-xs text-on-surface-variant">Configure real-time multipliers against 1 NGN for all supported currencies.</p>
+                      <p className="text-xs text-on-surface-variant">Live internet multipliers against 1 NGN. You can also manually override any rate.</p>
                     </div>
+                    <button
+                      type="button"
+                      disabled={refreshingLiveRates}
+                      onClick={handleSyncInternetRates}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold shadow-sm hover:bg-primary-container disabled:opacity-50"
+                    >
+                      <span className={`material-symbols-outlined text-xs ${refreshingLiveRates ? 'animate-spin' : ''}`}>sync</span>
+                      Sync Live
+                    </button>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {[
-                      { code: 'XOF', name: 'West African CFA (XOF)', defaultRate: 0.41 },
-                      { code: 'GHS', name: 'Ghana Cedi (GHS)', defaultRate: 0.0097 },
-                      { code: 'USD', name: 'US Dollar (USD)', defaultRate: 0.00067 },
-                      { code: 'EUR', name: 'Euro (EUR)', defaultRate: 0.00062 },
-                      { code: 'GBP', name: 'British Pound (GBP)', defaultRate: 0.00053 },
+                      { code: 'USD' as const, name: 'US Dollar (USD)', symbol: '$' },
+                      { code: 'EUR' as const, name: 'Euro (EUR)', symbol: '€' },
+                      { code: 'GBP' as const, name: 'British Pound (GBP)', symbol: '£' },
+                      { code: 'XOF' as const, name: 'West African CFA (XOF)', symbol: 'CFA' },
+                      { code: 'GHS' as const, name: 'Ghana Cedi (GHS)', symbol: 'GH₵' },
                     ].map((curr) => (
-                      <div key={curr.code} className="p-4 bg-surface-container/40 rounded-xl border border-outline">
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">
-                          {curr.name}
-                        </label>
+                      <div key={curr.code} className="p-4 bg-surface-container/40 rounded-xl border border-outline space-y-2">
+                        <div className="flex justify-between items-center">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
+                            {curr.name}
+                          </label>
+                          <span className="text-[10px] font-bold text-primary">
+                            1 NGN = {rates[curr.code]}
+                          </span>
+                        </div>
                         <input
                           type="number"
                           step="0.000001"
-                          placeholder={curr.defaultRate.toString()}
+                          placeholder={rates[curr.code]?.toString()}
                           className="w-full bg-white border border-outline rounded-lg p-2.5 text-sm font-bold"
                           onBlur={async (e) => {
                             const val = parseFloat(e.target.value);
@@ -1172,7 +1348,7 @@ export default function AdminDashboard() {
                                 const snap = await getDoc(doc(db, 'settings', 'currency_rates'));
                                 const curRates = snap.exists() ? snap.data().value || {} : {};
                                 curRates[curr.code] = val;
-                                await setDoc(doc(db, 'settings', 'currency_rates'), { key: 'currency_rates', value: curRates });
+                                await setDoc(doc(db, 'settings', 'currency_rates'), { key: 'currency_rates', value: curRates }, { merge: true });
                                 alert(`${curr.code} exchange rate updated to ${val}`);
                               } catch (err) {
                                 console.error('Failed to update currency rate', err);
@@ -1180,6 +1356,7 @@ export default function AdminDashboard() {
                             }
                           }}
                         />
+                        <p className="text-[9px] text-on-surface-variant">₦100,000 = {formatPrice(100000, curr.code)}</p>
                       </div>
                     ))}
                   </div>

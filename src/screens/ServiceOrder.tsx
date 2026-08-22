@@ -27,14 +27,33 @@ const fieldVariant = {
   show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } },
 };
 
+const VALID_TIME_SLOTS = [
+  '07:00',
+  '08:00',
+  '09:00',
+  '10:00',
+  '11:00',
+  '12:00',
+  '13:00',
+  '14:00',
+  '15:00',
+  '16:00',
+  '17:00',
+  '18:00',
+  '19:00',
+  '20:00',
+];
+
 export default function ServiceOrder() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { formatPrice, displayCurrency } = useCurrency();
 
-  const service = company.services.find((s) => slugify(s.title) === slug);
-  const is247Transport = slug === '24-7-transport-services' || slug === 'long-and-short-distance-trips';
+  const service = company.services.find((s) => slugify(s.title) === slug) || 
+    (slug === '24-7-transport-services' ? company.services[0] : undefined);
+
+  const isDistanceTrips = slug === 'long-and-short-distance-trips' || slug === '24-7-transport-services';
   const isCarHire = slug === 'car-hire';
   const isTouring = slug === 'touring';
   const isCrossBorder = slug === 'cross-border-trips';
@@ -44,6 +63,7 @@ export default function ServiceOrder() {
   const [vehicles, setVehicles] = useState<any[]>(defaultVehicles);
   const [carHireOptions, setCarHireOptions] = useState<any[]>(company.carHireOptions);
   const [touringStates, setTouringStates] = useState<any[]>(company.touringStates);
+  const [touringPackages, setTouringPackages] = useState<any[]>(company.touringPackages);
   const [internationalTours, setInternationalTours] = useState<any[]>(company.internationalTours);
   const [hubs, setHubs] = useState<any[]>(company.hubs);
   const [pricingRules, setPricingRules] = useState(company.pricingRules);
@@ -61,7 +81,8 @@ export default function ServiceOrder() {
     date: new Date().toISOString().split('T')[0],
     time: '08:00',
     notes: '',
-    // 24/7 Service:
+    // Distance trips (Charged per KM):
+    distanceKm: 25,
     vehicleClass: 'Economy',
     isReturn: false,
     // Car Hire:
@@ -69,10 +90,10 @@ export default function ServiceOrder() {
     hireDurationDays: 1,
     withDriver: true,
     cautionFeeConsent: false,
-    // Touring:
-    touringPackage: 'Touring Bronze',
+    selectedPickupHub: company.hubs[0]?.name || 'Lagos - Ikeja Terminal',
+    // Touring (5 packages, no stops selector):
+    touringPackageId: 'touring-basic',
     touringState: 'Lagos',
-    touringSpots: 2,
     tourGuideNeeded: true,
     // Cross-Border:
     crossBorderCountry: 'Benin Republic',
@@ -139,8 +160,7 @@ export default function ServiceOrder() {
           setHubs(hData);
           setFormData((prev) => ({
             ...prev,
-            pickup: prev.pickup || hData[0].name,
-            destination: prev.destination || hData[1]?.name || hData[0].name,
+            selectedPickupHub: hData[0].name,
           }));
         }
       } catch (e) {
@@ -197,76 +217,87 @@ export default function ServiceOrder() {
 
   // Price Calculation tailored per service
   const calculatePrice = () => {
-    if (is247Transport) {
+    // 1. LONG & SHORT DISTANCE TRIPS (CHARGED PER KILOMETER)
+    if (isDistanceTrips) {
       const selected = vehicles.find((v) => v.title === formData.vehicleClass) || vehicles[0];
-      const base = Number(selected?.price || 25000);
+      const kmRate = Number(selected?.kmRate || (selected?.price ? Math.round(selected.price / 80) : 350)) || Number(pricingRules.pricePerKm || 350);
+      const km = Math.max(Number(formData.distanceKm) || 1, 1);
+      const baseDistanceFare = km * kmRate;
       const mult = formData.isReturn ? Number(pricingRules.returnMultiplier || 2) : 1;
-      const fee = Number(pricingRules.standardServiceFee || 4500);
+      const serviceFee = Number(pricingRules.standardServiceFee || 4500);
+      const subtotal = Math.round(baseDistanceFare * mult);
       return {
-        basePrice: base,
-        extraFee: fee,
-        feeLabel: 'Standard Service Fee',
-        total: Math.round(base * mult + fee),
+        basePrice: subtotal,
+        extraFee: serviceFee,
+        feeLabel: `Distance: ${km} km @ ${formatPrice(kmRate)}/km ${formData.isReturn ? '(Round Trip 2x)' : ''} + Standard Service Fee`,
+        total: subtotal + serviceFee,
         vehicleClass: selected?.title || 'Economy',
+        kmRate,
+        km,
       };
     }
 
+    // 2. CAR HIRE (SELECTED PICKUP HUB, DURATION IN DAYS, CAUTION DEPOSIT)
     if (isCarHire) {
-      const selectedCar = carHireOptions.find((c) => c.id === formData.selectedCarId) || carHireOptions[0];
       const carHireVehicleObj = vehicles.find((v) => v.title.toLowerCase().includes('car hire')) || { price: 70000 };
       const basePerDay = Number(carHireVehicleObj.price || 70000);
       const days = Math.max(Number(formData.hireDurationDays) || 1, 1);
       const caution = Number(pricingRules.carHireCautionFee || 25000);
       const driverFee = formData.withDriver ? 10000 * days : 0;
+      const baseTotal = basePerDay * days;
       return {
-        basePrice: basePerDay * days,
+        basePrice: baseTotal,
         extraFee: caution + driverFee,
         feeLabel: `Caution Deposit (${formatPrice(caution)}) ${driverFee > 0 ? `+ Chauffeur (${formatPrice(driverFee)})` : ''}`,
-        total: Math.round(basePerDay * days + caution + driverFee),
+        total: Math.round(baseTotal + caution + driverFee),
         vehicleClass: 'Car Hire',
       };
     }
 
+    // 3. TOURING (5 PRESET PACKAGES, NO SIGHTSEEING STOPS SELECTOR)
     if (isTouring) {
-      const tourObj = vehicles.find((v) => v.title === formData.touringPackage) || vehicles.find((v) => v.title.includes('Touring')) || { price: 90000 };
-      const base = Number(tourObj.price || 90000);
+      const selectedPkg = touringPackages.find((p) => p.id === formData.touringPackageId) || touringPackages[0];
+      const base = Number(selectedPkg?.price || 90000);
       const stateFactor = touringStates.find((s) => s.name === formData.touringState)?.factor || 1;
-      const spots = Math.min(Math.max(Number(formData.touringSpots) || 1, 1), 20);
-      const locationFee = Math.round(spots * Number(pricingRules.touringPerLocation || 15000) * stateFactor);
+      const guideFee = formData.tourGuideNeeded ? 15000 : 0;
+      const pkgPrice = Math.round(base * stateFactor);
       return {
-        basePrice: base,
-        extraFee: locationFee,
-        feeLabel: `${spots} Locations in ${formData.touringState} (${stateFactor}x)`,
-        total: Math.round(base + locationFee),
-        vehicleClass: formData.touringPackage,
+        basePrice: pkgPrice,
+        extraFee: guideFee,
+        feeLabel: `${selectedPkg.name} in ${formData.touringState} ${guideFee > 0 ? '+ Professional Guide' : ''}`,
+        total: pkgPrice + guideFee,
+        vehicleClass: selectedPkg.title || selectedPkg.name,
       };
     }
 
+    // 4. CROSS-BORDER TRIPS
     if (isCrossBorder) {
       const crossObj = vehicles.find((v) => v.title.toLowerCase().includes('cross-border')) || { price: 180000 };
       const base = Number(crossObj.price || 180000);
       const countryObj = internationalTours.find((c) => c.name === formData.crossBorderCountry);
       const countryFactor = countryObj?.factor || 1.1;
       const clearanceFee = formData.borderClearanceHelp ? Number(pricingRules.crossBorderProcessingFee || 30000) : 0;
+      const baseTotal = Math.round(base * countryFactor);
       return {
-        basePrice: Math.round(base * countryFactor),
+        basePrice: baseTotal,
         extraFee: clearanceFee,
         feeLabel: `Border Clearance & Transit to ${formData.crossBorderCountry}`,
-        total: Math.round(base * countryFactor + clearanceFee),
+        total: baseTotal + clearanceFee,
         vehicleClass: 'Cross-Border transit',
       };
     }
 
+    // 5. PICKUP AND LOGISTICS (CUSTOMER SETS DOORSTEP PICKUP & DELIVERY)
     if (isLogistics) {
       const logObj = vehicles.find((v) => v.title.toLowerCase().includes('pickup') || v.title.toLowerCase().includes('logistics')) || { price: 65000 };
       const base = Number(logObj.price || 65000);
       const handlingFee = Number(pricingRules.pickupLogisticsFee || 22000);
       const weightKg = Math.max(Number(formData.packageWeightKg) || 1, 1);
-      const weightFee = Math.round(weightKg * Number(pricingRules.pricePerKg || 0));
+      const weightFee = Math.round(weightKg * Number(pricingRules.pricePerKg || 1200));
       return {
         basePrice: base,
         extraFee: handlingFee + weightFee,
-        feeLabel: `Handling + ${weightKg}kg cargo weight`,
+        feeLabel: `Handling Fee + ${weightKg}kg cargo weight`,
         total: Math.round(base + handlingFee + weightFee),
         vehicleClass: 'Pickup & Logistics',
       };
@@ -277,7 +308,7 @@ export default function ServiceOrder() {
     return {
       basePrice: Number(def.price || 25000),
       extraFee: 4500,
-      feeLabel: 'Service Fee',
+      feeLabel: 'Standard Service Fee',
       total: Number(def.price || 25000) + 4500,
       vehicleClass: def.title,
     };
@@ -287,6 +318,13 @@ export default function ServiceOrder() {
 
   // WhatsApp Order message builder
   const buildWhatsAppMessage = (): string => {
+    const pickupLoc = isCarHire 
+      ? formData.selectedPickupHub 
+      : formData.pickup;
+    const destLoc = isCarHire 
+      ? `Car Hire Rental (${formData.selectedPickupHub})` 
+      : formData.destination;
+
     const lines = [
       `Good day BLM, I want to book your services.`,
       ``,
@@ -296,20 +334,20 @@ export default function ServiceOrder() {
       formData.fullName && `*Customer Name:* ${formData.fullName}`,
       formData.phone && `*Phone Number:* ${formData.phone}`,
       formData.email && `*Email Address:* ${formData.email}`,
-      `*Pickup Location:* ${formData.pickup}`,
-      `*Destination:* ${formData.destination}`,
+      `*Pickup Location:* ${pickupLoc}`,
+      !isCarHire && `*Destination:* ${destLoc}`,
       `*Date:* ${formData.date}`,
       `*Time:* ${formData.time}`,
-      is247Transport && `*Trip Type:* ${formData.isReturn ? 'Round Trip (Return)' : 'One Way'}`,
+      isDistanceTrips && `*Estimated Distance:* ${formData.distanceKm} km`,
+      isDistanceTrips && `*Trip Type:* ${formData.isReturn ? 'Round Trip (Return)' : 'One Way'}`,
       isCarHire && `*Selected Vehicle:* ${carHireOptions.find((c) => c.id === formData.selectedCarId)?.name || 'Standard Sedan'}`,
       isCarHire && `*Duration:* ${formData.hireDurationDays} day(s)`,
-      isCarHire && `*Chauffeur:* ${formData.withDriver ? 'With BLM Driver' : 'Self Drive'}`,
+      isCarHire && `*Chauffeur:* ${formData.withDriver ? 'With BLM Professional Driver' : 'Self Drive'}`,
+      isTouring && `*Touring Package:* ${touringPackages.find((p) => p.id === formData.touringPackageId)?.name}`,
       isTouring && `*Touring State:* ${formData.touringState}`,
-      isTouring && `*Sightseeing Locations:* ${formData.touringSpots} locations`,
       isCrossBorder && `*Destination Country:* ${formData.crossBorderCountry}`,
       isCrossBorder && `*Passengers:* ${formData.passengerCount}`,
       isLogistics && `*Cargo Category:* ${formData.packageType}`,
-      isLogistics && `*Weight Tier:* ${formData.cargoWeightKg}`,
       isLogistics && `*Declared Weight:* ${formData.packageWeightKg}kg`,
       formData.notes && `*Special Notes:* ${formData.notes}`,
     ].filter(Boolean);
@@ -333,7 +371,6 @@ export default function ServiceOrder() {
     setOrderError(null);
 
     if (!user) {
-      // Store draft in sessionStorage and redirect to login
       sessionStorage.setItem('pending_booking_slug', slug || '');
       navigate('/login');
       return;
@@ -354,15 +391,28 @@ export default function ServiceOrder() {
       return;
     }
 
+    if (!isCarHire && !formData.pickup.trim()) {
+      setOrderError('Please enter your pickup address.');
+      return;
+    }
+
+    if (!isCarHire && !formData.destination.trim()) {
+      setOrderError('Please enter your destination address.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const quote = calculatedQuote;
+      const pickupLoc = isCarHire ? formData.selectedPickupHub : formData.pickup.trim();
+      const destLoc = isCarHire ? `Car Hire Rental (${formData.selectedPickupHub})` : formData.destination.trim();
+
       const bookingPayload = {
         customerId: user.uid,
         customerName: DOMPurify.sanitize(formData.fullName.trim() || user.displayName || user.email || 'Customer'),
         customerEmail: DOMPurify.sanitize(formData.email.trim() || user.email || 'customer@blmmotors.com'),
-        pickup: DOMPurify.sanitize(formData.pickup.trim() || 'Nigeria Hub'),
-        destination: DOMPurify.sanitize(formData.destination.trim() || 'Operations Hub'),
+        pickup: DOMPurify.sanitize(pickupLoc || 'Pickup Terminal'),
+        destination: DOMPurify.sanitize(destLoc || 'Destination Hub'),
         vehicleClass: DOMPurify.sanitize(quote.vehicleClass),
         date: formData.date,
         time: formData.time,
@@ -371,9 +421,8 @@ export default function ServiceOrder() {
         displayCurrency,
         isReturn: formData.isReturn,
         notes: DOMPurify.sanitize(formData.notes),
-        status: 'Quoted',
+        status: 'Quoted' as const,
         serviceType: service.title,
-        touringSpots: formData.touringSpots,
         touringState: formData.touringState,
         internationalCountry: formData.crossBorderCountry,
         logisticsDetails: DOMPurify.sanitize(formData.logisticsDetails),
@@ -384,6 +433,7 @@ export default function ServiceOrder() {
           extraFee: quote.extraFee,
           feeLabel: quote.feeLabel,
           total: quote.total,
+          distanceKm: isDistanceTrips ? formData.distanceKm : undefined,
         },
         createdAt: new Date().toISOString(),
       };
@@ -454,15 +504,18 @@ export default function ServiceOrder() {
           >
             <div>
               <h2 className="text-2xl font-bold text-on-surface sm:text-3xl">
-                {is247Transport && '24/7 Transport Service Booking'}
+                {isDistanceTrips && 'Long & Short Distance Trip Booking'}
                 {isCarHire && 'Car Hire Reservation'}
-                {isTouring && 'Touring Package & Itinerary'}
+                {isTouring && 'Touring Package Selection'}
                 {isCrossBorder && 'Cross-Border Travel Booking'}
-                {isLogistics && 'Pickup & Logistics Request'}
-                {!is247Transport && !isCarHire && !isTouring && !isCrossBorder && !isLogistics && 'Booking Details'}
+                {isLogistics && 'Doorstep Pickup & Logistics'}
               </h2>
-              <p className="mt-2 text-sm text-on-surface-variant">
-                Fill in your travel details. View your price breakdown and proceed directly to payment or order via WhatsApp.
+              <p className="mt-2 text-sm text-on-surface-variant font-medium">
+                {isDistanceTrips && 'Priced transparently per kilometer based on your route distance and selected vehicle class.'}
+                {isCarHire && 'Select your vehicle, duration, and designated pickup terminal.'}
+                {isTouring && 'Choose from our curated all-inclusive touring packages across Nigeria.'}
+                {isCrossBorder && 'Cross-border transport with assisted border passage across Benin, Togo, and Ghana.'}
+                {isLogistics && 'Enter your doorstep pickup and destination address with direct weight-based calculation.'}
               </p>
             </div>
 
@@ -472,43 +525,99 @@ export default function ServiceOrder() {
               </div>
             )}
 
-            {/* 1. 24/7 TRANSPORT CLASS SELECTION */}
-            {is247Transport && (
+            {/* 1. LONG & SHORT DISTANCE TRIPS (PER KILOMETER CHARGING) */}
+            {isDistanceTrips && (
               <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
                 <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-2xl text-primary">directions_car</span>
-                  <h3 className="text-lg font-bold text-on-surface">Choose Vehicle Class & Pricing</h3>
+                  <span className="material-symbols-outlined text-2xl text-primary">moving</span>
+                  <h3 className="text-lg font-bold text-on-surface">1. Choose Vehicle Class & Distance</h3>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {vehicles.filter(v => !v.title.toLowerCase().includes('touring') && !v.title.toLowerCase().includes('logistics') && !v.title.toLowerCase().includes('car hire')).map((veh) => (
-                    <label
-                      key={veh.title}
-                      className={`cursor-pointer rounded-2xl border p-5 transition-all flex flex-col justify-between ${
-                        formData.vehicleClass === veh.title
-                          ? 'border-primary bg-white shadow-md ring-2 ring-primary/20'
-                          : 'border-outline bg-white/70 hover:border-primary/40'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="vehicleClass"
-                        value={veh.title}
-                        checked={formData.vehicleClass === veh.title}
-                        onChange={handleChange}
-                        className="sr-only"
-                      />
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="font-bold text-on-surface">{veh.title}</span>
-                          <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary">
-                            {formatPrice(veh.price)}
-                          </span>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {vehicles.filter(v => ['Economy', 'Business', 'Executive SUV'].includes(v.title) || (!v.title.toLowerCase().includes('touring') && !v.title.toLowerCase().includes('logistics') && !v.title.toLowerCase().includes('car hire') && !v.title.toLowerCase().includes('cross-border'))).slice(0, 3).map((veh) => {
+                    const kmRate = Number(veh.kmRate || (veh.title === 'Business' ? 450 : veh.title === 'Executive SUV' ? 700 : 300));
+                    return (
+                      <label
+                        key={veh.title}
+                        className={`cursor-pointer rounded-2xl border p-5 transition-all flex flex-col justify-between ${
+                          formData.vehicleClass === veh.title
+                            ? 'border-primary bg-white shadow-md ring-2 ring-primary/20'
+                            : 'border-outline bg-white/70 hover:border-primary/40'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="vehicleClass"
+                          value={veh.title}
+                          checked={formData.vehicleClass === veh.title}
+                          onChange={handleChange}
+                          className="sr-only"
+                        />
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-bold text-on-surface">{veh.title}</span>
+                            <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-bold text-primary">
+                              {formatPrice(kmRate)}/km
+                            </span>
+                          </div>
+                          <p className="text-xs text-on-surface-variant leading-relaxed">{veh.desc}</p>
                         </div>
-                        <p className="text-xs text-on-surface-variant leading-relaxed">{veh.desc}</p>
-                      </div>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {/* Kilometers Input & Quick Selectors */}
+                <div className="space-y-3 pt-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">
+                      Estimated Distance (in Kilometers)
                     </label>
-                  ))}
+                    <span className="text-xs font-bold text-primary">
+                      Rate: {formatPrice(calculatedQuote.kmRate || 350)} per km
+                    </span>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="number"
+                      name="distanceKm"
+                      min={1}
+                      max={5000}
+                      value={formData.distanceKm}
+                      onChange={(e) => setFormData({ ...formData, distanceKm: Math.max(1, parseInt(e.target.value) || 1) })}
+                      className={`${inputClasses} text-lg font-bold text-primary pr-14`}
+                      placeholder="e.g. 25"
+                      required
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-on-surface-variant">
+                      KM
+                    </span>
+                  </div>
+
+                  {/* Quick Distance Chips */}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {[
+                      { label: '15 km (City Trip)', km: 15 },
+                      { label: '50 km (Intercity)', km: 50 },
+                      { label: '120 km (Short Interstate)', km: 120 },
+                      { label: '300 km (Interstate Route)', km: 300 },
+                      { label: '600 km (Regional Trip)', km: 600 },
+                    ].map((chip) => (
+                      <button
+                        key={chip.km}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, distanceKm: chip.km })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                          formData.distanceKm === chip.km
+                            ? 'bg-primary text-white shadow-sm'
+                            : 'bg-white border border-outline text-on-surface hover:border-primary'
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <label className="flex items-center gap-3 pt-2 text-sm font-semibold text-on-surface cursor-pointer">
@@ -519,12 +628,12 @@ export default function ServiceOrder() {
                     onChange={handleChange}
                     className="h-4 w-4 rounded text-primary focus:ring-primary"
                   />
-                  <span>Round Trip / Return Journey (+{formatPrice(calculatedQuote.basePrice)})</span>
+                  <span>Round Trip / Return Journey (Multiplies distance calculation 2x)</span>
                 </label>
               </motion.div>
             )}
 
-            {/* 2. CAR HIRE FLEET SELECTION */}
+            {/* 2. CAR HIRE FLEET SELECTION (PREDEFINED PICKUP LOCATIONS ONLY) */}
             {isCarHire && (
               <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
                 <div className="flex items-center gap-3">
@@ -566,6 +675,27 @@ export default function ServiceOrder() {
                   ))}
                 </div>
 
+                {/* Car Hire Pickup Location Dropdown (Pre-set locations only, no text input) */}
+                <div>
+                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
+                    Pickup Location
+                  </label>
+                  <p className="text-xs text-on-surface-variant mb-2">Choose one of the pickup locations currently available.</p>
+                  <select
+                    name="selectedPickupHub"
+                    value={formData.selectedPickupHub}
+                    onChange={handleChange}
+                    className={inputClasses}
+                    required
+                  >
+                    {hubs.map((hub) => (
+                      <option key={hub.name} value={hub.name}>
+                        {hub.name} — {hub.address}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
@@ -591,7 +721,7 @@ export default function ServiceOrder() {
                       onChange={(e) => setFormData({ ...formData, withDriver: e.target.value === 'yes' })}
                       className={inputClasses}
                     >
-                      <option value="yes">With Professional BLM Driver (+{formatPrice(10000)}/day)</option>
+                      <option value="yes">With Professional BLM Chauffeur (+{formatPrice(10000)}/day)</option>
                       <option value="no">Self-Drive</option>
                     </select>
                   </div>
@@ -612,7 +742,7 @@ export default function ServiceOrder() {
               </motion.div>
             )}
 
-            {/* 3. TOURING SELECTION */}
+            {/* 3. TOURING SELECTION (FIVE PREDEFINED PACKAGES) */}
             {isTouring && (
               <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
                 <div className="flex items-center gap-3">
@@ -620,29 +750,35 @@ export default function ServiceOrder() {
                   <h3 className="text-lg font-bold text-on-surface">Select Touring Package & Destination</h3>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  {vehicles.filter(v => v.title.toLowerCase().includes('touring')).map((pkg) => (
+                {/* 5 Distinct Touring Packages */}
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {touringPackages.map((pkg) => (
                     <label
-                      key={pkg.title}
+                      key={pkg.id}
                       className={`cursor-pointer rounded-2xl border p-4 transition-all flex flex-col justify-between ${
-                        formData.touringPackage === pkg.title
+                        formData.touringPackageId === pkg.id
                           ? 'border-primary bg-white shadow-md ring-2 ring-primary/20'
                           : 'border-outline bg-white/70 hover:border-primary/40'
                       }`}
                     >
                       <input
                         type="radio"
-                        name="touringPackage"
-                        value={pkg.title}
-                        checked={formData.touringPackage === pkg.title}
+                        name="touringPackageId"
+                        value={pkg.id}
+                        checked={formData.touringPackageId === pkg.id}
                         onChange={handleChange}
                         className="sr-only"
                       />
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-sm text-on-surface">{pkg.title}</span>
-                        <span className="text-xs font-bold text-primary">{formatPrice(pkg.price)}</span>
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="font-bold text-sm text-on-surface">{pkg.name}</span>
+                          <span className="text-xs font-bold text-primary">{formatPrice(pkg.price)}</span>
+                        </div>
+                        <span className="inline-block px-2 py-0.5 rounded bg-surface-container text-[10px] font-bold text-on-surface-variant mb-2">
+                          {pkg.days} Day{pkg.days > 1 ? 's' : ''} Tour
+                        </span>
+                        <p className="text-xs text-on-surface-variant leading-relaxed">{pkg.desc}</p>
                       </div>
-                      <p className="text-xs text-on-surface-variant">{pkg.desc}</p>
                     </label>
                   ))}
                 </div>
@@ -650,7 +786,7 @@ export default function ServiceOrder() {
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Touring State (Admin Managed)
+                      Touring State / Region
                     </label>
                     <select
                       name="touringState"
@@ -660,7 +796,7 @@ export default function ServiceOrder() {
                     >
                       {touringStates.map((st) => (
                         <option key={st.name} value={st.name}>
-                          {st.name} ({st.factor}x Factor)
+                          {st.name} {st.factor > 1 ? `(${st.factor}x)` : ''}
                         </option>
                       ))}
                     </select>
@@ -668,23 +804,17 @@ export default function ServiceOrder() {
 
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Number of Sightseeing Stops
+                      Dedicated Tour Guide
                     </label>
-                    <input
-                      type="number"
-                      name="touringSpots"
-                      min={1}
-                      max={pricingRules.maxTouringLocations}
-                      value={formData.touringSpots}
-                      onChange={(e) => setFormData({
-                        ...formData,
-                        touringSpots: Math.min(
-                          Math.max(Number(e.target.value) || 1, 1),
-                          Number(pricingRules.maxTouringLocations || 20),
-                        ),
-                      })}
+                    <select
+                      name="tourGuideNeeded"
+                      value={formData.tourGuideNeeded ? 'yes' : 'no'}
+                      onChange={(e) => setFormData({ ...formData, tourGuideNeeded: e.target.value === 'yes' })}
                       className={inputClasses}
-                    />
+                    >
+                      <option value="yes">Include Certified Local Tour Guide (+{formatPrice(15000)})</option>
+                      <option value="no">Chauffeur / Self-Guided Only</option>
+                    </select>
                   </div>
                 </div>
               </motion.div>
@@ -711,7 +841,7 @@ export default function ServiceOrder() {
                     >
                       {internationalTours.map((c) => (
                         <option key={c.name} value={c.name}>
-                          {c.name} (Multiplier {c.factor}x)
+                          {c.name}
                         </option>
                       ))}
                     </select>
@@ -746,7 +876,7 @@ export default function ServiceOrder() {
               </motion.div>
             )}
 
-            {/* 5. LOGISTICS & PICKUP */}
+            {/* 5. LOGISTICS & PICKUP (DOORSTEP PICKUP BY CUSTOMER) */}
             {isLogistics && (
               <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
                 <div className="flex items-center gap-3">
@@ -774,38 +904,18 @@ export default function ServiceOrder() {
 
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Weight Tier
+                      Declared Weight (kg)
                     </label>
-                    <select
-                      name="cargoWeightKg"
-                      value={formData.cargoWeightKg}
-                      onChange={handleChange}
+                    <input
+                      type="number"
+                      name="packageWeightKg"
+                      min={1}
+                      max={10000}
+                      value={formData.packageWeightKg}
+                      onChange={(e) => setFormData({ ...formData, packageWeightKg: Math.max(Number(e.target.value) || 1, 1) })}
                       className={inputClasses}
-                    >
-                      <option value="Under 5kg">Under 5kg</option>
-                      <option value="5kg - 25kg">5kg - 25kg</option>
-                      <option value="25kg - 100kg">25kg - 100kg</option>
-                      <option value="Over 100kg (Freight)">Over 100kg (Freight)</option>
-                    </select>
+                    />
                   </div>
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                    Declared Weight (kg)
-                  </label>
-                  <input
-                    type="number"
-                    name="packageWeightKg"
-                    min={1}
-                    max={10000}
-                    value={formData.packageWeightKg}
-                    onChange={(e) => setFormData({ ...formData, packageWeightKg: Math.max(Number(e.target.value) || 1, 1) })}
-                    className={inputClasses}
-                  />
-                  <p className="mt-2 text-xs font-medium text-on-surface-variant">
-                    Weight is charged at {formatPrice(pricingRules.pricePerKg || 0)} per kg and can be changed by an admin.
-                  </p>
                 </div>
 
                 <div>
@@ -818,7 +928,7 @@ export default function ServiceOrder() {
                     value={formData.logisticsDetails}
                     onChange={handleChange}
                     rows={2}
-                    placeholder="Describe items, dimensions, fragility, receiver details..."
+                    placeholder="Describe items, dimensions, fragility, recipient contact info..."
                     className={`${inputClasses} resize-none`}
                   />
                 </div>
@@ -827,7 +937,9 @@ export default function ServiceOrder() {
 
             {/* General Contact & Route Fields */}
             <div className="space-y-4">
-              <h3 className="text-lg font-bold text-on-surface">Customer Contact & Route Details</h3>
+              <h3 className="text-lg font-bold text-on-surface">
+                {isCarHire ? 'Customer Contact Details & Schedule' : 'Customer Contact & Route Details'}
+              </h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:gap-5">
                 <motion.div variants={fieldVariant}>
                   <label className="mb-2 block text-sm font-bold text-on-surface-variant">Full name</label>
@@ -855,7 +967,7 @@ export default function ServiceOrder() {
                   />
                 </motion.div>
 
-                <motion.div variants={fieldVariant}>
+                <motion.div variants={fieldVariant} className={isCarHire ? 'sm:col-span-2' : ''}>
                   <label className="mb-2 block text-sm font-bold text-on-surface-variant">Email address</label>
                   <input
                     type="email"
@@ -868,44 +980,46 @@ export default function ServiceOrder() {
                   />
                 </motion.div>
 
-                <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">
-                    Pickup Location (Admin Managed Hubs)
-                  </label>
-                  <div className="relative">
+                {/* Pickup Address: Text for distance trips, touring, cross-border, and logistics (doorstep pickup). Hidden for Car Hire since it uses selectedPickupHub */}
+                {!isCarHire && (
+                  <motion.div variants={fieldVariant}>
+                    <label className="mb-2 block text-sm font-bold text-on-surface-variant">
+                      {isLogistics ? 'Doorstep Pickup Address' : 'Pickup address / Landmark'}
+                    </label>
                     <input
                       type="text"
                       name="pickup"
                       required
-                      list="hubs-list"
                       value={formData.pickup}
                       onChange={handleChange}
-                      placeholder="Enter pickup address or choose hub"
+                      placeholder={isLogistics ? "Enter full street address for pickup" : "Pickup address or city"}
                       className={inputClasses}
                     />
-                    <datalist id="hubs-list">
-                      {hubs.map((h) => (
-                        <option key={h.name} value={h.name} />
-                      ))}
-                    </datalist>
-                  </div>
-                </motion.div>
+                  </motion.div>
+                )}
+
+                {/* Destination Address: Text for distance trips, touring, cross-border, and logistics. Completely removed for Car Hire. */}
+                {!isCarHire && (
+                  <motion.div variants={fieldVariant} className={!isCarHire ? 'sm:col-span-2' : ''}>
+                    <label className="mb-2 block text-sm font-bold text-on-surface-variant">
+                      {isLogistics ? 'Delivery Destination Address' : 'Destination address / Drop-off location'}
+                    </label>
+                    <input
+                      type="text"
+                      name="destination"
+                      required
+                      value={formData.destination}
+                      onChange={handleChange}
+                      placeholder="Drop-off address or city"
+                      className={inputClasses}
+                    />
+                  </motion.div>
+                )}
 
                 <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">Destination address</label>
-                  <input
-                    type="text"
-                    name="destination"
-                    required
-                    value={formData.destination}
-                    onChange={handleChange}
-                    placeholder="Drop-off address or city"
-                    className={inputClasses}
-                  />
-                </motion.div>
-
-                <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">Travel Date</label>
+                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">
+                    {isCarHire ? 'Pickup Date' : 'Travel / Pickup Date'}
+                  </label>
                   <input
                     type="date"
                     name="date"
@@ -916,15 +1030,27 @@ export default function ServiceOrder() {
                   />
                 </motion.div>
 
-                <motion.div variants={fieldVariant} className="sm:col-span-2">
+                {/* Validated Preferred Time dropdown */}
+                <motion.div variants={fieldVariant}>
                   <label className="mb-2 block text-sm font-bold text-on-surface-variant">Preferred Time</label>
-                  <input
-                    type="time"
+                  <select
                     name="time"
                     value={formData.time}
                     onChange={handleChange}
                     className={inputClasses}
-                  />
+                  >
+                    {VALID_TIME_SLOTS.map((t) => {
+                      const hour = parseInt(t.split(':')[0]);
+                      const display = hour >= 12 
+                        ? `${hour === 12 ? 12 : hour - 12}:00 PM` 
+                        : `${hour}:00 AM`;
+                      return (
+                        <option key={t} value={t}>
+                          {display}
+                        </option>
+                      );
+                    })}
+                  </select>
                 </motion.div>
               </div>
 
@@ -998,7 +1124,7 @@ export default function ServiceOrder() {
                   </div>
 
                   <div className="flex justify-between items-center text-on-surface-variant font-medium">
-                    <span>{calculatedQuote.feeLabel}</span>
+                    <span className="max-w-[180px] truncate">{calculatedQuote.feeLabel}</span>
                     <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.extraFee)}</span>
                   </div>
 
@@ -1013,7 +1139,7 @@ export default function ServiceOrder() {
                       {formatPrice(calculatedQuote.total)}
                     </span>
                   </div>
-                  <p className="text-[11px] text-right text-on-surface-variant">Live conversion in {displayCurrency}</p>
+                  <p className="text-[11px] text-right text-on-surface-variant font-medium">Live conversion in {displayCurrency}</p>
                 </div>
 
                 <button

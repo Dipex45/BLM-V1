@@ -10,6 +10,11 @@ import { useCurrency } from '../hooks/useCurrency';
 import { BookingSchema } from '../lib/schemas';
 import { company, defaultVehicles } from '../lib/company';
 
+const VALID_TIME_SLOTS = [
+  '07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00',
+  '15:00', '16:00', '17:00', '18:00', '19:00', '20:00',
+];
+
 export default function Booking() {
   const { user } = useAuth();
   const { formatPrice, displayCurrency } = useCurrency();
@@ -32,7 +37,8 @@ export default function Booking() {
     time: '',
     vehicleClass: '',
     serviceType: 'Economy',
-    touringSpots: 1,
+    touringPackage: 'Touring Basic',
+    distanceKm: 25,
     touringState: 'Lagos',
     internationalCountry: 'Benin Republic',
     logisticsDetails: '',
@@ -52,6 +58,7 @@ export default function Booking() {
   const isCarHire = normalizedVehicleSelection.includes('car hire');
   const isInternationalTour = normalizedVehicleSelection.includes('international');
   const isTouringService = normalizedVehicleSelection.includes('touring') && !isInternationalTour;
+  const isDistanceTrip = !isPickupLogistics && !isCarHire && !isInternationalTour && !isTouringService && normalizedVehicleSelection !== 'cross-border transit';
 
   const loadData = async () => {
     setInitialLoading(true);
@@ -137,10 +144,10 @@ export default function Booking() {
       }
 
       // Load Hubs
-      let resolvedHubs = company.hubs.map((hub, index) => ({ id: `default-${index}`, ...hub }));
+      let resolvedHubs: any[] = company.hubs.map((hub, index) => ({ id: `default-${index}`, ...hub }));
       try {
         const hubsSnap = await getDocs(collection(db, 'hubs'));
-        const hData = hubsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const hData: any[] = hubsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         if (hData.length > 0) resolvedHubs = hData;
       } catch (err) {
         console.warn('Unable to load hubs', err);
@@ -172,30 +179,33 @@ export default function Booking() {
 
   const calculateBookingQuote = () => {
     const selectedVehicle = vehicles.find(v => v.title === formData.vehicleClass);
-    const basePrice = Number(selectedVehicle?.price || 0);
+    const distanceKm = Math.max(Number(formData.distanceKm) || 1, 1);
+    const kmRate = Number(selectedVehicle?.kmRate || pricingRules.pricePerKm || 350);
     const normalizedClass = (formData.vehicleClass || '').toLowerCase();
     const isPickupLogisticsQuote = normalizedClass.includes('pickup') || normalizedClass.includes('logistics');
     const isCarHireQuote = normalizedClass.includes('car hire');
     const isInternationalTourQuote = normalizedClass.includes('international');
     const isTouringQuote = normalizedClass.includes('touring') && !isInternationalTourQuote;
+    const selectedTouringPackage = company.touringPackages.find((pkg) => pkg.title === formData.touringPackage) || company.touringPackages[0];
+    const basePrice = isDistanceTrip
+      ? Math.round(distanceKm * kmRate)
+      : isTouringQuote
+        ? Number(selectedTouringPackage?.price || selectedVehicle?.price || 0)
+        : Number(selectedVehicle?.price || 0);
     const routeFactor = Number(pricingRules.defaultRouteFactor || 1);
     const returnMultiplier = formData.isReturn ? Number(pricingRules.returnMultiplier || 2) : 1;
-    const spots = Math.min(
-      Math.max(Number(formData.touringSpots) || 1, 1),
-      Number(pricingRules.maxTouringLocations || 20)
-    );
     const touringStateFactor = touringStatesList.find((state) => state.name === formData.touringState)?.factor || 1;
     const internationalTourFactor = internationalTourList.find((country) => country.name === formData.internationalCountry)?.factor || 1;
 
     let variableFee = Number(pricingRules.standardServiceFee || 0);
-    let variableFeeLabel = 'Service fee';
+    let variableFeeLabel = isDistanceTrip ? `${distanceKm} km at ${formatPrice(kmRate)}/km` : 'Service fee';
 
     if (isInternationalTourQuote) {
-      variableFee = Math.round(spots * Number(pricingRules.internationalTourPerLocation || 0) * internationalTourFactor);
-      variableFeeLabel = `${spots} international tour location${spots === 1 ? '' : 's'}`;
+      variableFee = Math.round(Number(pricingRules.internationalTourPerLocation || 0) * internationalTourFactor);
+      variableFeeLabel = 'International tour package';
     } else if (isTouringQuote) {
-      variableFee = Math.round(spots * Number(pricingRules.touringPerLocation || 0) * touringStateFactor);
-      variableFeeLabel = `${spots} touring location${spots === 1 ? '' : 's'}`;
+      variableFee = Math.round(Number(pricingRules.touringPerLocation || 0) * touringStateFactor);
+      variableFeeLabel = `${formData.touringPackage} package`;
     } else if (isPickupLogisticsQuote) {
       const weightKg = Math.max(Number(formData.packageWeightKg) || 1, 1);
       variableFee = Number(pricingRules.pickupLogisticsFee || 0) + Math.round(weightKg * Number(pricingRules.pricePerKg || 0));
@@ -262,7 +272,7 @@ export default function Booking() {
         isReturn: formData.isReturn,
         notes: formData.notes,
         serviceType: formData.vehicleClass,
-        touringSpots: formData.touringSpots,
+        touringPackage: formData.touringPackage,
         touringState: formData.touringState,
         internationalCountry: formData.internationalCountry,
         logisticsDetails: formData.logisticsDetails,
@@ -308,7 +318,7 @@ export default function Booking() {
         notes: DOMPurify.sanitize(formData.notes),
         status: 'Quoted',
         serviceType: formData.vehicleClass,
-        touringSpots: formData.touringSpots,
+        touringPackage: formData.touringPackage,
         touringState: formData.touringState,
         internationalCountry: formData.internationalCountry,
         logisticsDetails: DOMPurify.sanitize(formData.logisticsDetails),
@@ -320,6 +330,7 @@ export default function Booking() {
           returnMultiplier: quote.returnMultiplier,
           variableFee: quote.variableFee,
           variableFeeLabel: quote.variableFeeLabel,
+          distanceKm: isDistanceTrip ? formData.distanceKm : undefined,
           pricingRules,
         },
         createdAt: new Date().toISOString()
@@ -403,43 +414,26 @@ export default function Booking() {
             )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative z-10">
               <div>
-                <label htmlFor="pickup" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Pickup Location</label>
+                <label htmlFor="pickup" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">
+                  {isPickupLogistics ? 'Doorstep Pickup Address' : isCarHire ? 'Car Hire Pickup Location' : 'Pickup Address'}
+                </label>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-link text-lg">location_on</span>
-                  <select 
-                    id="pickup"
-                    required
-                    aria-required="true"
-                    className="w-full pl-12 pr-4 py-4 rounded-xl bg-surface-container border border-outline focus:ring-2 focus:ring-primary/20 text-sm font-medium appearance-none"
-                    value={formData.pickup}
-                    onChange={(e) => setFormData({...formData, pickup: e.target.value})}
-                  >
-                    {hubs.map(h => (
-                      <option key={h.id} value={h.name}>{h.name}</option>
-                    ))}
-                    {hubs.length === 0 && <option value="">Loading Hubs...</option>}
-                  </select>
+                  {isCarHire ? (
+                    <select id="pickup" required aria-required="true" className="w-full pl-12 pr-4 py-4 rounded-xl bg-surface-container border border-outline focus:ring-2 focus:ring-primary/20 text-sm font-medium appearance-none" value={formData.pickup} onChange={(e) => setFormData({...formData, pickup: e.target.value})}>
+                      {hubs.map(h => <option key={h.id} value={h.name}>{h.name}</option>)}
+                    </select>
+                  ) : (
+                    <input id="pickup" type="text" required aria-required="true" className="w-full pl-12 pr-4 py-4 rounded-xl bg-surface-container border border-outline focus:ring-2 focus:ring-primary/20 text-sm font-medium" placeholder={isPickupLogistics ? 'Enter the full collection address' : 'Enter pickup address or landmark'} value={formData.pickup} onChange={(e) => setFormData({...formData, pickup: e.target.value})} />
+                  )}
                 </div>
               </div>
-              <div>
-                <label htmlFor="destination" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Destination</label>
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-link text-lg">near_me</span>
-                  <select 
-                    id="destination"
-                    required
-                    aria-required="true"
-                    className="w-full pl-12 pr-4 py-4 rounded-xl bg-surface-container border border-outline focus:ring-2 focus:ring-primary/20 text-sm font-medium appearance-none"
-                    value={formData.destination}
-                    onChange={(e) => setFormData({...formData, destination: e.target.value})}
-                  >
-                    {hubs.map(h => (
-                      <option key={h.id} value={h.name}>{h.name}</option>
-                    ))}
-                    {hubs.length === 0 && <option value="">Loading Hubs...</option>}
-                  </select>
+              {!isCarHire && (
+                <div>
+                  <label htmlFor="destination" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">{isPickupLogistics ? 'Delivery Destination Address' : 'Destination Address'}</label>
+                  <input id="destination" type="text" required aria-required="true" className="w-full px-4 py-4 rounded-xl bg-surface-container border border-outline focus:ring-2 focus:ring-primary/20 text-sm font-medium" placeholder={isPickupLogistics ? 'Enter the full delivery address' : 'Enter destination address or city'} value={formData.destination} onChange={(e) => setFormData({...formData, destination: e.target.value})} />
                 </div>
-              </div>
+              )}
            </div>
 
            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative z-10">
@@ -457,15 +451,16 @@ export default function Booking() {
               </div>
               <div>
                 <label htmlFor="time" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Time</label>
-                <input 
+                <select
                   id="time"
-                  type="time" 
                   required
                   aria-required="true"
                   className="w-full px-4 py-4 rounded-xl bg-surface-container border border-outline focus:ring-2 focus:ring-primary/20 text-sm font-medium"
                   value={formData.time}
                   onChange={(e) => setFormData({...formData, time: e.target.value})}
-                />
+                >
+                  {VALID_TIME_SLOTS.map((time) => <option key={time} value={time}>{time}</option>)}
+                </select>
               </div>
            </div>
 
@@ -519,6 +514,19 @@ export default function Booking() {
                 />
               </div>
            </div>
+
+           {isDistanceTrip && (
+             <div className="relative z-10 space-y-3 rounded-2xl border border-outline bg-surface-container px-6 py-6">
+               <div className="flex items-center justify-between gap-4">
+                 <label htmlFor="distanceKm" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Estimated distance</label>
+                 <span className="text-xs font-bold text-primary">Charged per kilometre</span>
+               </div>
+               <div className="relative">
+                 <input id="distanceKm" type="number" min={1} max={5000} required value={formData.distanceKm} onChange={(e) => setFormData({...formData, distanceKm: Math.max(Number(e.target.value) || 1, 1)})} className="w-full rounded-xl border border-outline bg-white px-4 py-4 pr-14 text-sm font-bold focus:border-primary focus:ring-2 focus:ring-primary/20" />
+                 <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-on-surface-variant">KM</span>
+               </div>
+             </div>
+           )}
 
            <div className="relative z-10" role="radiogroup" aria-labelledby="vehicle-type-label">
               <label id="vehicle-type-label" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">Select Vehicle Type</label>
@@ -576,6 +584,20 @@ export default function Booking() {
                    </div>
                  )}
 
+                 {isTouringService && (
+                   <div>
+                     <label htmlFor="touringPackage" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Touring package</label>
+                     <select
+                       id="touringPackage"
+                       className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
+                       value={formData.touringPackage}
+                       onChange={(e) => setFormData({ ...formData, touringPackage: e.target.value })}
+                     >
+                       {company.touringPackages.map((pkg) => <option key={pkg.id} value={pkg.title}>{pkg.name} ({pkg.days} day{pkg.days > 1 ? 's' : ''})</option>)}
+                     </select>
+                   </div>
+                 )}
+
                  {isInternationalTour && (
                    <div>
                      <label htmlFor="internationalCountry" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">International tour</label>
@@ -592,28 +614,8 @@ export default function Booking() {
                    </div>
                  )}
 
-                 <div>
-                   <label htmlFor="touringSpots" className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Number of locations</label>
-                   <input
-                     id="touringSpots"
-                     type="number"
-                     min={1}
-                     max={pricingRules.maxTouringLocations}
-                     value={formData.touringSpots}
-                     onChange={(e) => setFormData({
-                       ...formData,
-                       touringSpots: Math.min(
-                         Math.max(Number(e.target.value) || 1, 1),
-                         Number(pricingRules.maxTouringLocations || 20),
-                       ),
-                     })}
-                     className="w-full rounded-xl border border-outline bg-white px-4 py-4 text-sm font-medium focus:border-primary focus:ring-2 focus:ring-primary/20"
-                   />
-                 </div>
                </div>
-               <p className="text-xs text-on-surface-variant">
-                 Touring pricing is calculated by the number of locations and route complexity. Lagos is the most affordable state, and farther routes adjust automatically.
-               </p>
+               <p className="text-xs text-on-surface-variant">Choose one complete package and destination. Sightseeing stops are planned as part of the selected package.</p>
              </div>
            )}
 

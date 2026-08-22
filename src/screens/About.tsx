@@ -5,7 +5,7 @@ import { company, defaultVehicles } from '../lib/company';
 import { useCurrency } from '../hooks/useCurrency';
 import { doc, getDoc, collection, addDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import CurrencySelector from '../components/CurrencySelector';
+
 
 const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
@@ -224,7 +224,7 @@ export default function About() {
                     <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">{service.desc}</p>
                   </div>
                   <div className="mt-8 flex items-center gap-2 text-sm font-bold text-primary">
-                    <span>Order this service</span>
+                    <span>Order This Service</span>
                     <span className="material-symbols-outlined text-base transition-transform group-hover:translate-x-1">
                       arrow_forward
                     </span>
@@ -280,71 +280,10 @@ export default function About() {
         </div>
       </section>
 
-      {/* Currency Selector Section */}
-      <section className="bg-white px-4 py-16 sm:px-6 md:px-8 lg:px-12">
-        <div className="mx-auto max-w-7xl">
-          <CurrencySelector />
-        </div>
-      </section>
 
-      {/* Vehicle Classes Section */}
-      <section className="bg-secondary px-4 py-20 text-white sm:px-6 md:px-8 lg:px-12">
-        <div className="mx-auto max-w-7xl">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            className="mb-12 flex flex-col justify-between gap-6 md:flex-row md:items-end"
-          >
-            <div className="max-w-2xl">
-              <p className="mb-3 text-xs font-bold uppercase tracking-widest text-primary">Vehicle classes</p>
-              <h2 className="text-3xl font-bold sm:text-4xl md:text-5xl">Book the vehicle that fits the job.</h2>
-              <p className="mt-3 text-sm font-medium text-white/80">
-                Select any vehicle class below to calculate instant quotes and place your order.
-              </p>
-            </div>
-          </motion.div>
 
-          <motion.div
-            variants={containerVariants}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true }}
-            className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3"
-          >
-            {vehicles.map((vehicle) => (
-              <motion.div key={vehicle.title} variants={itemVariants}>
-                <Link
-                  to={`/booking?service=${encodeURIComponent(vehicle.title)}`}
-                  className="group flex h-full flex-col justify-between rounded-2xl border border-white/15 bg-white/5 p-7 backdrop-blur transition-all duration-300 hover:-translate-y-1.5 hover:border-primary hover:bg-white/10 hover:shadow-2xl"
-                >
-                  <div>
-                    <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-white shadow-lg shadow-primary/30">
-                      <span className="material-symbols-outlined text-2xl">{vehicle.icon}</span>
-                    </div>
-                    <div className="mb-3 flex items-start justify-between gap-4">
-                      <h3 className="text-xl font-bold text-white transition-colors group-hover:text-primary">
-                        {vehicle.title}
-                      </h3>
-                      <span className="shrink-0 rounded-full bg-primary/20 px-3 py-1 text-sm font-bold text-primary">
-                        {formatPrice(vehicle.price)}
-                      </span>
-                    </div>
-                    <p className="text-sm leading-relaxed text-white/70">{vehicle.desc}</p>
-                  </div>
-                  <div className="mt-8 flex items-center gap-2 text-sm font-bold text-primary">
-                    <span>Order vehicle</span>
-                    <span className="material-symbols-outlined text-base transition-transform group-hover:translate-x-1">
-                      arrow_forward
-                    </span>
-                  </div>
-                </Link>
-              </motion.div>
-            ))}
-          </motion.div>
-        </div>
-      </section>
 
+      
       {/* How Booking Works */}
       <section className="bg-white px-4 py-20 sm:px-6 md:px-8 lg:px-12">
         <div className="mx-auto grid max-w-7xl grid-cols-1 gap-12 lg:grid-cols-[0.9fr_1.1fr]">
