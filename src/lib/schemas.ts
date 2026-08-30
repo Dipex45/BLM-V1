@@ -60,7 +60,7 @@ export const BookingSchema = z.object({
   reviewId: z.string().optional(),
   assignedDriverId: z.string().optional(),
   paymentStatus: PaymentStatusSchema.optional(),
-  paymentProvider: z.enum(['stripe', 'paystack']).optional(),
+  paymentProvider: z.enum(['stripe', 'paystack', 'manual_bank_transfer', 'bank_transfer']).optional(),
   routeMetadata: z.object({
     distanceMeters: z.number().nonnegative().optional(),
     durationSeconds: z.number().nonnegative().optional(),
@@ -160,7 +160,7 @@ export const VehicleSchema = z.object({
 export const PaymentSchema = z.object({
   bookingId: z.string(),
   customerId: z.string(),
-  provider: z.enum(['stripe', 'paystack']),
+  provider: z.enum(['stripe', 'paystack', 'manual_bank_transfer', 'bank_transfer']),
   amount: z.number().positive(),
   amountMinor: z.number().int().positive(),
   currency: z.string().length(3),

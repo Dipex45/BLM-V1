@@ -55,6 +55,8 @@ export default function Footer() {
       <div className="mx-auto mt-8 flex max-w-7xl flex-col justify-between gap-4 border-t border-outline-variant pt-8 text-xs font-medium text-on-surface-variant md:flex-row">
         <p>&copy; 2026 {company.legalName}. All rights reserved.</p>
         <div className="flex flex-wrap gap-4">
+          <Link to="/tracking" className="hover:text-primary">Track Booking</Link>
+          <Link to="/reviews" className="hover:text-primary">Reviews & Ratings</Link>
           <Link to="/legal" className="hover:text-primary">Privacy policy</Link>
           <Link to="/legal" className="hover:text-primary">Terms of service</Link>
         </div>

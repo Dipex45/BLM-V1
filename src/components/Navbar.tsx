@@ -47,6 +47,7 @@ export default function Navbar() {
         <div className="hidden items-center gap-8 text-sm font-semibold text-on-surface-variant lg:flex">
           <Link to="/services" className="transition-colors hover:text-primary">Services</Link>
           <Link to="/tracking" className="transition-colors hover:text-primary">Track booking</Link>
+          <Link to="/reviews" className="transition-colors hover:text-primary">Reviews</Link>
           <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="transition-colors hover:text-primary">
             WhatsApp
           </a>

@@ -1,395 +1,635 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
-import { useCurrencyContext, CURRENCY_CONFIG } from '../contexts/CurrencyContext';
-import { loadStripe } from '@stripe/stripe-js';
-import {
-  Elements,
-  CardElement,
-  useStripe,
-  useElements,
-} from '@stripe/react-stripe-js';
-import { apiGet, apiPost } from '../lib/api';
+import { useCurrency } from '../hooks/useCurrency';
+import { paymentService } from '../lib/payments/paymentService';
+import { BankAccountConfig, PaymentRecord } from '../lib/payments/types';
+import { DEFAULT_BANK_CONFIG } from '../lib/payments/manualBankTransfer';
 
-const getStripePromise = () => {
-  const key = (import.meta as any).env.VITE_STRIPE_PUBLISHABLE_KEY;
-  if (!key) {
-    return null;
-  }
-  return loadStripe(key);
-};
-
-const stripePromise = getStripePromise();
-
-function StripeForm({ bookingId, amountInBaseCurrency, selectedCurrency, onSuccess, onLoading }: { bookingId: string, amountInBaseCurrency: number, selectedCurrency: string, onSuccess: (id: string) => Promise<void> | void, onLoading: (status: boolean) => void }) {
-  const stripe = useStripe();
-  const elements = useElements();
+export default function Checkout() {
+  const { bookingId } = useParams<{ bookingId: string }>();
   const { user } = useAuth();
-  const [error, setError] = useState<string | null>(null);
+  const { formatPrice, displayCurrency } = useCurrency();
+  const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!stripe || !elements || !user) return;
+  const [loading, setLoading] = useState(true);
+  const [booking, setBooking] = useState<any>(null);
+  const [paymentRecord, setPaymentRecord] = useState<PaymentRecord | null>(null);
+  const [bankConfig, setBankConfig] = useState<BankAccountConfig>(DEFAULT_BANK_CONFIG);
+  const [copied, setCopied] = useState(false);
+  const [copiedRef, setCopiedRef] = useState(false);
+  const [selectedMethod, setSelectedMethod] = useState<'bank_transfer' | 'card' | 'paystack' | 'ussd' | 'wallet'>('bank_transfer');
+  const [unavailableNotice, setUnavailableNotice] = useState<string | null>(null);
 
-    onLoading(true);
-    setError(null);
-
-    try {
-      // 1. Create Payment Intent on server with currency
-      const { data } = await apiPost('/api/payment/stripe/create-intent', {
-        bookingId,
-        email: user.email,
-        currency: selectedCurrency,
-        amountInBaseCurrency
-      });
-
-      const { clientSecret } = data;
-
-      // 2. Confirm Payment
-      const result = await stripe.confirmCardPayment(clientSecret, {
-        payment_method: {
-          card: elements.getElement(CardElement) as any,
-          billing_details: {
-            email: user.email || '',
-            name: user.displayName || 'Customer'
-          },
-        },
-      });
-
-      if (result.error) {
-        setError(result.error.message || 'Payment failed');
-      } else {
-        if (result.paymentIntent.status === 'succeeded') {
-          await apiPost('/api/payment/stripe/reconcile', {
-            paymentIntentId: result.paymentIntent.id,
-            currency: selectedCurrency
-          });
-          await onSuccess(result.paymentIntent.id);
-        }
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError('An error occurred during payment processing.');
-    } finally {
-      onLoading(false);
+  const handleSelectPaymentMethod = (methodKey: 'bank_transfer' | 'card' | 'paystack' | 'ussd' | 'wallet', methodName: string) => {
+    if (methodKey === 'bank_transfer') {
+      setSelectedMethod('bank_transfer');
+      setUnavailableNotice(null);
+    } else {
+      setSelectedMethod(methodKey);
+      setUnavailableNotice(`${methodName} is currently unavailable. Please proceed with Direct Bank Transfer to complete your order seamlessly.`);
     }
   };
 
-  return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div className="p-4 bg-surface-container border border-outline rounded-md">
-        <CardElement options={{
-          style: {
-            base: {
-              fontSize: '16px',
-              color: '#1a1a1a',
-              '::placeholder': {
-                color: '#666',
-              },
-            },
-          }
-        }} />
-      </div>
-      {error && <p className="text-red-500 text-sm font-bold">{error}</p>}
-      <button 
-        type="submit" 
-        disabled={!stripe || !elements}
-        className="w-full py-4 bg-primary text-on-primary font-bold rounded-md hover:bg-primary-container transition-colors flex items-center justify-center gap-3 text-sm"
-      >
-        Pay with Stripe
-        <span className="material-symbols-outlined">verified_user</span>
-      </button>
-    </form>
-  );
-}
+  // Upload Proof Form State
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofPreview, setProofPreview] = useState<string | null>(null);
+  const [customerNote, setCustomerNote] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
 
-export default function Checkout() {
-  const { bookingId } = useParams();
-  const { user } = useAuth();
-  const { displayCurrency, convertPrice } = useCurrencyContext();
-  const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
-  const [booking, setBooking] = useState<any>(null);
-  const [selectedCurrency, setSelectedCurrency] = useState(displayCurrency);
-  const [paymentMethod, setPaymentMethod] = useState<'stripe' | 'paystack'>('stripe');
-  const [paying, setPaying] = useState(false);
-  const [success, setSuccess] = useState(false);
-
+  // Fetch Booking and Bank Details
   useEffect(() => {
-    // Load Paystack Inline JS
-    const script = document.createElement("script");
-    script.src = "https://js.paystack.co/v1/inline.js";
-    script.async = true;
-    document.body.appendChild(script);
+    if (!bookingId) return;
 
-    return () => {
-      document.body.removeChild(script);
-    }
-  }, []);
+    let unsubscribePayment: (() => void) | null = null;
 
-  useEffect(() => {
-    async function fetchBooking() {
-      if (!bookingId) return;
+    const initCheckout = async () => {
       try {
-        const snap = await getDoc(doc(db, 'bookings', bookingId));
-        if (snap.exists()) {
-          const bookingData = snap.data();
-          // Use stored currency if available, otherwise use current display currency
-          setSelectedCurrency(bookingData.checkoutCurrency || displayCurrency);
-          setBooking(bookingData);
+        setLoading(true);
+        // 1. Fetch booking
+        const bookingRef = doc(db, 'bookings', bookingId);
+        const bookingSnap = await getDoc(bookingRef);
+        
+        if (!bookingSnap.exists()) {
+          setLoading(false);
+          return;
         }
-      } catch (error) {
-        console.error("Error fetching booking:", error);
+
+        const bData = { id: bookingSnap.id, ...bookingSnap.data() };
+        setBooking(bData);
+
+        // 2. Fetch Bank Settings
+        try {
+          const bankSnap = await getDoc(doc(db, 'settings', 'bank_accounts'));
+          if (bankSnap.exists() && bankSnap.data()?.value) {
+            setBankConfig({ ...DEFAULT_BANK_CONFIG, ...bankSnap.data().value });
+          }
+        } catch (e) {
+          console.warn('Using default bank config', e);
+        }
+
+        // 3. Ensure authoritative payment record is initialized
+        let payment = await paymentService.getPaymentByBookingId(bookingId);
+        if (!payment) {
+          const initRes = await paymentService.initializePayment(bData, user);
+          payment = await paymentService.getPaymentByBookingId(bookingId);
+        }
+        setPaymentRecord(payment);
+
+        // 4. Real-time listener on payment record for instant admin approval updates
+        if (payment?.id) {
+          unsubscribePayment = onSnapshot(doc(db, 'payments', payment.id), (snap) => {
+            if (snap.exists()) {
+              setPaymentRecord({ ...snap.data(), id: snap.id } as PaymentRecord);
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Checkout init error:', err);
       } finally {
         setLoading(false);
       }
-    }
-    fetchBooking();
-  }, [bookingId, displayCurrency]);
+    };
 
-  const handleSuccess = async (_paymentIntentId?: string) => {
-    if (!user || !bookingId) return;
-    
-    try {
-      setSuccess(true);
-    } catch (error) {
-      console.error("Error finalizing booking status:", error);
+    initCheckout();
+
+    return () => {
+      if (unsubscribePayment) unsubscribePayment();
+    };
+  }, [bookingId, user]);
+
+  const handleCopyAccount = () => {
+    if (!bankConfig.accountNumber) return;
+    navigator.clipboard.writeText(bankConfig.accountNumber);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleCopyReference = () => {
+    const ref = paymentRecord?.paymentReference || booking?.paymentReference;
+    if (!ref) return;
+    navigator.clipboard.writeText(ref);
+    setCopiedRef(true);
+    setTimeout(() => setCopiedRef(false), 2500);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadError(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError('File size exceeds 5MB limit. Please upload a smaller image or PDF document.');
+      return;
+    }
+
+    // Validate type (JPG, PNG, PDF)
+    const validTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+    if (!validTypes.includes(file.type)) {
+      setUploadError('Invalid file type. Please upload a JPG, PNG image, or PDF document.');
+      return;
+    }
+
+    setProofFile(file);
+
+    // Generate preview for image files
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setProofPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setProofPreview('/brand/pdf-icon.png');
     }
   };
 
-  const handlePaystackPayment = async () => {
-    if (!user || !bookingId || !booking) return;
-    setPaying(true);
+  const handleSubmitProof = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentRecord || !proofFile) {
+      setUploadError('Please select a payment receipt file (image or PDF) to submit.');
+      return;
+    }
+
+    setUploading(true);
+    setUploadError(null);
 
     try {
-      const paystackKey = (import.meta as any).env.VITE_PAYSTACK_PUBLIC_KEY;
-      if (!paystackKey) {
-        alert("Paystack public key is missing. Add VITE_PAYSTACK_PUBLIC_KEY before accepting Paystack payments.");
-        setPaying(false);
-        return;
-      }
-
-      if (!['NGN', 'GHS'].includes(selectedCurrency)) {
-        alert("Paystack is configured here for NGN and GHS only. Please use Stripe for this currency.");
-        setPaying(false);
-        return;
-      }
-
-      // 1. Initialize on server to get transaction details with currency
-      const { data } = await apiPost('/api/payment/paystack/initialize', {
-        email: user.email,
-        bookingId,
-        currency: selectedCurrency,
-        amountInBaseCurrency: booking.totalAmount
-      });
-
-      const { data: { reference } } = data;
-      const paymentAmountMinor = Number(data?.data?.amount || Math.round(convertPrice(booking.totalAmount, selectedCurrency as any) * 100));
-
-      // 2. Use Paystack Popup
-      // @ts-ignore
-      const handler = PaystackPop.setup({
-        key: paystackKey,
-        email: user.email,
-        amount: paymentAmountMinor,
-        currency: selectedCurrency,
-        ref: reference,
-        onClose: () => {
-          setPaying(false);
-        },
-        callback: async (response: any) => {
-          // 3. Verify on server
-          const verify = await apiGet(`/api/payment/paystack/verify/${response.reference}`);
-          if (verify.data.status === 'success') {
-            await handleSuccess();
-          } else {
-            alert("Payment verification failed.");
-          }
-          setPaying(false);
+      // Convert file to Base64 Data URL for secure internal storage
+      const reader = new FileReader();
+      reader.readAsDataURL(proofFile);
+      reader.onload = async () => {
+        try {
+          const proofUrl = reader.result as string;
+          await paymentService.submitProof(
+            {
+              paymentId: paymentRecord.id,
+              customerNote: customerNote.trim(),
+              proofOfPaymentUrl: proofUrl,
+              proofFileName: proofFile.name,
+            },
+            user?.uid || 'guest'
+          );
+          setUploadSuccess(true);
+        } catch (err: any) {
+          setUploadError(err.message || 'Failed to submit proof. Please try again.');
+        } finally {
+          setUploading(false);
         }
-      });
-      handler.openIframe();
-    } catch (error) {
-       console.error("Paystack Error:", error);
-       alert("Failed to initialize Paystack payment.");
-       setPaying(false);
+      };
+      reader.onerror = () => {
+        setUploadError('Failed to read uploaded file.');
+        setUploading(false);
+      };
+    } catch (err: any) {
+      setUploadError(err.message || 'Failed to upload payment proof.');
+      setUploading(false);
     }
   };
 
-  if (loading) return (
-    <div className="h-screen flex items-center justify-center">
-      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
-    </div>
-  );
+  if (loading) {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center bg-background px-4">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <p className="text-sm font-bold text-on-surface-variant">Securing payment gateway & instructions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!booking) {
+    return (
+      <div className="flex min-h-[70vh] flex-col items-center justify-center bg-background px-4 text-center">
+        <span className="material-symbols-outlined mb-4 text-6xl text-on-surface-variant">receipt_long</span>
+        <h1 className="text-2xl font-bold text-on-surface">Booking Not Found</h1>
+        <p className="mt-2 text-sm text-on-surface-variant">The requested booking reference could not be located.</p>
+        <Link to="/services" className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-bold text-white">
+          Explore Services
+        </Link>
+      </div>
+    );
+  }
+
+  const paymentRef = paymentRecord?.paymentReference || booking.paymentReference || `BLM-${new Date().getFullYear()}-${booking.id.substring(0, 6).toUpperCase()}`;
+  const trackingId = paymentRecord?.trackingId || booking.trackingId;
+  const isPaid = paymentRecord?.status === 'PAID' || booking.status === 'Confirmed' || booking.status === 'Paid';
+  const isUnderReview = paymentRecord?.status === 'UNDER_REVIEW' || uploadSuccess;
+  const isRejected = paymentRecord?.status === 'PAYMENT_REJECTED';
 
   return (
-    <div className="p-8 md:p-12 flex items-center justify-center min-h-[calc(100vh-160px)] bg-background">
-      <AnimatePresence mode="wait">
-        {!success ? (
-          <motion.div 
-            key="payment-form"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            className="w-full max-w-5xl bg-white rounded-lg border border-outline shadow-sm overflow-hidden grid grid-cols-1 lg:grid-cols-2"
+    <div className="min-h-screen bg-background px-4 py-12 sm:px-6 md:px-8 lg:px-12">
+      <div className="mx-auto max-w-5xl">
+        {/* Header Breadcrumbs */}
+        <div className="mb-8 flex items-center justify-between">
+          <Link
+            to="/services"
+            className="inline-flex items-center gap-2 rounded-lg border border-outline bg-white px-4 py-2 text-xs font-bold text-on-surface-variant transition-colors hover:border-primary hover:text-primary"
           >
-            {/* Summary */}
-            <div className="bg-surface-container p-12 border-b lg:border-b-0 lg:border-r border-outline">
-               <span className="text-sm font-bold text-primary mb-12 block">Secure booking payment</span>
-               <h2 className="text-4xl font-bold mb-4">#{bookingId?.slice(-6).toUpperCase()}</h2>
-               <p className="text-sm text-on-surface-variant mb-12 font-medium">Complete payment to confirm this transport booking.</p>
-               
-               <div className="space-y-8 relative z-10">
-                  <div className="flex justify-between items-center">
-                     <span className="text-on-surface-variant text-sm font-bold">Vehicle class</span>
-                     <span className="font-bold text-sm">{booking?.vehicleClass}</span>
-                  </div>
-                  <div className="flex justify-between items-start text-xs">
-                     <span className="text-on-surface-variant text-sm font-bold">Route</span>
-                     <div className="text-right max-w-[200px]">
-                        <p className="font-bold text-sm">{booking?.pickup}</p>
-                        <p className="text-xs opacity-50 font-bold py-1">to</p>
-                        <p className="font-bold text-sm">{booking?.destination}</p>
-                     </div>
-                  </div>
-                  <div className="flex justify-between items-center">
-                     <span className="text-on-surface-variant text-sm font-bold">Base price (NGN)</span>
-                     <span className="font-bold text-sm">NGN {Number(booking?.totalAmount || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="pt-10 border-t border-outline flex justify-between items-baseline">
-                     <div>
-                        <span className="font-bold text-sm text-primary">Pay in {selectedCurrency}</span>
-                        <p className="text-xs text-on-surface-variant mt-1">
-                          {CURRENCY_CONFIG[selectedCurrency as keyof typeof CURRENCY_CONFIG]?.name}
-                        </p>
-                     </div>
-                     <div className="flex items-baseline gap-1">
-                        <span className="font-bold text-4xl text-on-surface md:text-5xl">
-                          {CURRENCY_CONFIG[selectedCurrency as keyof typeof CURRENCY_CONFIG]?.symbol} {convertPrice(booking?.totalAmount || 0, selectedCurrency as any).toFixed(selectedCurrency === 'NGN' ? 0 : 2)}
-                        </span>
-                     </div>
-                  </div>
-               </div>
-            </div>
+            <span className="material-symbols-outlined text-base">arrow_back</span>
+            Back to Services
+          </Link>
 
-            {/* Payment Fields */}
-            <div className="p-12 flex flex-col bg-white">
-               <div className="mb-8 pb-8 border-b border-outline">
-                  <p className="text-sm font-bold text-on-surface-variant mb-4">Payment currency</p>
-                  <select
-                    value={selectedCurrency}
-                    onChange={(e) => setSelectedCurrency(e.target.value)}
-                    className="w-full px-4 py-3 rounded-md border border-outline bg-surface-container text-sm font-bold text-on-surface focus:ring-2 focus:ring-primary/20"
-                  >
-                    {['NGN', 'XOF', 'GHS', 'USD', 'EUR', 'GBP'].map((curr) => (
-                      <option key={curr} value={curr}>
-                        {curr} - {CURRENCY_CONFIG[curr as keyof typeof CURRENCY_CONFIG]?.name}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-on-surface-variant mt-3">
-                    Amount to pay: <span className="font-bold text-primary">{CURRENCY_CONFIG[selectedCurrency as keyof typeof CURRENCY_CONFIG]?.symbol} {convertPrice(booking?.totalAmount || 0, selectedCurrency as any).toFixed(selectedCurrency === 'NGN' ? 0 : 2)}</span>
+          {trackingId && (
+            <Link
+              to={`/tracking?booking=${encodeURIComponent(trackingId)}`}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary/10 px-4 py-2 text-xs font-bold text-primary transition-colors hover:bg-primary hover:text-white"
+            >
+              <span className="material-symbols-outlined text-base">location_searching</span>
+              Live Track Booking
+            </Link>
+          )}
+        </div>
+
+        {/* Status Banner */}
+        <div className="mb-8">
+          {isPaid && (
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-green-200 bg-green-50 p-6">
+              <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-green-600 text-white">
+                  <span className="material-symbols-outlined text-2xl">verified</span>
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-green-900">Payment Verified & Booking Confirmed!</h2>
+                  <p className="text-xs font-medium text-green-700 mt-1">
+                    Your transfer has been verified by the finance department. Your tracking ID is <span className="font-bold font-mono">{trackingId}</span>.
                   </p>
-               </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
 
-               <div className="mb-12">
-                  <p className="text-sm font-bold text-on-surface-variant mb-6">Payment method</p>
-                  <div className="flex gap-4">
-                     {[
-                       { id: 'stripe', icon: 'credit_card', label: 'Stripe Global' },
-                       { id: 'paystack', icon: 'payments', label: 'Paystack Nigeria' }
-                     ].map((m: any) => (
-                       <button 
-                         key={m.id}
-                         onClick={() => setPaymentMethod(m.id)}
-                         className={`flex-1 flex flex-col items-center gap-3 py-6 rounded-md border transition-all text-sm font-bold ${
-                           paymentMethod === m.id 
-                             ? 'bg-primary text-on-primary border-primary shadow-lg shadow-primary/20' 
-                             : 'bg-surface-container border-outline hover:border-primary text-on-surface-variant'
-                         }`}
-                       >
-                         <span className="material-symbols-outlined text-2xl">{m.icon}</span>
-                         {m.label}
-                       </button>
-                     ))}
-                  </div>
-               </div>
-
-                <div className="flex-1">
-                  {paymentMethod === 'stripe' ? (
-                    <div className="space-y-6">
-                       <p className="text-sm font-bold text-on-surface-variant mb-4">Secure card payment</p>
-                       {stripePromise ? (
-                         <Elements stripe={stripePromise}>
-                           <StripeForm 
-                             bookingId={bookingId || ''} 
-                             amountInBaseCurrency={booking?.totalAmount || 0} 
-                             selectedCurrency={selectedCurrency}
-                             onSuccess={handleSuccess} 
-                             onLoading={setPaying}
-                           />
-                         </Elements>
-                       ) : (
-                         <div className="p-8 bg-red-50 border border-red-100 rounded-lg text-center">
-                            <span className="material-symbols-outlined text-red-500 mb-4">warning</span>
-                            <p className="text-sm font-bold text-red-500">Stripe is not configured</p>
-                            <p className="text-xs text-red-400 mt-2">Please provide VITE_STRIPE_PUBLISHABLE_KEY in settings.</p>
-                         </div>
-                       )}
-                    </div>
-                  ) : (
-                   <div className="space-y-8 flex flex-col items-center justify-center py-10 bg-surface-container/30 rounded-lg border border-dashed border-outline">
-                      <div className="text-center px-8">
-                         <h4 className="text-sm font-bold mb-2">Paystack online</h4>
-                         <p className="text-xs text-on-surface-variant font-medium opacity-70">Cards, bank transfers, USSD, and Nigerian payment channels.</p>
-                      </div>
-                      <button 
-                        onClick={handlePaystackPayment}
-                        disabled={paying}
-                        className="px-10 py-4 bg-[#011b33] text-white font-bold rounded-md hover:bg-[#03284a] transition-colors text-sm"
-                      >
-                         {paying ? 'Processing...' : 'Pay with Paystack'}
-                      </button>
-                   </div>
-                 )}
-               </div>
-
-               <div className="mt-12 flex items-center justify-center gap-2 opacity-30">
-                  <span className="material-symbols-outlined text-xs">shield</span>
-                  <p className="text-xs font-bold">
-                    Secure encrypted checkout
+          {isUnderReview && !isPaid && (
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-amber-200 bg-amber-50 p-6">
+              <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-amber-500 text-white">
+                  <span className="material-symbols-outlined text-2xl">hourglass_top</span>
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-amber-900">Payment Submitted For Verification</h2>
+                  <p className="text-xs font-medium text-amber-700 mt-1">
+                    Your proof of transfer has been received and is currently under review by our finance team. You will receive real-time status updates.
                   </p>
-               </div>
-            </div>
-          </motion.div>
-        ) : (
-          <motion.div 
-            key="success-screen"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="text-center bg-white p-12 md:p-20 rounded-lg border border-outline shadow-sm max-w-xl w-full relative overflow-hidden"
-          >
-             <div className="w-24 h-24 bg-primary/10 text-primary rounded-lg flex items-center justify-center mx-auto mb-10">
-                <span className="material-symbols-outlined text-6xl">check_circle</span>
-             </div>
-             <h2 className="text-4xl font-bold mb-6">Booking confirmed.</h2>
-             <p className="text-on-surface-variant font-medium text-sm leading-relaxed mb-12">
-               Payment is complete and your booking is active. You can follow updates from your dashboard.
-             </p>
-             <div className="flex flex-col gap-6">
-                <button 
-                  onClick={() => navigate('/dashboard')}
-                  className="py-4 bg-primary text-on-primary font-bold rounded-md text-sm hover:bg-primary-container transition-colors"
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {isRejected && (
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-error/20 bg-error-container p-6">
+              <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-error text-white">
+                  <span className="material-symbols-outlined text-2xl">error</span>
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-on-error-container">Payment Verification Failed</h2>
+                  <p className="text-xs font-medium text-on-error-container/80 mt-1">
+                    Reason: {paymentRecord?.rejectionReason || 'Transfer not found or incorrect amount.'}. Please re-verify the bank details and upload a valid receipt below.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.1fr_0.9fr]">
+          {/* Left Column: Payment Methods & Bank Account Details */}
+          <div className="space-y-6">
+            {/* Payment Method Selector Card */}
+            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Payment Channels</span>
+                  <h3 className="text-xl font-bold text-on-surface">Select Payment Method</h3>
+                </div>
+                <span className="text-xs font-semibold text-on-surface-variant">1 Active Method</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Option 1: Direct Bank Transfer (Available) */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMethod('bank_transfer', 'Direct Bank Transfer')}
+                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                    selectedMethod === 'bank_transfer'
+                      ? 'border-primary bg-primary/5 shadow-sm'
+                      : 'border-outline hover:border-primary/50'
+                  }`}
                 >
-                  Return to Dashboard
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white">
+                    <span className="material-symbols-outlined text-xl">account_balance</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      <p className="font-bold text-xs text-on-surface">Direct Bank Transfer</p>
+                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-[9px] font-bold uppercase text-green-700">Active</span>
+                    </div>
+                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
+                      Official bank account transfer with manual receipt verification.
+                    </p>
+                  </div>
                 </button>
-             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+
+                {/* Option 2: Debit / Credit Card (Currently unavailable) */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMethod('card', 'Debit / Credit Card')}
+                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                    selectedMethod === 'card'
+                      ? 'border-amber-400 bg-amber-50/50 shadow-sm'
+                      : 'border-outline/70 bg-surface-container/20 opacity-85 hover:border-outline'
+                  }`}
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-container text-on-surface-variant">
+                    <span className="material-symbols-outlined text-xl">credit_card</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      <p className="font-bold text-xs text-on-surface">Debit / Credit Card</p>
+                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[9px] font-bold text-on-surface-variant">Currently unavailable</span>
+                    </div>
+                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
+                      Mastercard, Visa & Verve online card gateway.
+                    </p>
+                  </div>
+                </button>
+
+                {/* Option 3: Paystack / Flutterwave Online (Currently unavailable) */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMethod('paystack', 'Paystack / Online Gateway')}
+                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                    selectedMethod === 'paystack'
+                      ? 'border-amber-400 bg-amber-50/50 shadow-sm'
+                      : 'border-outline/70 bg-surface-container/20 opacity-85 hover:border-outline'
+                  }`}
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-container text-on-surface-variant">
+                    <span className="material-symbols-outlined text-xl">bolt</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      <p className="font-bold text-xs text-on-surface">Paystack / Online</p>
+                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[9px] font-bold text-on-surface-variant">Currently unavailable</span>
+                    </div>
+                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
+                      Instant online checkout gateway integration.
+                    </p>
+                  </div>
+                </button>
+
+                {/* Option 4: USSD / Bank QR (Currently unavailable) */}
+                <button
+                  type="button"
+                  onClick={() => handleSelectPaymentMethod('ussd', 'USSD & Bank QR')}
+                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                    selectedMethod === 'ussd'
+                      ? 'border-amber-400 bg-amber-50/50 shadow-sm'
+                      : 'border-outline/70 bg-surface-container/20 opacity-85 hover:border-outline'
+                  }`}
+                >
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-container text-on-surface-variant">
+                    <span className="material-symbols-outlined text-xl">dialpad</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      <p className="font-bold text-xs text-on-surface">USSD / Bank QR</p>
+                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[9px] font-bold text-on-surface-variant">Currently unavailable</span>
+                    </div>
+                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
+                      Fast bank USSD code dial and QR scanning.
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              {/* Informative Unavailable Notice Banner */}
+              {unavailableNotice && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs font-medium text-amber-900"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="material-symbols-outlined text-amber-600 text-lg">info</span>
+                    <span>{unavailableNotice}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPaymentMethod('bank_transfer', 'Direct Bank Transfer')}
+                    className="shrink-0 rounded-lg bg-amber-200/80 px-3 py-1 text-[11px] font-bold text-amber-900 hover:bg-amber-300 transition-colors"
+                  >
+                    Use Bank Transfer
+                  </button>
+                </motion.div>
+              )}
+            </div>
+
+            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+              <div className="flex items-center justify-between border-b border-outline pb-6">
+                <div>
+                  <span className="inline-block rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary mb-2">
+                    Official Bank Transfer
+                  </span>
+                  <h2 className="text-2xl font-bold text-on-surface">Payment Instructions</h2>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-on-surface-variant font-medium">Total Amount Due</p>
+                  <p className="text-2xl font-black text-primary">{formatPrice(booking.totalAmount)}</p>
+                </div>
+              </div>
+
+              {/* Unique Payment Reference Box */}
+              <div className="mt-6 rounded-2xl border border-primary/20 bg-primary/5 p-5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-primary">Your Payment Reference</p>
+                    <p className="mt-1 font-mono text-xl font-black text-on-surface tracking-wider">{paymentRef}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyReference}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-xs font-bold text-white shadow-sm transition-all hover:bg-primary-container"
+                  >
+                    <span className="material-symbols-outlined text-sm">{copiedRef ? 'check' : 'content_copy'}</span>
+                    <span>{copiedRef ? 'Copied!' : 'Copy Reference'}</span>
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-on-surface-variant font-medium">
+                  ⚠️ <span className="font-semibold text-on-surface">Important:</span> Include this reference code as your transfer remark or narration for instant matching.
+                </p>
+              </div>
+
+              {/* Bank Account Details Grid */}
+              <div className="mt-6 space-y-4">
+                <div className="rounded-2xl border border-outline bg-surface-container/30 p-5 space-y-4">
+                  <div className="flex justify-between items-center pb-3 border-b border-outline/60">
+                    <span className="text-xs font-bold text-on-surface-variant">Bank Name</span>
+                    <span className="text-sm font-bold text-on-surface">{bankConfig.bankName}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center pb-3 border-b border-outline/60">
+                    <span className="text-xs font-bold text-on-surface-variant">Account Name</span>
+                    <span className="text-sm font-bold text-on-surface">{bankConfig.accountName}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center pb-3 border-b border-outline/60 flex-wrap gap-2">
+                    <span className="text-xs font-bold text-on-surface-variant">Account Number</span>
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono text-lg font-black text-primary tracking-wider">{bankConfig.accountNumber}</span>
+                      <button
+                        type="button"
+                        onClick={handleCopyAccount}
+                        className="p-1.5 rounded-md hover:bg-primary/10 text-primary transition-colors"
+                        title="Copy Account Number"
+                      >
+                        <span className="material-symbols-outlined text-base">{copied ? 'check' : 'content_copy'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {bankConfig.branchName && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-bold text-on-surface-variant">Branch</span>
+                      <span className="text-xs font-semibold text-on-surface">{bankConfig.branchName}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl bg-surface-container-lowest border border-outline p-5 text-xs font-medium text-on-surface-variant space-y-2">
+                  <p className="font-bold text-on-surface text-sm">Payment Process:</p>
+                  <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
+                    <li>Open your banking app or internet banking portal.</li>
+                    <li>Transfer the exact total of <strong className="text-on-surface">{formatPrice(booking.totalAmount)}</strong> to the account above.</li>
+                    <li>Set narration to <strong className="font-mono text-primary">{paymentRef}</strong>.</li>
+                    <li>Take a screenshot or download the payment receipt.</li>
+                    <li>Upload your receipt in the form on the right to complete verification.</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Upload Proof & Booking Summary */}
+          <div className="space-y-6">
+            {/* Upload Proof Form Card */}
+            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+              <h3 className="text-lg font-bold text-on-surface mb-2">Upload Proof of Payment</h3>
+              <p className="text-xs text-on-surface-variant mb-6 font-medium">
+                Upload your transfer receipt or bank transaction slip for verification.
+              </p>
+
+              {uploadError && (
+                <div className="mb-4 rounded-xl border border-error/20 bg-error-container p-3.5 text-xs font-bold text-on-error-container">
+                  {uploadError}
+                </div>
+              )}
+
+              <form onSubmit={handleSubmitProof} className="space-y-5">
+                {/* File Upload Drop Zone */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
+                    Payment Receipt (JPG, PNG, or PDF)
+                  </label>
+                  <label className="relative flex min-h-[140px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-outline bg-surface-container/20 p-6 text-center transition-all hover:border-primary hover:bg-primary/5">
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/jpg,application/pdf"
+                      onChange={handleFileSelect}
+                      disabled={uploading || isPaid}
+                      className="sr-only"
+                    />
+                    {proofFile ? (
+                      <div className="flex flex-col items-center gap-2">
+                        <span className="material-symbols-outlined text-3xl text-primary">description</span>
+                        <p className="text-xs font-bold text-on-surface">{proofFile.name}</p>
+                        <p className="text-[10px] text-on-surface-variant font-medium">
+                          {(proofFile.size / 1024).toFixed(1)} KB — Click to change
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-2">
+                        <span className="material-symbols-outlined text-3xl text-on-surface-variant">upload_file</span>
+                        <p className="text-xs font-bold text-on-surface">Click to select receipt or drop file here</p>
+                        <p className="text-[10px] text-on-surface-variant font-medium">Supported: PNG, JPG, JPEG, PDF up to 5MB</p>
+                      </div>
+                    )}
+                  </label>
+                </div>
+
+                {/* Customer Note */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
+                    Transaction Remarks / Bank Sender Name
+                  </label>
+                  <input
+                    type="text"
+                    value={customerNote}
+                    onChange={(e) => setCustomerNote(e.target.value)}
+                    placeholder="e.g. Sent from John Doe / Access Bank"
+                    disabled={uploading || isPaid}
+                    className="w-full rounded-xl border border-outline bg-surface-container px-4 py-3 text-xs font-medium text-on-surface focus:border-primary focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={uploading || !proofFile || isPaid}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-primary py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:brightness-110 disabled:opacity-50"
+                >
+                  {uploading ? (
+                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-lg">check_circle</span>
+                      <span>{isUnderReview ? 'Update Payment Receipt' : 'Submit Proof of Transfer'}</span>
+                    </>
+                  )}
+                </button>
+              </form>
+            </div>
+
+            {/* Booking Summary Card */}
+            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+              <h4 className="text-sm font-bold uppercase tracking-wider text-on-surface mb-4">Trip Summary</h4>
+              <dl className="space-y-3 text-xs">
+                <div className="flex justify-between">
+                  <dt className="text-on-surface-variant font-medium">Service Category</dt>
+                  <dd className="font-bold text-on-surface">{booking.serviceType || 'Transport Service'}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-on-surface-variant font-medium">Class / Package</dt>
+                  <dd className="font-bold text-on-surface">{booking.vehicleClass}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-on-surface-variant font-medium">Pickup Point</dt>
+                  <dd className="font-bold text-on-surface text-right max-w-[200px] truncate">{booking.pickup}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-on-surface-variant font-medium">Destination</dt>
+                  <dd className="font-bold text-on-surface text-right max-w-[200px] truncate">{booking.destination}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-on-surface-variant font-medium">Date & Time</dt>
+                  <dd className="font-bold text-on-surface">{booking.date} at {booking.time}</dd>
+                </div>
+                {trackingId && (
+                  <div className="flex justify-between border-t border-outline pt-3">
+                    <dt className="text-primary font-bold">Live Tracking ID</dt>
+                    <dd className="font-mono font-bold text-primary">{trackingId}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -37,6 +37,9 @@ import { useCurrency } from '../hooks/useCurrency';
 import { logAudit, AuditAction } from '../lib/audit';
 import { apiDelete, apiPost } from '../lib/api';
 import { company, defaultVehicles } from '../lib/company';
+import { paymentService } from '../lib/payments/paymentService';
+import { PaymentRecord, BankAccountConfig } from '../lib/payments/types';
+import { DEFAULT_BANK_CONFIG } from '../lib/payments/manualBankTransfer';
 
 const defaultTrackingLocations = [
   'Package in Badagry',
@@ -48,7 +51,7 @@ const defaultTrackingLocations = [
 export default function AdminDashboard() {
   const { user } = useAuth();
   const { formatPrice, convertPrice, rates, isLiveRates, lastRateUpdate, refreshRates } = useCurrency();
-  const [activeTab, setActiveTab] = useState<'bookings' | 'prices' | 'settings' | 'hubs' | 'schedules' | 'admins' | 'drivers' | 'analytics' | 'maintenance' | 'reviews'>('bookings');
+  const [activeTab, setActiveTab] = useState<'bookings' | 'payments' | 'prices' | 'settings' | 'hubs' | 'schedules' | 'admins' | 'drivers' | 'analytics' | 'maintenance' | 'reviews'>('bookings');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [testNairaAmount, setTestNairaAmount] = useState<number>(50000);
@@ -78,6 +81,17 @@ export default function AdminDashboard() {
   
   // Data States
   const [bookings, setBookings] = useState<any[]>([]);
+  const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [paymentFilter, setPaymentFilter] = useState<string>('All');
+  const [selectedPaymentProof, setSelectedPaymentProof] = useState<PaymentRecord | null>(null);
+  const [rejectModalPayment, setRejectModalPayment] = useState<PaymentRecord | null>(null);
+  const [rejectionReasonInput, setRejectionReasonInput] = useState('');
+  const [selectedAuditPayment, setSelectedAuditPayment] = useState<PaymentRecord | null>(null);
+  const [trackingUpdateBooking, setTrackingUpdateBooking] = useState<any | null>(null);
+  const [newTrackingCheckpoint, setNewTrackingCheckpoint] = useState('');
+  const [newTrackingStatus, setNewTrackingStatus] = useState('InTransit');
+  const [bankConfigSettings, setBankConfigSettings] = useState<BankAccountConfig>(DEFAULT_BANK_CONFIG);
+
   const [hubs, setHubs] = useState<any[]>([]);
   const [prices, setPrices] = useState<any[]>([]);
   const [touringStates, setTouringStates] = useState<any[]>([]);
@@ -125,6 +139,9 @@ export default function AdminDashboard() {
         } else {
           setBookings(newBookings);
         }
+      } else if (activeTab === 'payments') {
+        const allPayments = await paymentService.getAllPayments();
+        setPayments(allPayments);
       } else if (activeTab === 'hubs') {
         const snap = await getDocs(collection(db, 'hubs'));
         setHubs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -146,11 +163,13 @@ export default function AdminDashboard() {
         const carHireSettings = snap.docs.find(d => d.id === 'car_hire_options')?.data()?.value || company.carHireOptions;
         const pricingRules = snap.docs.find(d => d.id === 'pricing_rules')?.data()?.value || company.pricingRules;
         const trackingSettings = snap.docs.find(d => d.id === 'tracking_locations')?.data()?.value || defaultTrackingLocations;
+        const bankSettings = snap.docs.find(d => d.id === 'bank_accounts')?.data()?.value || DEFAULT_BANK_CONFIG;
         setTouringStates(Array.isArray(touringSettings) ? touringSettings : company.touringStates);
         setInternationalTours(Array.isArray(internationalSettings) ? internationalSettings : company.internationalTours);
         setCarHireOptions(Array.isArray(carHireSettings) ? carHireSettings : company.carHireOptions);
         setPricingRulesSettings({ ...company.pricingRules, ...(pricingRules || {}) });
         setTrackingLocationsSettings(Array.isArray(trackingSettings) ? trackingSettings : defaultTrackingLocations);
+        setBankConfigSettings({ ...DEFAULT_BANK_CONFIG, ...(bankSettings || {}) });
       } else if (activeTab === 'schedules') {
         const snap = await getDocs(collection(db, 'blocked_dates'));
         setBlockedDays(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -226,6 +245,111 @@ export default function AdminDashboard() {
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'settings/vehicle_types');
+    }
+  };
+
+  const handleApprovePayment = async (payment: PaymentRecord) => {
+    if (!window.confirm(`Approve payment of ${formatPrice(payment.amount)} for booking #${payment.bookingId}?`)) return;
+    try {
+      setLoading(true);
+      await paymentService.verifyPayment(payment.id, user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', 'Payment approved in admin verification panel');
+      await logAudit(user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', AuditAction.UPDATE_BOOKING_STATUS, {
+        action: 'PAYMENT_APPROVED',
+        paymentId: payment.id,
+        bookingId: payment.bookingId,
+        amount: payment.amount,
+      });
+      const updated = await paymentService.getAllPayments();
+      setPayments(updated);
+    } catch (err: any) {
+      alert(err.message || 'Failed to approve payment');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmRejectPayment = async () => {
+    if (!rejectModalPayment) return;
+    if (!rejectionReasonInput.trim()) {
+      alert('Please provide a mandatory reason for rejection.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await paymentService.rejectPayment(rejectModalPayment.id, user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', rejectionReasonInput.trim());
+      await logAudit(user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', AuditAction.UPDATE_BOOKING_STATUS, {
+        action: 'PAYMENT_REJECTED',
+        paymentId: rejectModalPayment.id,
+        reason: rejectionReasonInput.trim(),
+      });
+      setRejectModalPayment(null);
+      setRejectionReasonInput('');
+      const updated = await paymentService.getAllPayments();
+      setPayments(updated);
+    } catch (err: any) {
+      alert(err.message || 'Failed to reject payment');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleReconciliation = async (payment: PaymentRecord) => {
+    try {
+      const newReconState = !payment.isReconciled;
+      const paymentRef = doc(db, 'payments', payment.id);
+      await updateDoc(paymentRef, {
+        isReconciled: newReconState,
+        reconciledAt: newReconState ? new Date().toISOString() : null,
+        reconciledBy: newReconState ? user?.email : null,
+        updatedAt: new Date().toISOString(),
+      });
+      const updated = await paymentService.getAllPayments();
+      setPayments(updated);
+    } catch (err: any) {
+      alert(err.message || 'Failed to update reconciliation status');
+    }
+  };
+
+  const handleSaveBankConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await setDoc(doc(db, 'settings', 'bank_accounts'), { key: 'bank_accounts', value: bankConfigSettings });
+      await logAudit(user?.uid || 'admin', user?.email || 'admin', AuditAction.UPDATE_SETTING, {
+        action: 'UPDATE_BANK_CONFIG',
+        bankName: bankConfigSettings.bankName,
+      });
+      alert('Bank account configuration saved successfully!');
+    } catch (err) {
+      alert('Failed to save bank configuration');
+    }
+  };
+
+  const handleSaveTrackingUpdate = async () => {
+    if (!trackingUpdateBooking || !newTrackingCheckpoint.trim()) return;
+    try {
+      setLoading(true);
+      const bRef = doc(db, 'bookings', trackingUpdateBooking.id);
+      const newEvent = {
+        id: `evt-${Date.now()}`,
+        type: newTrackingStatus,
+        createdAt: new Date().toISOString(),
+        location: newTrackingCheckpoint.trim(),
+        notes: `Checkpoint updated: ${newTrackingCheckpoint.trim()}`,
+      };
+      const existingEvents = Array.isArray(trackingUpdateBooking.events) ? trackingUpdateBooking.events : [];
+      await updateDoc(bRef, {
+        currentCheckpoint: newTrackingCheckpoint.trim(),
+        status: newTrackingStatus,
+        events: [...existingEvents, newEvent],
+        updatedAt: new Date().toISOString(),
+      });
+      setTrackingUpdateBooking(null);
+      setNewTrackingCheckpoint('');
+      fetchData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update tracking');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -539,17 +663,17 @@ export default function AdminDashboard() {
 
         <nav className="flex items-center justify-between bg-white p-1 rounded-lg border border-outline shadow-sm overflow-x-auto no-scrollbar scroll-smooth gap-4">
           <div className="flex gap-1">
-            {(['bookings', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
+            {(['bookings', 'payments', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`px-6 py-3 text-sm font-bold transition-all rounded-md whitespace-nowrap ${
+                className={`px-6 py-3 text-sm font-bold transition-all rounded-md whitespace-nowrap capitalize ${
                   activeTab === tab 
                     ? 'bg-primary text-white' 
                     : 'text-on-surface-variant hover:bg-surface-container'
                 }`}
               >
-                {tab}
+                {tab === 'payments' ? '💰 Payment Verifications' : tab}
               </button>
             ))}
           </div>
@@ -574,7 +698,9 @@ export default function AdminDashboard() {
                  <option value="All">All Status</option>
                  <option value="Quoted">Quoted</option>
                  <option value="Paid">Paid</option>
+                 <option value="Confirmed">Confirmed</option>
                  <option value="Dispatched">Dispatched</option>
+                 <option value="InTransit">InTransit</option>
                  <option value="Completed">Completed</option>
                  <option value="Cancelled">Cancelled</option>
                </select>
@@ -603,14 +729,14 @@ export default function AdminDashboard() {
               <div className="p-8 border-b border-outline bg-surface-container/30">
                 <h3 className="font-bold flex items-center gap-2">
                   <span className="material-symbols-outlined text-primary">analytics</span> 
-                  All Bookings
+                  All Bookings & Real-Time Tracking
                 </h3>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-surface-container/20 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">
-                      <th className="p-6 border-b border-outline">ID</th>
+                      <th className="p-6 border-b border-outline">Booking & Tracking ID</th>
                       <th className="p-6 border-b border-outline">Customer</th>
                       <th className="p-6 border-b border-outline">Route</th>
                       <th className="p-6 border-b border-outline">Vehicle</th>
@@ -622,18 +748,27 @@ export default function AdminDashboard() {
                   <tbody className="text-sm">
                     {filteredBookings.map((b) => (
                       <tr key={b.id} className="hover:bg-surface-container/10 transition-colors">
-                        <td className="p-6 border-b border-outline font-mono text-[10px]">{b.id?.slice(-6)}</td>
-                        <td className="p-6 border-b border-outline font-medium">{b.customerId?.slice(-6)}</td>
+                        <td className="p-6 border-b border-outline">
+                          <p className="font-mono text-xs font-bold text-primary">{b.trackingId || b.id?.slice(-8)}</p>
+                          <p className="font-mono text-[10px] text-on-surface-variant">ID: {b.id?.slice(-6)}</p>
+                          {b.currentCheckpoint && (
+                            <p className="text-[10px] text-green-700 font-semibold mt-1">📍 {b.currentCheckpoint}</p>
+                          )}
+                        </td>
+                        <td className="p-6 border-b border-outline font-medium">
+                          <p className="font-bold text-on-surface text-xs">{b.customerName || b.customerId?.slice(-6)}</p>
+                          <p className="text-[10px] text-on-surface-variant">{b.customerEmail}</p>
+                        </td>
                         <td className="p-6 border-b border-outline">
                           <div className="flex flex-col">
-                            <span className="font-bold">{b.pickup}</span>
+                            <span className="font-bold text-xs">{b.pickup}</span>
                             <span className="text-[10px] text-on-surface-variant">to {b.destination}</span>
                           </div>
                         </td>
-                        <td className="p-6 border-b border-outline">{b.vehicleClass}</td>
+                        <td className="p-6 border-b border-outline text-xs font-semibold">{b.vehicleClass}</td>
                         <td className="p-6 border-b border-outline">
                            <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${
-                             b.status === 'Paid' ? 'bg-green-100 text-green-700' : 'bg-primary/10 text-primary'
+                             b.status === 'Paid' || b.status === 'Confirmed' ? 'bg-green-100 text-green-700' : 'bg-primary/10 text-primary'
                            }`}>
                              {b.status}
                            </span>
@@ -641,6 +776,18 @@ export default function AdminDashboard() {
                         <td className="p-6 border-b border-outline font-bold">{formatPrice(b.totalAmount)}</td>
                         <td className="p-6 border-b border-outline">
                            <div className="flex flex-col gap-2">
+                             <button
+                               type="button"
+                               onClick={() => {
+                                 setTrackingUpdateBooking(b);
+                                 setNewTrackingCheckpoint(b.currentCheckpoint || b.pickup || '');
+                                 setNewTrackingStatus(b.status || 'InTransit');
+                               }}
+                               className="px-2.5 py-1.5 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-md text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
+                             >
+                               <span className="material-symbols-outlined text-xs">radar</span>
+                               <span>Update Tracking</span>
+                             </button>
                              <select 
                                className="bg-surface-container border border-outline rounded-lg p-2 text-xs font-bold"
                                value={b.status}
@@ -650,10 +797,11 @@ export default function AdminDashboard() {
                                <option value="Paid">Paid</option>
                                <option value="Confirmed">Confirmed</option>
                                <option value="Dispatched">Dispatched</option>
+                               <option value="InTransit">InTransit</option>
                                <option value="Completed">Completed</option>
                                <option value="Cancelled">Cancelled</option>
                              </select>
-                             {(b.status === 'Paid' || b.status === 'Confirmed' || b.status === 'Dispatched') && (
+                             {(b.status === 'Paid' || b.status === 'Confirmed' || b.status === 'Dispatched' || b.status === 'InTransit') && (
                                <select 
                                  className="bg-surface-container border border-outline rounded-lg p-2 text-[9px] font-bold uppercase tracking-widest"
                                  value={b.driverId || ''}
@@ -689,6 +837,206 @@ export default function AdminDashboard() {
                   </button>
                 </div>
               )}
+            </motion.div>
+          )}
+
+          {activeTab === 'payments' && (
+            <motion.div 
+              key="payments"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-8"
+            >
+              {/* Payment Summary Header */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="bg-white p-6 rounded-2xl border border-outline shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Total Submissions</p>
+                  <p className="text-3xl font-black text-on-surface mt-1">{payments.length}</p>
+                </div>
+                <div className="bg-white p-6 rounded-2xl border border-amber-200 bg-amber-50/50 shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Awaiting Verification</p>
+                  <p className="text-3xl font-black text-amber-800 mt-1">
+                    {payments.filter(p => p.status === 'UNDER_REVIEW').length}
+                  </p>
+                </div>
+                <div className="bg-white p-6 rounded-2xl border border-green-200 bg-green-50/50 shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-green-700">Verified Revenue</p>
+                  <p className="text-3xl font-black text-green-800 mt-1">
+                    {formatPrice(payments.filter(p => p.status === 'PAID').reduce((sum, p) => sum + (p.amount || 0), 0))}
+                  </p>
+                </div>
+                <div className="bg-white p-6 rounded-2xl border border-outline shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Reconciled Count</p>
+                  <p className="text-3xl font-black text-primary mt-1">
+                    {payments.filter(p => p.isReconciled).length} / {payments.filter(p => p.status === 'PAID').length}
+                  </p>
+                </div>
+              </div>
+
+              {/* Payments List Table Container */}
+              <div className="bg-white rounded-2xl border border-outline shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-outline flex flex-col md:flex-row md:items-center justify-between gap-4 bg-surface-container/20">
+                  <div>
+                    <h3 className="font-bold text-lg text-on-surface flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary">verified_user</span>
+                      Bank Transfer Verification & Payment Records
+                    </h3>
+                    <p className="text-xs text-on-surface-variant mt-0.5">
+                      Verify customer uploaded transfer receipts, approve transactions, or log structured rejection reasons.
+                    </p>
+                  </div>
+
+                  {/* Status Filters */}
+                  <div className="flex flex-wrap gap-2">
+                    {['All', 'UNDER_REVIEW', 'PAID', 'PAYMENT_REJECTED', 'AWAITING_PAYMENT'].map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setPaymentFilter(st)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                          paymentFilter === st
+                            ? 'bg-primary text-white shadow-sm'
+                            : 'bg-white border border-outline text-on-surface-variant hover:border-primary'
+                        }`}
+                      >
+                        {st === 'UNDER_REVIEW' ? 'Under Review' : st === 'PAID' ? 'Paid / Approved' : st === 'PAYMENT_REJECTED' ? 'Rejected' : st === 'AWAITING_PAYMENT' ? 'Awaiting Transfer' : 'All'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-surface-container/30 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">
+                        <th className="p-5 border-b border-outline">Payment Ref & Tracking</th>
+                        <th className="p-5 border-b border-outline">Customer</th>
+                        <th className="p-5 border-b border-outline">Amount Due</th>
+                        <th className="p-5 border-b border-outline">Status</th>
+                        <th className="p-5 border-b border-outline">Payment Receipt Proof</th>
+                        <th className="p-5 border-b border-outline">Reconciled</th>
+                        <th className="p-5 border-b border-outline text-right">Verification Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-xs">
+                      {payments
+                        .filter(p => paymentFilter === 'All' || p.status === paymentFilter)
+                        .map((p) => (
+                          <tr key={p.id} className="hover:bg-surface-container/10 transition-colors border-b border-outline/60">
+                            <td className="p-5">
+                              <p className="font-mono text-xs font-black text-primary">{p.paymentReference || 'N/A'}</p>
+                              <p className="font-mono text-[10px] text-on-surface-variant">Booking ID: {p.bookingId?.slice(-8)}</p>
+                              {p.trackingId && (
+                                <span className="inline-block mt-1 font-mono text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">
+                                  {p.trackingId}
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-5">
+                              <p className="font-bold text-on-surface text-xs">{p.customerName || 'Customer'}</p>
+                              <p className="text-[10px] text-on-surface-variant">{p.customerEmail}</p>
+                              {p.customerNote && (
+                                <p className="text-[10px] text-on-surface-variant italic mt-1 max-w-xs">"{p.customerNote}"</p>
+                              )}
+                            </td>
+                            <td className="p-5">
+                              <p className="font-bold text-sm text-on-surface">{formatPrice(p.amount)}</p>
+                              <span className="text-[10px] text-on-surface-variant">{p.currency || 'NGN'} via {p.method}</span>
+                            </td>
+                            <td className="p-5">
+                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                p.status === 'PAID'
+                                  ? 'bg-green-100 text-green-800'
+                                  : p.status === 'UNDER_REVIEW'
+                                  ? 'bg-amber-100 text-amber-800 animate-pulse'
+                                  : p.status === 'PAYMENT_REJECTED'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-surface-container text-on-surface-variant'
+                              }`}>
+                                {p.status === 'UNDER_REVIEW' ? 'Under Review' : p.status === 'PAID' ? 'Verified (PAID)' : p.status === 'PAYMENT_REJECTED' ? 'Rejected' : p.status}
+                              </span>
+                              {p.rejectionReason && (
+                                <p className="text-[10px] text-red-600 font-medium mt-1 max-w-xs">
+                                  Reason: {p.rejectionReason}
+                                </p>
+                              )}
+                            </td>
+                            <td className="p-5">
+                              {p.proofOfPaymentUrl ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedPaymentProof(p)}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 text-primary hover:bg-primary hover:text-white font-bold text-[11px] transition-colors"
+                                >
+                                  <span className="material-symbols-outlined text-sm">receipt</span>
+                                  <span>View Receipt</span>
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-on-surface-variant italic">No proof uploaded</span>
+                              )}
+                            </td>
+                            <td className="p-5">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleReconciliation(p)}
+                                className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-colors ${
+                                  p.isReconciled
+                                    ? 'bg-green-600 text-white'
+                                    : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'
+                                }`}
+                              >
+                                {p.isReconciled ? '✓ Reconciled' : 'Unreconciled'}
+                              </button>
+                            </td>
+                            <td className="p-5 text-right">
+                              <div className="flex items-center justify-end gap-2 flex-wrap">
+                                {p.status !== 'PAID' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApprovePayment(p)}
+                                    className="px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1"
+                                  >
+                                    <span className="material-symbols-outlined text-sm">check</span>
+                                    <span>Approve</span>
+                                  </button>
+                                )}
+                                {p.status !== 'PAYMENT_REJECTED' && p.status !== 'PAID' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setRejectModalPayment(p);
+                                      setRejectionReasonInput('');
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1"
+                                  >
+                                    <span className="material-symbols-outlined text-sm">close</span>
+                                    <span>Reject</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedAuditPayment(p)}
+                                  className="p-1.5 rounded-lg border border-outline hover:bg-surface-container text-on-surface-variant"
+                                  title="View Payment Audit Trail"
+                                >
+                                  <span className="material-symbols-outlined text-sm">history</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      {payments.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="p-12 text-center text-on-surface-variant italic">
+                            No payment records recorded yet. Payments created by checkout will appear here.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -1372,6 +1720,39 @@ export default function AdminDashboard() {
                   <div className="space-y-4">
                     <div>
                       <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Distance Trips Price Per KM (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.pricePerKm || 350}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, pricePerKm: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Pickup & Logistics Distance Price Per KM (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.logisticsPricePerKm || 250}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, logisticsPricePerKm: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Cross-Border Base Ticket Price Per Passenger (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.crossBorderBasePerPassenger || 90000}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, crossBorderBasePerPassenger: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
                         Standard Service Fee (NGN)
                       </label>
                       <input
@@ -1475,6 +1856,99 @@ export default function AdminDashboard() {
                   </div>
                 </section>
               </div>
+
+              {/* Official Bank Account Details Configuration */}
+              <section className="bg-white p-8 rounded-2xl border border-outline shadow-sm">
+                <div className="flex items-center justify-between gap-4 mb-6">
+                  <div>
+                    <h3 className="text-xl font-bold text-on-surface flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary">account_balance</span>
+                      Official Bank Account & Manual Transfer Details
+                    </h3>
+                    <p className="text-xs text-on-surface-variant mt-1">
+                      Configure the authoritative bank details, account number, and narration instructions presented to customers during checkout.
+                    </p>
+                  </div>
+                </div>
+                <form onSubmit={handleSaveBankConfig} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Bank Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={bankConfigSettings.bankName}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, bankName: e.target.value })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                      placeholder="e.g. Guaranty Trust Bank"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Account Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={bankConfigSettings.accountName}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, accountName: e.target.value })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                      placeholder="e.g. BLM Motors & Logistics Ltd"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Account Number</label>
+                    <input
+                      type="text"
+                      required
+                      value={bankConfigSettings.accountNumber}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, accountNumber: e.target.value })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-mono font-black text-primary tracking-wider"
+                      placeholder="0123456789"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Branch Name</label>
+                    <input
+                      type="text"
+                      value={bankConfigSettings.branchName || ''}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, branchName: e.target.value })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-semibold"
+                      placeholder="e.g. Ikeja Central Branch"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Support Contact Phone</label>
+                    <input
+                      type="text"
+                      value={bankConfigSettings.contactPhone || ''}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, contactPhone: e.target.value })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-semibold"
+                      placeholder="+234..."
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Payment Deadline (Hours)</label>
+                    <input
+                      type="number"
+                      value={bankConfigSettings.deadlineHours || 24}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, deadlineHours: parseInt(e.target.value) || 24 })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Customer Payment Instructions & Remark Notice</label>
+                    <textarea
+                      rows={2}
+                      value={bankConfigSettings.instructions}
+                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, instructions: e.target.value })}
+                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-xs font-medium resize-none"
+                    />
+                  </div>
+                  <div className="md:col-span-2 flex justify-end">
+                    <button type="submit" className="px-8 py-3.5 bg-primary text-white font-bold rounded-xl text-xs hover:bg-primary-container shadow-md transition-all">
+                      Save Official Bank Account Configuration
+                    </button>
+                  </div>
+                </form>
+              </section>
             </motion.div>
           )}
 
@@ -1838,6 +2312,333 @@ export default function AdminDashboard() {
            </div>
          ))}
       </footer>
+
+      {/* MODAL 1: Payment Proof Viewer Modal */}
+      {selectedPaymentProof && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-outline bg-white p-7 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Payment Receipt Verification</span>
+                <h4 className="text-lg font-bold text-on-surface">Ref: {selectedPaymentProof.paymentReference}</h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedPaymentProof(null)}
+                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
+              >
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4 rounded-xl bg-surface-container/30 p-4 text-xs">
+                <div>
+                  <p className="text-on-surface-variant font-medium">Customer</p>
+                  <p className="font-bold text-on-surface">{selectedPaymentProof.customerName}</p>
+                </div>
+                <div>
+                  <p className="text-on-surface-variant font-medium">Amount Due</p>
+                  <p className="font-bold text-primary text-sm">{formatPrice(selectedPaymentProof.amount)}</p>
+                </div>
+                <div>
+                  <p className="text-on-surface-variant font-medium">Booking ID</p>
+                  <p className="font-mono font-bold">{selectedPaymentProof.bookingId}</p>
+                </div>
+                <div>
+                  <p className="text-on-surface-variant font-medium">Submitted Date</p>
+                  <p className="font-bold">{selectedPaymentProof.submittedAt ? new Date(selectedPaymentProof.submittedAt).toLocaleString() : 'N/A'}</p>
+                </div>
+              </div>
+
+              {selectedPaymentProof.customerNote && (
+                <div className="rounded-xl border border-outline/60 p-3.5 bg-surface-container/20 text-xs">
+                  <p className="font-bold text-on-surface mb-1">Customer Note:</p>
+                  <p className="text-on-surface-variant italic">{selectedPaymentProof.customerNote}</p>
+                </div>
+              )}
+
+              {/* Receipt Image / PDF view */}
+              <div className="rounded-2xl border border-outline overflow-hidden bg-black/5 flex items-center justify-center p-2 min-h-[260px]">
+                {selectedPaymentProof.proofOfPaymentUrl?.startsWith('data:application/pdf') || selectedPaymentProof.proofFileName?.endsWith('.pdf') ? (
+                  <div className="text-center py-10 space-y-3">
+                    <span className="material-symbols-outlined text-6xl text-primary">picture_as_pdf</span>
+                    <p className="text-xs font-bold text-on-surface">{selectedPaymentProof.proofFileName || 'PDF Document'}</p>
+                    <a
+                      href={selectedPaymentProof.proofOfPaymentUrl}
+                      download={selectedPaymentProof.proofFileName || 'receipt.pdf'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white font-bold text-xs"
+                    >
+                      <span className="material-symbols-outlined text-sm">download</span>
+                      Download PDF Receipt
+                    </a>
+                  </div>
+                ) : (
+                  <img
+                    src={selectedPaymentProof.proofOfPaymentUrl}
+                    alt="Proof of Payment"
+                    className="max-h-[60vh] max-w-full rounded-lg object-contain"
+                  />
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-outline">
+                {selectedPaymentProof.status !== 'PAID' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const p = selectedPaymentProof;
+                      setSelectedPaymentProof(null);
+                      handleApprovePayment(p);
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1.5"
+                  >
+                    <span className="material-symbols-outlined text-sm">check</span>
+                    <span>Approve Payment</span>
+                  </button>
+                )}
+                {selectedPaymentProof.status !== 'PAYMENT_REJECTED' && selectedPaymentProof.status !== 'PAID' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const p = selectedPaymentProof;
+                      setSelectedPaymentProof(null);
+                      setRejectModalPayment(p);
+                      setRejectionReasonInput('');
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1.5"
+                  >
+                    <span className="material-symbols-outlined text-sm">close</span>
+                    <span>Reject Payment</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Payment Rejection Modal (Mandatory Reason) */}
+      {rejectModalPayment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-3xl border border-outline bg-white p-7 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
+              <h4 className="text-lg font-bold text-on-surface">Reject Payment Submission</h4>
+              <button
+                type="button"
+                onClick={() => setRejectModalPayment(null)}
+                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
+              >
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <p className="text-xs text-on-surface-variant">
+                Please select or type a mandatory reason explaining why this payment proof was rejected.
+              </p>
+
+              {/* Quick Reason Pills */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  'Transfer not received in bank',
+                  'Incorrect transfer amount',
+                  'Invalid / forged payment slip',
+                  'Wrong beneficiary account',
+                  'Unreadable / corrupted document',
+                  'Duplicate payment submission',
+                ].map((reason) => (
+                  <button
+                    key={reason}
+                    type="button"
+                    onClick={() => setRejectionReasonInput(reason)}
+                    className="px-2.5 py-1 rounded-lg bg-surface-container hover:bg-primary/10 hover:text-primary text-[10px] font-semibold transition-colors"
+                  >
+                    {reason}
+                  </button>
+                ))}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">
+                  Rejection Reason *
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  value={rejectionReasonInput}
+                  onChange={(e) => setRejectionReasonInput(e.target.value)}
+                  placeholder="Enter detailed reason for rejection..."
+                  className="w-full rounded-xl border border-outline bg-surface-container px-3.5 py-2.5 text-xs font-medium text-on-surface focus:border-primary focus:outline-none resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-outline">
+                <button
+                  type="button"
+                  onClick={() => setRejectModalPayment(null)}
+                  className="px-4 py-2.5 rounded-xl border border-outline hover:bg-surface-container text-xs font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmRejectPayment}
+                  disabled={!rejectionReasonInput.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors"
+                >
+                  Confirm Rejection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: Payment Audit Trail Modal */}
+      {selectedAuditPayment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="relative max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-outline bg-white p-7 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Immutable Audit History</span>
+                <h4 className="text-lg font-bold text-on-surface">Payment #{selectedAuditPayment.paymentReference}</h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedAuditPayment(null)}
+                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
+              >
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {selectedAuditPayment.events && selectedAuditPayment.events.length > 0 ? (
+                <ol className="relative border-l-2 border-primary/30 pl-5 ml-2 space-y-5">
+                  {selectedAuditPayment.events.map((evt, idx) => (
+                    <li key={evt.id || idx} className="relative text-xs">
+                      <span className="absolute -left-[27px] top-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-primary shadow-sm" />
+                      <p className="font-mono text-[10px] font-bold text-primary">
+                        {evt.timestamp ? new Date(evt.timestamp).toLocaleString() : 'Timestamp Recorded'}
+                      </p>
+                      <p className="font-bold text-on-surface text-xs mt-0.5">{evt.eventType}</p>
+                      <p className="text-[11px] text-on-surface-variant">
+                        Actor: <span className="font-semibold">{evt.actorEmail || evt.actorId}</span> ({evt.actorRole})
+                      </p>
+                      {evt.notes && <p className="mt-1 text-[11px] text-on-surface-variant/80 italic">{evt.notes}</p>}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-xs text-on-surface-variant italic">No previous events recorded.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: Live Tracking Checkpoint & Status Update Modal */}
+      {trackingUpdateBooking && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-3xl border border-outline bg-white p-7 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Live Operations Dispatch</span>
+                <h4 className="text-lg font-bold text-on-surface">Update Tracking Milestone</h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTrackingUpdateBooking(null)}
+                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
+              >
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div className="rounded-xl bg-surface-container/30 p-3 space-y-1">
+                <p><span className="text-on-surface-variant font-medium">Tracking ID:</span> <strong className="font-mono text-primary">{trackingUpdateBooking.trackingId || trackingUpdateBooking.id}</strong></p>
+                <p><span className="text-on-surface-variant font-medium">Customer:</span> <strong>{trackingUpdateBooking.customerName || 'Customer'}</strong></p>
+                <p><span className="text-on-surface-variant font-medium">Route:</span> <strong>{trackingUpdateBooking.pickup} → {trackingUpdateBooking.destination}</strong></p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">
+                  Current Checkpoint Location *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newTrackingCheckpoint}
+                  onChange={(e) => setNewTrackingCheckpoint(e.target.value)}
+                  placeholder="e.g. Ikeja Depot - Departed, Seme Border - Cleared"
+                  className="w-full rounded-xl border border-outline bg-surface-container px-3.5 py-2.5 text-xs font-bold text-on-surface focus:border-primary focus:outline-none"
+                />
+              </div>
+
+              {/* Quick Checkpoint Presets */}
+              <div className="flex flex-wrap gap-1">
+                {[
+                  'Ikeja Central Depot - Dispatched',
+                  'In Transit on Expressway',
+                  'Seme Border Station - Clearance Done',
+                  'Cotonou Station - Arrived',
+                  'Out for Final Doorstep Delivery',
+                  'Package Delivered Successfully',
+                ].map((cp) => (
+                  <button
+                    key={cp}
+                    type="button"
+                    onClick={() => setNewTrackingCheckpoint(cp)}
+                    className="px-2 py-0.5 rounded bg-surface-container text-[10px] hover:bg-primary/10 hover:text-primary font-medium"
+                  >
+                    {cp}
+                  </button>
+                ))}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">
+                  Transit Status
+                </label>
+                <select
+                  value={newTrackingStatus}
+                  onChange={(e) => setNewTrackingStatus(e.target.value)}
+                  className="w-full rounded-xl border border-outline bg-surface-container px-3.5 py-2.5 text-xs font-bold text-on-surface focus:border-primary focus:outline-none"
+                >
+                  <option value="Paid">Paid</option>
+                  <option value="Confirmed">Confirmed</option>
+                  <option value="Dispatched">Dispatched</option>
+                  <option value="InTransit">InTransit</option>
+                  <option value="Completed">Completed / Delivered</option>
+                  <option value="Cancelled">Cancelled</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-outline">
+                <button
+                  type="button"
+                  onClick={() => setTrackingUpdateBooking(null)}
+                  className="px-4 py-2.5 rounded-xl border border-outline hover:bg-surface-container text-xs font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveTrackingUpdate}
+                  disabled={!newTrackingCheckpoint.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary-container disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors"
+                >
+                  Save Live Update
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
