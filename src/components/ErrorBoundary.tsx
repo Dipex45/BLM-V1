@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { logger } from '../lib/logger';
 
 interface Props {
   children: React.ReactNode;
@@ -23,7 +24,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   public componentDidCatch(error: any, errorInfo: any) {
-    console.error('Uncaught error:', error, errorInfo);
+    logger.error('Uncaught application error', { error, errorInfo });
   }
 
   public render(): React.ReactNode {

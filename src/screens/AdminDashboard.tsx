@@ -6,6 +6,7 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage
 import { 
   collection, 
   getDocs, 
+  getDoc,
   doc, 
   setDoc, 
   updateDoc, 
@@ -39,7 +40,7 @@ import { apiDelete, apiPost } from '../lib/api';
 import { company, defaultVehicles } from '../lib/company';
 import { paymentService } from '../lib/payments/paymentService';
 import { PaymentRecord, BankAccountConfig } from '../lib/payments/types';
-import { DEFAULT_BANK_CONFIG } from '../lib/payments/manualBankTransfer';
+import { DEFAULT_BANK_CONFIG } from '../lib/payments/bankConfig';
 
 const defaultTrackingLocations = [
   'Package in Badagry',
@@ -646,52 +647,54 @@ export default function AdminDashboard() {
   });
 
   return (
-    <div className="p-4 md:p-8 flex flex-col gap-8 md:gap-10 bg-background min-h-screen">
-      <header className="flex flex-col gap-8">
+    <div className="w-full max-w-full overflow-x-hidden bg-background min-h-screen px-3 py-4 sm:px-4 md:px-8 md:py-8">
+      <header className="flex flex-col gap-6 md:gap-8">
         <div>
-          <div className="flex items-center gap-3 mb-2">
-            <span className="px-3 py-1 bg-primary text-on-primary text-xs font-bold rounded-md">Admin access</span>
-            <span className="text-xs font-bold text-on-surface-variant">Operations management</span>
+          <div className="mb-2 flex flex-wrap items-center gap-2 sm:gap-3">
+            <span className="rounded-md bg-primary px-3 py-1 text-[10px] font-bold text-on-primary sm:text-xs">Admin access</span>
+            <span className="text-[10px] font-bold text-on-surface-variant sm:text-xs">Operations management</span>
           </div>
-          <h1 className="text-3xl md:text-5xl font-sans font-bold leading-none text-on-surface">Admin panel.</h1>
-          <p className="text-on-surface-variant text-sm font-semibold mt-3 flex items-center gap-4">
-            <span className="flex items-center gap-1.5 font-bold"><span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> Service: stable</span>
-            <span className="opacity-20 text-on-surface">|</span>
-            <span className="font-bold opacity-60">User: {user?.fullName || 'Admin'}</span>
+          <h1 className="text-2xl font-sans font-bold leading-none text-on-surface sm:text-3xl md:text-5xl">Admin panel.</h1>
+          <p className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-on-surface-variant sm:gap-4 sm:text-sm">
+            <span className="flex items-center gap-1.5 font-bold text-on-surface"><span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" /> Service: stable</span>
+            <span className="hidden opacity-20 text-on-surface sm:inline">|</span>
+            <span className="font-bold opacity-70">User: {user?.fullName || 'Admin'}</span>
           </p>
         </div>
 
-        <nav className="flex items-center justify-between bg-white p-1 rounded-lg border border-outline shadow-sm overflow-x-auto no-scrollbar scroll-smooth gap-4">
-          <div className="flex gap-1">
-            {(['bookings', 'payments', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-6 py-3 text-sm font-bold transition-all rounded-md whitespace-nowrap capitalize ${
-                  activeTab === tab 
-                    ? 'bg-primary text-white' 
-                    : 'text-on-surface-variant hover:bg-surface-container'
-                }`}
-              >
-                {tab === 'payments' ? '💰 Payment Verifications' : tab}
-              </button>
-            ))}
+        <nav className="flex flex-col gap-3 rounded-lg border border-outline bg-white p-2 shadow-sm md:flex-row md:items-center md:justify-between">
+          <div className="overflow-x-auto no-scrollbar">
+            <div className="flex min-w-max gap-1">
+              {(['bookings', 'payments', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`rounded-md px-3 py-2.5 text-xs font-bold capitalize transition-all whitespace-nowrap sm:px-4 sm:text-sm ${
+                    activeTab === tab 
+                      ? 'bg-primary text-white' 
+                      : 'text-on-surface-variant hover:bg-surface-container'
+                  }`}
+                >
+                  {tab === 'payments' ? '💰 Payment Verifications' : tab}
+                </button>
+              ))}
+            </div>
           </div>
 
           {activeTab === 'bookings' && (
-            <div className="flex items-center gap-2 pr-2">
-               <div className="relative">
-                 <span className="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-on-surface-variant text-sm">search</span>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end md:pr-2">
+               <div className="relative w-full sm:w-48">
+                 <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-sm text-on-surface-variant">search</span>
                  <input 
                    type="text" 
                    placeholder="Search..." 
-                   className="pl-9 pr-3 py-2 bg-surface-container border border-outline rounded-md text-sm font-semibold w-48"
+                   className="w-full rounded-md border border-outline bg-surface-container py-2 pl-9 pr-3 text-sm font-semibold"
                    value={searchQuery}
                    onChange={(e) => setSearchQuery(e.target.value)}
                  />
                </div>
                <select 
-                 className="bg-surface-container border border-outline rounded-md p-2 text-sm font-semibold"
+                 className="w-full rounded-md border border-outline bg-surface-container p-2 text-sm font-semibold sm:w-auto"
                  value={statusFilter}
                  onChange={(e) => setStatusFilter(e.target.value)}
                >
@@ -706,7 +709,7 @@ export default function AdminDashboard() {
                </select>
                <button 
                  onClick={exportBookingsCSV}
-                 className="p-2 bg-primary/10 text-primary rounded-md hover:bg-primary hover:text-white transition-all flex items-center gap-2 text-sm font-bold"
+                 className="flex items-center justify-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-sm font-bold text-primary transition-all hover:bg-primary hover:text-white"
                >
                  <span className="material-symbols-outlined text-sm">download</span>
                  CSV
@@ -716,7 +719,7 @@ export default function AdminDashboard() {
         </nav>
       </header>
 
-      <main className="flex-1">
+      <main className="mt-6 flex-1">
         <AnimatePresence mode="wait">
           {activeTab === 'bookings' && (
             <motion.div 

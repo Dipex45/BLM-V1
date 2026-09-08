@@ -7,11 +7,13 @@ import { auth } from '../lib/firebase';
 import { company } from '../lib/company';
 import CurrencySelector from './CurrencySelector';
 import Sidebar from './Sidebar';
+import { useLocale } from '../contexts/LocaleContext';
 
 export default function Navbar() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { language, setLanguage, t } = useLocale();
 
   const handleLogout = async () => {
     await signOut(auth);
@@ -19,7 +21,7 @@ export default function Navbar() {
   };
 
   const isAdmin = ['admin', 'super_admin', 'dispatcher', 'finance_admin', 'customer_support_agent'].includes(user?.role);
-  const dashboardPath = isAdmin ? '/admin' : '/dashboard';
+  const dashboardPath = isAdmin ? '/admin' : user?.role === 'driver' ? '/driver' : '/dashboard';
 
   return (
     <>
@@ -45,9 +47,9 @@ export default function Navbar() {
         </div>
 
         <div className="hidden items-center gap-8 text-sm font-semibold text-on-surface-variant lg:flex">
-          <Link to="/services" className="transition-colors hover:text-primary">Services</Link>
-          <Link to="/tracking" className="transition-colors hover:text-primary">Track booking</Link>
-          <Link to="/reviews" className="transition-colors hover:text-primary">Reviews</Link>
+          <Link to="/services" className="transition-colors hover:text-primary">{t('services')}</Link>
+          <Link to="/tracking" className="transition-colors hover:text-primary">{t('track')}</Link>
+          <Link to="/reviews" className="transition-colors hover:text-primary">{t('reviews')}</Link>
           <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="transition-colors hover:text-primary">
             WhatsApp
           </a>
@@ -55,13 +57,16 @@ export default function Navbar() {
 
         <div className="flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-3 lg:gap-4">
           <CurrencySelector compact={true} />
+          <button type="button" onClick={() => setLanguage(language === 'en' ? 'fr' : 'en')} className="rounded-md border border-outline px-2 py-2 text-xs font-black text-on-surface" title="English / Francais" aria-label="Change language">
+            {language === 'en' ? 'FR' : 'EN'}
+          </button>
 
           <Link
             to="/services"
             className="hidden items-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary-container sm:flex"
           >
             <span className="material-symbols-outlined text-base">event_available</span>
-            Book
+            {t('book')}
           </Link>
 
           {user ? (
@@ -78,9 +83,9 @@ export default function Navbar() {
             </div>
           ) : (
             <div className="flex items-center gap-2 sm:gap-3">
-              <Link to="/login" className="px-1.5 py-2 text-sm font-bold hover:text-primary sm:px-2">Log in</Link>
+              <Link to="/login" className="px-1.5 py-2 text-sm font-bold hover:text-primary sm:px-2">{t('login')}</Link>
               <Link to="/register" className="rounded-md bg-secondary px-2.5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-primary sm:px-3 md:px-4">
-                Create<span className="hidden sm:inline"> account</span>
+                {t('createAccount')}
               </Link>
             </div>
           )}

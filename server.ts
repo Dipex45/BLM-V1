@@ -1,3 +1,4 @@
+import "dotenv/config";
 import crypto from "node:crypto";
 import express, { NextFunction, Request, Response } from "express";
 import { createServer as createViteServer } from "vite";
@@ -13,6 +14,7 @@ import { DecodedIdToken, getAuth as getAdminAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
+import * as Sentry from "@sentry/node";
 
 type Role =
   | "super_admin"
@@ -51,6 +53,38 @@ const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === "production";
 const DEFAULT_EMAIL_FROM = process.env.NOTIFICATION_EMAIL_FROM || "BLM Motors <bookings@blmmotors.ng>";
 
+const productionEnvironmentKeys = [
+  "APP_URL",
+  "CORS_ORIGINS",
+  "FIREBASE_PROJECT_ID",
+  "REDIS_URL",
+  "PAYSTACK_SECRET_KEY",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "RESEND_API_KEY",
+  "TWILIO_ACCOUNT_SID",
+  "TWILIO_AUTH_TOKEN",
+  "TWILIO_FROM_NUMBER",
+  "TWILIO_WHATSAPP_FROM",
+  "SENTRY_DSN",
+];
+
+function validateEnvironment() {
+  const missing = productionEnvironmentKeys.filter((key) => !process.env[key]?.trim());
+  if (isProduction && missing.length > 0) {
+    throw new Error(`Missing required production environment variables: ${missing.join(", ")}`);
+  }
+  return missing;
+}
+
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || "development",
+    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE || (isProduction ? 0.15 : 1)),
+  });
+}
+
 const BookingStatusSchema = z.enum([
   "Quoted",
   "Booked",
@@ -70,6 +104,29 @@ const BookingValidationSchema = z.object({
   vehicleClass: z.string().trim().min(1).max(80),
   totalAmount: z.number().positive().max(50_000_000),
 });
+
+const BookingCreateSchema = BookingValidationSchema.extend({
+  customerName: z.string().trim().min(2).max(100),
+  customerEmail: z.string().email(),
+  customerPhone: z.string().trim().min(5).max(40),
+  serviceType: z.string().trim().min(2).max(120),
+  displayCurrency: z.string().length(3).optional(),
+  isReturn: z.boolean().default(false),
+  notes: z.string().trim().max(1000).default(""),
+  touringPackage: z.string().trim().max(120).optional(),
+  touringState: z.string().trim().max(80).optional(),
+  tourGuideNeeded: z.boolean().optional(),
+  internationalCountry: z.string().trim().max(80).optional(),
+  passengerCount: z.number().int().min(1).max(50).optional(),
+  borderClearanceHelp: z.boolean().optional(),
+  logisticsDetails: z.string().trim().max(2000).optional(),
+  packageWeightKg: z.number().positive().max(100_000).optional(),
+  carHireVehicle: z.string().trim().max(120).optional(),
+  carHireDurationDays: z.number().int().min(1).max(365).optional(),
+  carHireWithDriver: z.boolean().optional(),
+  pickupHub: z.string().trim().max(200).optional(),
+  pricingSnapshot: z.record(z.string(), z.unknown()).optional(),
+}).omit({ totalAmount: true });
 
 const SupportedCurrencySchema = z.enum(["NGN", "XOF", "GHS", "USD", "EUR", "GBP"]);
 const CURRENCY_RATES_FROM_NGN: Record<z.infer<typeof SupportedCurrencySchema>, number> = {
@@ -101,6 +158,23 @@ const PaystackInitializeSchema = z.object({
   bookingId: z.string().trim().min(3).max(160),
   email: z.string().email().optional(),
   currency: SupportedCurrencySchema.optional(),
+});
+
+const ManualPaymentSchema = z.object({
+  bookingId: z.string().trim().min(3).max(160),
+});
+
+const ManualProofSchema = z.object({
+  paymentId: z.string().trim().min(3).max(160),
+  proofOfPaymentUrl: z.string().url().max(3000),
+  proofFileName: z.string().trim().min(1).max(200),
+  customerNote: z.string().trim().max(500).optional(),
+});
+
+const ManualReviewSchema = z.object({
+  paymentId: z.string().trim().min(3).max(160),
+  decision: z.enum(["approve", "reject"]),
+  reason: z.string().trim().max(500).optional(),
 });
 
 const StatusUpdateSchema = z.object({
@@ -137,6 +211,30 @@ const DriverLocationSchema = z.object({
   longitude: z.number().min(-180).max(180),
   heading: z.number().min(0).max(360).optional(),
   speedKph: z.number().min(0).max(240).optional(),
+  accuracy: z.number().min(0).max(10_000).optional(),
+});
+
+const DriverJobActionSchema = z.object({
+  bookingId: z.string().trim().min(3).max(160),
+  action: z.enum(["accept", "reject", "arrived", "in_transit", "completed"]),
+  note: z.string().trim().max(300).optional(),
+});
+
+const DriverAvailabilitySchema = z.object({
+  state: z.enum(["available", "offline"]),
+});
+
+const ReviewSubmissionSchema = z.object({
+  bookingId: z.string().trim().min(3).max(160),
+  rating: z.number().int().min(1).max(5),
+  title: z.string().trim().min(3).max(120),
+  comment: z.string().trim().min(10).max(1500),
+  photoUrls: z.array(z.string().url().max(3000)).max(4).default([]),
+});
+
+const RouteDistanceSchema = z.object({
+  origin: z.string().trim().min(3).max(200),
+  destination: z.string().trim().min(3).max(200),
 });
 
 class HttpError extends Error {
@@ -255,6 +353,136 @@ function initializeFirebaseAdmin() {
 
 function getAdminDb() {
   return getFirestore(initializeFirebaseAdmin());
+}
+
+const defaultFeatureFlags = {
+  paystack: true,
+  stripe: true,
+  manualBankTransfer: true,
+  liveTracking: true,
+  whatsappNotifications: true,
+  smsNotifications: true,
+  french: true,
+};
+
+async function getFeatureFlags() {
+  const snapshot = await getAdminDb().collection("settings").doc("feature_flags").get();
+  const value = snapshot.data()?.value;
+  return { ...defaultFeatureFlags, ...(value && typeof value === "object" ? value : {}) };
+}
+
+async function getBankConfig() {
+  const snapshot = await getAdminDb().collection("settings").doc("bank_accounts").get();
+  const value = snapshot.data()?.value || {};
+  const config = {
+    bankName: String(value.bankName || ""),
+    accountName: String(value.accountName || ""),
+    accountNumber: String(value.accountNumber || ""),
+    branchName: String(value.branchName || ""),
+    currency: String(value.currency || "NGN"),
+    instructions: String(value.instructions || "Transfer the exact amount and use your payment reference as the narration."),
+    deadlineHours: Math.max(Number(value.deadlineHours || 24), 1),
+    contactPhone: String(value.contactPhone || "+2349064090276"),
+    contactEmail: String(value.contactEmail || "bookings@blmmotors.ng"),
+    referencePrefix: String(value.referencePrefix || "BLM").replace(/[^A-Za-z0-9-]/g, "").slice(0, 12) || "BLM",
+    requireProofUpload: value.requireProofUpload !== false,
+  };
+  return { ...config, configured: Boolean(config.bankName && config.accountName && config.accountNumber) };
+}
+
+async function getRouteDistance(origin: string, destination: string) {
+  const key = process.env.GOOGLE_MAPS_PLATFORM_KEY;
+  if (!key) return null;
+  const response = await axios.get("https://maps.googleapis.com/maps/api/distancematrix/json", {
+    params: { origins: origin, destinations: destination, mode: "driving", departure_time: "now", key },
+    timeout: 12_000,
+  });
+  const element = response.data?.rows?.[0]?.elements?.[0];
+  if (response.data?.status !== "OK" || element?.status !== "OK") {
+    throw new HttpError(422, "The route could not be calculated. Check the pickup and destination.");
+  }
+  return {
+    distanceKm: Number((Number(element.distance.value) / 1000).toFixed(1)),
+    distanceMeters: Number(element.distance.value),
+    durationSeconds: Number(element.duration_in_traffic?.value || element.duration?.value || 0),
+    distanceText: String(element.distance.text || ""),
+    durationText: String(element.duration_in_traffic?.text || element.duration?.text || ""),
+  };
+}
+
+async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSchema>) {
+  const settings = getAdminDb().collection("settings");
+  const [rulesSnap, vehiclesSnap, packagesSnap, statesSnap, countriesSnap, carsSnap] = await Promise.all([
+    settings.doc("pricing_rules").get(),
+    settings.doc("vehicle_types").get(),
+    settings.doc("touring_packages").get(),
+    settings.doc("touring_states").get(),
+    settings.doc("international_tours").get(),
+    settings.doc("car_hire_options").get(),
+  ]);
+  const rules = { pricePerKm: 350, logisticsPricePerKm: 250, standardServiceFee: 4500, pickupLogisticsFee: 22000, pricePerKg: 1200, tourGuideFee: 15000, carHireDriverDailyFee: 10000, carHireCautionFee: 25000, crossBorderProcessingFee: 30000, crossBorderBasePerPassenger: 90000, returnMultiplier: 2, weekendSurchargePercent: 0, nightSurchargePercent: 0, ...(rulesSnap.data()?.value || {}) };
+  const vehicles = Array.isArray(vehiclesSnap.data()?.value) ? vehiclesSnap.data()!.value : [];
+  const packages = Array.isArray(packagesSnap.data()?.value) ? packagesSnap.data()!.value : [];
+  const states = Array.isArray(statesSnap.data()?.value) ? statesSnap.data()!.value : [];
+  const countries = Array.isArray(countriesSnap.data()?.value) ? countriesSnap.data()!.value : [];
+  const cars = Array.isArray(carsSnap.data()?.value) ? carsSnap.data()!.value : [];
+  const service = input.serviceType.toLowerCase();
+  const snapshot = input.pricingSnapshot || {};
+  let basePrice = 0;
+  let extraFee = 0;
+  let feeLabel = "Service fee";
+  let routeMetadata: Awaited<ReturnType<typeof getRouteDistance>> = null;
+
+  if (service.includes("long") || service.includes("short") || service.includes("distance")) {
+    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase()) || {};
+    routeMetadata = await getRouteDistance(input.pickup, input.destination);
+    const distanceKm = routeMetadata?.distanceKm || Math.max(Number(snapshot.distanceKm || 0), 1);
+    const kmRate = Number(vehicle.kmRate || rules.pricePerKm);
+    basePrice = Math.round(distanceKm * kmRate * (input.isReturn ? Number(rules.returnMultiplier) : 1));
+    extraFee = Number(rules.standardServiceFee);
+    feeLabel = `${distanceKm} km at NGN ${kmRate}/km plus service fee`;
+  } else if (service.includes("car hire")) {
+    const car = cars.find((item: any) => item.id === input.carHireVehicle) || {};
+    const genericVehicle = vehicles.find((item: any) => String(item.title).toLowerCase().includes("car hire")) || {};
+    const days = Math.max(Number(input.carHireDurationDays || 1), 1);
+    basePrice = Number(car.pricePerDay || genericVehicle.price || 70000) * days;
+    extraFee = Number(rules.carHireCautionFee) + (input.carHireWithDriver ? Number(rules.carHireDriverDailyFee) * days : 0);
+    feeLabel = "Refundable caution deposit and selected driver fee";
+  } else if (service.includes("tour")) {
+    const packageFallbacks: Record<string, number> = { "city discovery": 90000, "cultural trail": 140000, "signature escape": 200000, "grand expedition": 280000, "royal journey": 400000 };
+    const selectedPackage = packages.find((item: any) => item.id === input.touringPackage || item.name === input.touringPackage || item.title === input.touringPackage) || {};
+    const state = states.find((item: any) => item.name === input.touringState) || {};
+    const packageKey = String(input.touringPackage || "city discovery").toLowerCase();
+    basePrice = Math.round(Number(selectedPackage.price || packageFallbacks[packageKey] || 90000) * Number(state.factor || 1));
+    extraFee = input.tourGuideNeeded ? Number(rules.tourGuideFee) : 0;
+    feeLabel = `${selectedPackage.locations || snapshot.locations || "Curated"} planned sightseeing stops`;
+  } else if (service.includes("cross-border") || service.includes("cross border")) {
+    const country = countries.find((item: any) => item.name === input.internationalCountry) || {};
+    const passengers = Math.max(Number(input.passengerCount || 1), 1);
+    basePrice = Math.round(Number(rules.crossBorderBasePerPassenger) * passengers * Number(country.factor || 1.1));
+    extraFee = input.borderClearanceHelp ? Number(rules.crossBorderProcessingFee) : 0;
+    feeLabel = `${passengers} passenger${passengers === 1 ? "" : "s"}${extraFee ? " plus border support" : ""}`;
+  } else if (service.includes("pickup") || service.includes("logistics")) {
+    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase().includes("logistics")) || {};
+    routeMetadata = await getRouteDistance(input.pickup, input.destination);
+    const distanceKm = routeMetadata?.distanceKm || Math.max(Number(snapshot.distanceKm || 0), 1);
+    const weightKg = Math.max(Number(input.packageWeightKg || 1), 1);
+    basePrice = Number(vehicle.price || 65000) + Math.round(distanceKm * Number(rules.logisticsPricePerKm));
+    extraFee = Number(rules.pickupLogisticsFee) + Math.round(weightKg * Number(rules.pricePerKg));
+    feeLabel = `${distanceKm} km route, handling and ${weightKg} kg cargo`;
+  } else {
+    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase()) || {};
+    basePrice = Number(vehicle.price || 25000);
+    extraFee = Number(rules.standardServiceFee);
+  }
+
+  const subtotal = Math.round(basePrice + extraFee);
+  const travelDate = new Date(`${input.date}T${input.time}:00`);
+  const weekend = [0, 6].includes(travelDate.getDay());
+  const night = travelDate.getHours() < 6 || travelDate.getHours() >= 22;
+  const weekendSurcharge = weekend ? Math.round(subtotal * Number(rules.weekendSurchargePercent || 0) / 100) : 0;
+  const nightSurcharge = night ? Math.round(subtotal * Number(rules.nightSurchargePercent || 0) / 100) : 0;
+  return { basePrice, extraFee, feeLabel, weekendSurcharge, nightSurcharge, total: subtotal + weekendSurcharge + nightSurcharge, routeMetadata };
 }
 
 function getFirebaseAuth() {
@@ -400,10 +628,7 @@ async function persistAudit(
 type QueueJobName =
   | "notification.deliver"
   | "payment.reconcile"
-  | "dispatch.assign"
-  | "route.recalculate"
-  | "analytics.aggregate"
-  | "fraud.analyze";
+  | "dispatch.assign";
 
 class OperationsQueue {
   enabled = false;
@@ -485,17 +710,38 @@ async function processQueueJob(name: QueueJobName, data: Record<string, unknown>
     return;
   }
 
-  await getAdminDb().collection("queue_jobs").add({
-    name,
-    data,
-    status: "received",
-    note: "Processor scaffold is registered; domain algorithm is pending provider implementation.",
-    createdAt: FieldValue.serverTimestamp(),
-  });
+  if (name === "dispatch.assign") {
+    const bookingId = z.string().trim().min(3).max(160).parse(data.bookingId);
+    const rejectedDriverId = data.rejectedDriverId ? String(data.rejectedDriverId) : "";
+    const bookingRef = getAdminDb().collection("bookings").doc(bookingId);
+    const booking = await bookingRef.get();
+    if (!booking.exists || booking.data()?.assignedDriverId) return;
+    const available = await getAdminDb().collection("drivers").where("availability.state", "==", "available").limit(20).get();
+    const chosen = available.docs.find((driver) => driver.id !== rejectedDriverId);
+    if (!chosen) {
+      await bookingRef.set({ dispatchQueue: { state: "waiting_for_driver", queuedAt: FieldValue.serverTimestamp() }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      return;
+    }
+    const batch = getAdminDb().batch();
+    batch.update(bookingRef, {
+      assignedDriverId: chosen.id,
+      status: "Confirmed",
+      dispatchQueue: { state: "assigned", assignedAt: FieldValue.serverTimestamp() },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.update(chosen.ref, { assignedJobs: FieldValue.arrayUnion(bookingId), "availability.state": "assigned", updatedAt: FieldValue.serverTimestamp() });
+    batch.set(getAdminDb().collection("booking_events").doc(), { bookingId, type: "dispatch.assigned", actorId: "system", actorRole: "system", metadata: { driverId: chosen.id }, createdAt: FieldValue.serverTimestamp() });
+    await batch.commit();
+    await queueCustomerStatusNotifications(bookingId, booking.data() || {}, "Confirmed");
+    await publishRealtime({ type: "dispatch.assigned", audience: "admin", userIds: [String(booking.data()?.customerId || ""), chosen.id], payload: { bookingId, driverId: chosen.id } });
+    return;
+  }
+
+  throw new Error(`Unsupported queue job: ${name}`);
 }
 
 async function queueNotification(input: {
-  channel: "email" | "sms";
+  channel: "email" | "sms" | "whatsapp";
   to: string;
   subject?: string;
   body: string;
@@ -504,7 +750,7 @@ async function queueNotification(input: {
 }) {
   const doc = await getAdminDb().collection("notification_logs").add({
     ...input,
-    provider: input.channel === "email" ? "resend" : "twilio",
+    provider: input.channel === "email" ? "resend" : input.channel === "whatsapp" ? "twilio_whatsapp" : "twilio",
     status: "queued",
     attempts: 0,
     deliveryState: "pending",
@@ -534,7 +780,7 @@ async function deliverNotification(notificationId: string) {
     const providerMessageId =
       notification.channel === "email"
         ? await sendEmailViaResend(String(notification.to), String(notification.subject || "BLM Motors"), String(notification.body))
-        : await sendSmsViaTwilio(String(notification.to), String(notification.body));
+        : await sendTwilioMessage(String(notification.to), String(notification.body), notification.channel === "whatsapp");
 
     await ref.update({
       providerMessageId,
@@ -582,14 +828,17 @@ async function sendEmailViaResend(to: string, subject: string, body: string) {
   return payload.id || "resend_accepted";
 }
 
-async function sendSmsViaTwilio(to: string, body: string) {
+async function sendTwilioMessage(to: string, body: string, whatsapp = false) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_FROM_NUMBER;
+  const from = whatsapp ? process.env.TWILIO_WHATSAPP_FROM : process.env.TWILIO_FROM_NUMBER;
   if (!sid || !token || !from) {
-    log("warn", "Twilio env missing; SMS notification blocked", { to });
+    log("warn", `Twilio env missing; ${whatsapp ? "WhatsApp" : "SMS"} notification blocked`, { to });
     return "provider_not_configured";
   }
+
+  const normalizedTo = whatsapp && !to.startsWith("whatsapp:") ? `whatsapp:${to}` : to;
+  const normalizedFrom = whatsapp && !from.startsWith("whatsapp:") ? `whatsapp:${from}` : from;
 
   const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
@@ -597,7 +846,7 @@ async function sendSmsViaTwilio(to: string, body: string) {
       Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({ From: from, To: to, Body: body }),
+    body: new URLSearchParams({ From: normalizedFrom, To: normalizedTo, Body: body }),
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -629,6 +878,44 @@ async function loadBooking(bookingId: string, auth: AuthenticatedUser, adminAcce
   return { ref, snap, booking };
 }
 
+async function resolveDriverForUser(uid: string) {
+  const direct = await getAdminDb().collection("drivers").doc(uid).get();
+  if (direct.exists) return direct;
+  const linked = await getAdminDb().collection("drivers").where("authUid", "==", uid).limit(1).get();
+  return linked.empty ? null : linked.docs[0];
+}
+
+async function queueCustomerStatusNotifications(bookingId: string, booking: Record<string, any>, status: string) {
+  const claimRef = getAdminDb().collection("notification_claims").doc(`${bookingId}:${status.toLowerCase()}`);
+  const claimed = await getAdminDb().runTransaction(async (transaction) => {
+    const existing = await transaction.get(claimRef);
+    if (existing.exists) return false;
+    transaction.create(claimRef, { bookingId, status, createdAt: FieldValue.serverTimestamp() });
+    return true;
+  });
+  if (!claimed) return;
+  const flags = await getFeatureFlags();
+  const customerName = String(booking.customerName || "Customer");
+  const message = `Good day ${customerName}, your BLM booking ${booking.trackingId || bookingId} is now ${status}. Track it at ${(process.env.APP_URL || "").replace(/\/$/, "")}/tracking?booking=${encodeURIComponent(booking.trackingId || bookingId)}`;
+  const phone = String(booking.customerPhone || booking.phone || "").trim();
+  if (phone && flags.whatsappNotifications) {
+    await queueNotification({ channel: "whatsapp", to: phone, body: message, template: "booking_status_update", metadata: { bookingId, status } });
+  }
+  if (phone && flags.smsNotifications) {
+    await queueNotification({ channel: "sms", to: phone, body: message, template: "booking_status_update", metadata: { bookingId, status } });
+  }
+  if (booking.customerEmail) {
+    await queueNotification({
+      channel: "email",
+      to: String(booking.customerEmail),
+      subject: `Booking status update: ${status}`,
+      body: message,
+      template: "booking_status_update",
+      metadata: { bookingId, status },
+    });
+  }
+}
+
 async function findExistingPayment(bookingId: string, provider: "stripe" | "paystack") {
   const snap = await getAdminDb()
     .collection("payments")
@@ -643,7 +930,7 @@ async function findExistingPayment(bookingId: string, provider: "stripe" | "pays
 
 async function markPaymentSucceeded(paymentRef: FirebaseFirestore.DocumentReference, eventId: string, providerStatus: string) {
   const db = getAdminDb();
-  await db.runTransaction(async (tx) => {
+  const bookingId = await db.runTransaction(async (tx) => {
     const paymentSnap = await tx.get(paymentRef);
     if (!paymentSnap.exists) throw new HttpError(404, "Payment record not found");
     const payment = paymentSnap.data() || {};
@@ -652,7 +939,7 @@ async function markPaymentSucceeded(paymentRef: FirebaseFirestore.DocumentRefere
     if (!bookingSnap.exists) throw new HttpError(404, "Booking record not found");
     const booking = bookingSnap.data() || {};
 
-    if (payment.status === "succeeded") return;
+    if (payment.status === "succeeded") return null;
 
     tx.update(paymentRef, {
       status: "succeeded",
@@ -701,7 +988,12 @@ async function markPaymentSucceeded(paymentRef: FirebaseFirestore.DocumentRefere
       metadata: { paymentId: paymentRef.id, provider: payment.provider, eventId },
       createdAt: FieldValue.serverTimestamp(),
     });
+    return String(payment.bookingId);
   });
+  if (bookingId) {
+    const booking = await db.collection("bookings").doc(bookingId).get();
+    await queueCustomerStatusNotifications(bookingId, booking.data() || {}, "Paid");
+  }
 }
 
 async function markPaymentFailed(paymentRef: FirebaseFirestore.DocumentReference, eventId: string, providerStatus: string) {
@@ -823,6 +1115,7 @@ async function publishRealtime(event: Omit<RealtimeEvent, "id" | "createdAt">) {
 }
 
 async function startServer() {
+  const missingEnvironment = validateEnvironment();
   const app = express();
   operationsQueue = new OperationsQueue();
 
@@ -937,7 +1230,25 @@ async function startServer() {
         twilio: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
         stripe: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET),
         paystack: Boolean(process.env.PAYSTACK_SECRET_KEY),
+        whatsapp: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_WHATSAPP_FROM),
+        maps: Boolean(process.env.GOOGLE_MAPS_PLATFORM_KEY),
+        sentry: Boolean(process.env.SENTRY_DSN),
       },
+      missingEnvironment: isProduction ? [] : missingEnvironment,
+    });
+  }));
+
+  app.get("/api/public/config", asyncHandler(async (_req, res) => {
+    const [flags, bank] = await Promise.all([getFeatureFlags(), getBankConfig()]);
+    res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=120");
+    res.json({
+      features: flags,
+      payments: {
+        paystack: Boolean(flags.paystack && process.env.PAYSTACK_SECRET_KEY),
+        stripe: Boolean(flags.stripe && process.env.STRIPE_SECRET_KEY),
+        manualBankTransfer: Boolean(flags.manualBankTransfer && bank.configured),
+      },
+      mapsEnabled: Boolean(flags.liveTracking && process.env.GOOGLE_MAPS_PLATFORM_KEY),
     });
   }));
 
@@ -963,17 +1274,254 @@ async function startServer() {
     });
   }));
 
+  app.post("/api/payment/manual/initialize", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const { bookingId } = parseBody(ManualPaymentSchema, req.body);
+    const [flags, bank] = await Promise.all([getFeatureFlags(), getBankConfig()]);
+    if (!flags.manualBankTransfer || !bank.configured) {
+      throw new HttpError(503, "Manual bank transfer is not configured");
+    }
+
+    const { ref: bookingRef, booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
+    if (!["Quoted", "Booked"].includes(String(booking.status))) {
+      throw new HttpError(409, "Booking is not payable in its current state");
+    }
+
+    const existing = await getAdminDb().collection("payments")
+      .where("bookingId", "==", bookingId)
+      .where("provider", "==", "manual_bank_transfer")
+      .limit(1)
+      .get();
+    if (!existing.empty) {
+      const payment = existing.docs[0].data();
+      return res.json({ paymentId: existing.docs[0].id, ...payment, bankDetails: bank });
+    }
+
+    const paymentRef = getAdminDb().collection("payments").doc();
+    const reference = `${bank.referencePrefix}-${new Date().getFullYear()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+    const trackingId = `BLM-${String(booking.serviceType || "TRK").toUpperCase().includes("LOGISTICS") ? "LOG" : "TRK"}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+    const deadline = new Date(Date.now() + bank.deadlineHours * 60 * 60 * 1000).toISOString();
+    const amount = Number(booking.totalAmount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Booking amount is invalid");
+
+    const batch = getAdminDb().batch();
+    batch.set(paymentRef, {
+      bookingId,
+      customerId: req.auth!.uid,
+      customerName: booking.customerName || req.auth!.email || "Customer",
+      customerEmail: booking.customerEmail || req.auth!.email || "",
+      paymentReference: reference,
+      trackingId,
+      provider: "manual_bank_transfer",
+      method: "BANK_TRANSFER",
+      currency: "NGN",
+      amount,
+      status: "AWAITING_PAYMENT",
+      deadline,
+      reconciliation: { required: true, source: "finance_admin_review" },
+      events: [{ id: crypto.randomUUID(), eventType: "PAYMENT_CREATED", actorId: req.auth!.uid, actorRole: req.auth!.role, timestamp: new Date().toISOString() }],
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.update(bookingRef, {
+      paymentReference: reference,
+      trackingId,
+      paymentStatus: "initialized",
+      paymentProvider: "manual_bank_transfer",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    await persistAudit(req, "MANUAL_PAYMENT_INITIALIZED", `payments/${paymentRef.id}`, { bookingId, reference });
+    res.json({ paymentId: paymentRef.id, paymentReference: reference, trackingId, amount, currency: "NGN", deadline, bankDetails: bank, instructions: bank.instructions });
+  }));
+
+  app.post("/api/payment/manual/proof", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const payload = parseBody(ManualProofSchema, req.body);
+    const ref = getAdminDb().collection("payments").doc(payload.paymentId);
+    const snapshot = await ref.get();
+    if (!snapshot.exists) throw new HttpError(404, "Payment record not found");
+    const payment = snapshot.data() || {};
+    if (payment.customerId !== req.auth!.uid && !hasRole(req.auth!, ["finance_admin", "customer_support_agent"])) {
+      throw new HttpError(403, "You cannot update this payment");
+    }
+    if (["PAID", "REFUNDED"].includes(String(payment.status))) throw new HttpError(409, "Payment is already finalized");
+
+    await ref.update({
+      proofOfPaymentUrl: payload.proofOfPaymentUrl,
+      proofFileName: payload.proofFileName,
+      customerNote: payload.customerNote || "",
+      status: "UNDER_REVIEW",
+      submittedAt: FieldValue.serverTimestamp(),
+      events: FieldValue.arrayUnion({ id: crypto.randomUUID(), eventType: "PAYMENT_PROOF_SUBMITTED", actorId: req.auth!.uid, actorRole: req.auth!.role, timestamp: new Date().toISOString() }),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await persistAudit(req, "MANUAL_PAYMENT_PROOF_SUBMITTED", `payments/${payload.paymentId}`);
+    res.json({ success: true });
+  }));
+
+  app.post("/api/payment/manual/review", authenticate, requireRoles("finance_admin"), requireCsrf, asyncHandler(async (req, res) => {
+    const payload = parseBody(ManualReviewSchema, req.body);
+    const paymentRef = getAdminDb().collection("payments").doc(payload.paymentId);
+    const paymentSnapshot = await paymentRef.get();
+    if (!paymentSnapshot.exists) throw new HttpError(404, "Payment record not found");
+    const payment = paymentSnapshot.data() || {};
+    if (payment.provider !== "manual_bank_transfer") throw new HttpError(400, "Payment is not a manual transfer");
+    const bookingRef = getAdminDb().collection("bookings").doc(String(payment.bookingId));
+
+    if (payload.decision === "reject") {
+      await paymentRef.update({
+        status: "PAYMENT_REJECTED",
+        rejectionReason: payload.reason || "Payment could not be verified",
+        rejectedAt: FieldValue.serverTimestamp(),
+        reviewedBy: req.auth!.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await persistAudit(req, "MANUAL_PAYMENT_REJECTED", `payments/${payload.paymentId}`, { reason: payload.reason || null });
+      return res.json({ success: true, status: "PAYMENT_REJECTED" });
+    }
+
+    const ledgerRef = getAdminDb().collection("ledger_entries").doc(`${payload.paymentId}:revenue`);
+    await getAdminDb().runTransaction(async (transaction) => {
+      const latest = await transaction.get(paymentRef);
+      if (latest.data()?.status === "PAID") return;
+      transaction.update(paymentRef, {
+        status: "PAID",
+        isReconciled: true,
+        reconciledAt: FieldValue.serverTimestamp(),
+        reconciledBy: req.auth!.uid,
+        verifiedAt: FieldValue.serverTimestamp(),
+        verifiedBy: req.auth!.email || req.auth!.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.update(bookingRef, {
+        status: "Paid",
+        paymentStatus: "succeeded",
+        paymentProvider: "manual_bank_transfer",
+        updatedAt: FieldValue.serverTimestamp(),
+        "lifecycle.paidAt": FieldValue.serverTimestamp(),
+        "lifecycle.lastEvent": "payment.succeeded",
+      });
+      transaction.set(ledgerRef, {
+        paymentId: payload.paymentId,
+        bookingId: payment.bookingId,
+        type: "revenue",
+        direction: "credit",
+        amount: Number(payment.amount || 0),
+        currency: String(payment.currency || "NGN"),
+        provider: "manual_bank_transfer",
+        status: "posted",
+        createdAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    });
+    await persistAudit(req, "MANUAL_PAYMENT_APPROVED", `payments/${payload.paymentId}`, { bookingId: payment.bookingId });
+    const paidBooking = await bookingRef.get();
+    await queueCustomerStatusNotifications(String(payment.bookingId), paidBooking.data() || {}, "Paid");
+    res.json({ success: true, status: "PAID" });
+  }));
+
+  app.post("/api/bookings", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const input = parseBody(BookingCreateSchema, req.body);
+    const quote = await calculateAuthoritativeQuote(input);
+    const ref = getAdminDb().collection("bookings").doc();
+    const trackingId = `BLM-${input.serviceType.toLowerCase().includes("logistics") ? "LOG" : "TRK"}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+    const booking = {
+      ...input,
+      customerId: req.auth!.uid,
+      customerEmail: req.auth!.email || input.customerEmail,
+      totalAmount: quote.total,
+      currency: "NGN",
+      pricingSnapshot: { ...input.pricingSnapshot, ...quote, source: "server", calculatedAt: new Date().toISOString() },
+      routeMetadata: quote.routeMetadata,
+      trackingId,
+      status: "Booked",
+      lifecycle: { bookedAt: FieldValue.serverTimestamp(), lastEvent: "booking.booked" },
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    await ref.set(booking);
+    await getAdminDb().collection("booking_events").add({ bookingId: ref.id, type: "booking.booked", actorId: req.auth!.uid, actorRole: req.auth!.role, metadata: { trackingId, totalAmount: quote.total }, createdAt: FieldValue.serverTimestamp() });
+    await persistAudit(req, "BOOKING_CREATED", `bookings/${ref.id}`, { serviceType: input.serviceType, totalAmount: quote.total });
+    await queueCustomerStatusNotifications(ref.id, booking, "Booked");
+    res.status(201).json({ id: ref.id, trackingId, totalAmount: quote.total, pricingSnapshot: booking.pricingSnapshot });
+  }));
+
+  app.post("/api/routes/distance", paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+    const { origin, destination } = parseBody(RouteDistanceSchema, req.body);
+    const route = await getRouteDistance(origin, destination);
+    if (!route) throw new HttpError(503, "Google Maps distance calculation is not configured");
+    res.json(route);
+  }));
+
   app.post("/api/validate-booking", asyncHandler(async (req, res) => {
     const validatedData = parseBody(BookingValidationSchema, req.body);
     res.json({ status: "validated", data: validatedData });
   }));
 
+  app.get("/api/reviews", asyncHandler(async (_req, res) => {
+    const snapshot = await getAdminDb().collection("reviews").where("status", "==", "published").limit(100).get();
+    const reviews = snapshot.docs
+      .map((review) => {
+        const data = review.data();
+        return {
+          id: review.id,
+          customerName: data.customerName || "BLM customer",
+          serviceType: data.serviceType || "Transport service",
+          rating: Number(data.rating || 0),
+          title: data.title || "",
+          comment: data.comment || "",
+          bookingId: data.bookingId || null,
+          verified: true,
+          photoUrls: Array.isArray(data.photoUrls) ? data.photoUrls : [],
+          createdAt: data.createdAt?.toDate?.().toISOString?.() || data.createdAt || null,
+        };
+      })
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=120");
+    res.json({ reviews });
+  }));
+
+  app.post("/api/reviews", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const payload = parseBody(ReviewSubmissionSchema, req.body);
+    const { booking } = await loadBooking(payload.bookingId, req.auth!, []);
+    if (String(booking.status) !== "Completed") throw new HttpError(409, "Reviews are available after the booking is completed");
+    const existing = await getAdminDb().collection("reviews").where("bookingId", "==", payload.bookingId).limit(1).get();
+    if (!existing.empty) throw new HttpError(409, "A review has already been submitted for this booking");
+    const ref = await getAdminDb().collection("reviews").add({
+      ...payload,
+      customerId: req.auth!.uid,
+      customerName: booking.customerName || req.auth!.email || "BLM customer",
+      customerEmail: booking.customerEmail || req.auth!.email || null,
+      serviceType: booking.serviceType || "Transport service",
+      verified: true,
+      verificationSource: "completed_booking",
+      status: "published",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await getAdminDb().collection("bookings").doc(payload.bookingId).update({ reviewId: ref.id, updatedAt: FieldValue.serverTimestamp() });
+    await persistAudit(req, "VERIFIED_REVIEW_CREATED", `reviews/${ref.id}`, { bookingId: payload.bookingId, rating: payload.rating });
+    res.status(201).json({ id: ref.id });
+  }));
+
   app.get("/api/tracking/:bookingId", asyncHandler(async (req, res) => {
-    const bookingId = z.string().trim().min(3).max(160).parse(req.params.bookingId);
-    const bookingRef = getAdminDb().collection("bookings").doc(bookingId);
-    const bookingSnap = await bookingRef.get();
+    const reference = z.string().trim().min(3).max(160).parse(req.params.bookingId);
+    const bookings = getAdminDb().collection("bookings");
+    let bookingSnap = await bookings.doc(reference).get();
+    if (!bookingSnap.exists) {
+      const byTracking = await bookings.where("trackingId", "==", reference).limit(1).get();
+      if (!byTracking.empty) bookingSnap = byTracking.docs[0];
+    }
+    if (!bookingSnap.exists) {
+      const byPayment = await bookings.where("paymentReference", "==", reference).limit(1).get();
+      if (!byPayment.empty) bookingSnap = byPayment.docs[0];
+    }
+    if (!bookingSnap.exists) {
+      const payment = await getAdminDb().collection("payments").where("paymentReference", "==", reference).limit(1).get();
+      const linkedBookingId = payment.empty ? "" : String(payment.docs[0].data().bookingId || "");
+      if (linkedBookingId) bookingSnap = await bookings.doc(linkedBookingId).get();
+    }
     if (!bookingSnap.exists) throw new HttpError(404, "Tracking reference not found");
 
+    const bookingId = bookingSnap.id;
     const booking = bookingSnap.data() || {};
     const eventsSnap = await getAdminDb()
       .collection("booking_events")
@@ -993,13 +1541,48 @@ async function startServer() {
       };
     }) || [];
 
+    const statusOrder = ["Quoted", "Booked", "Paid", "Confirmed", "Dispatched", "InTransit", "Completed"];
+    const mayShowLocation = statusOrder.indexOf(String(booking.status)) >= statusOrder.indexOf("Dispatched");
+    const flags = await getFeatureFlags();
+    const driverId = String(booking.assignedDriverId || "");
+    const [driverSnap, locationSnap] = await Promise.all([
+      driverId ? getAdminDb().collection("drivers").doc(driverId).get() : Promise.resolve(null),
+      driverId && flags.liveTracking && mayShowLocation
+        ? getAdminDb().collection("driver_locations").doc(driverId).get()
+        : Promise.resolve(null),
+    ]);
+    const driver = driverSnap?.data() || {};
+    const location = locationSnap?.data() || null;
+
     res.json({
       id: bookingId,
+      trackingId: booking.trackingId || bookingId,
+      paymentReference: booking.paymentReference || null,
       pickup: booking.pickup || null,
       destination: booking.destination || null,
       status: booking.status || "Unknown",
       assignedDriverId: booking.assignedDriverId || null,
+      driver: driverId ? {
+        name: driver.name || driver.profile?.name || "BLM verified driver",
+        photoUrl: driver.photoUrl || driver.profile?.photoUrl || null,
+        vehiclePhotoUrl: driver.vehiclePhotoUrl || null,
+        rating: driver.ratings?.average || null,
+        ratingCount: driver.ratings?.count || 0,
+        verificationStatus: driver.kyc?.status || driver.onboarding?.state || "pending",
+        insuranceStatus: driver.insurance?.status || "not_recorded",
+      } : null,
+      liveLocation: location ? {
+        latitude: Number(location.latitude),
+        longitude: Number(location.longitude),
+        heading: location.heading == null ? null : Number(location.heading),
+        speed: location.speed == null ? null : Number(location.speed),
+        accuracy: location.accuracy == null ? null : Number(location.accuracy),
+        heartbeatAt: location.heartbeatAt?.toDate?.().toISOString?.() || null,
+      } : null,
+      liveTrackingEnabled: Boolean(flags.liveTracking && mayShowLocation),
       vehicleClass: booking.vehicleClass || null,
+      serviceType: booking.serviceType || null,
+      currentCheckpoint: booking.currentCheckpoint || booking.pickup || null,
       date: booking.date || null,
       time: booking.time || null,
       etaHistory: booking.etaHistory || [],
@@ -1015,6 +1598,7 @@ async function startServer() {
     authenticate,
     requireCsrf,
     asyncHandler(async (req, res) => {
+      if (!(await getFeatureFlags()).stripe) throw new HttpError(503, "Stripe payments are disabled");
       const { bookingId, currency: requestedCurrency } = parseBody(StripeIntentSchema, req.body);
       const { booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
       if (!["Quoted", "Booked"].includes(String(booking.status))) {
@@ -1196,6 +1780,7 @@ async function startServer() {
     authenticate,
     requireCsrf,
     asyncHandler(async (req, res) => {
+      if (!(await getFeatureFlags()).paystack) throw new HttpError(503, "Paystack payments are disabled");
       const { bookingId, currency: requestedCurrency } = parseBody(PaystackInitializeSchema, req.body);
       const secretKey = process.env.PAYSTACK_SECRET_KEY;
       if (!secretKey) throw new HttpError(503, "PAYSTACK_SECRET_KEY is missing");
@@ -1333,14 +1918,7 @@ async function startServer() {
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      await queueNotification({
-        channel: "email",
-        to: String(booking.customerEmail || ""),
-        subject: `Booking status update: ${status}`,
-        body: `Hello ${booking.customerName || "Customer"}, your booking ${bookingId} is now ${status}.`,
-        template: "booking_status_update",
-        metadata: { bookingId, status },
-      });
+      await queueCustomerStatusNotifications(bookingId, booking, status);
 
       await persistAudit(req, "BOOKING_STATUS_UPDATED", `bookings/${bookingId}`, { status }, before, update);
       await publishRealtime({
@@ -1522,10 +2100,18 @@ async function startServer() {
     requireCsrf,
     asyncHandler(async (req, res) => {
       const location = parseBody(DriverLocationSchema, req.body);
-      const ref = getAdminDb().collection("driver_locations").doc(req.auth!.uid);
+      const driver = await resolveDriverForUser(req.auth!.uid);
+      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      if (location.bookingId) {
+        const booking = await getAdminDb().collection("bookings").doc(location.bookingId).get();
+        if (!booking.exists || booking.data()?.assignedDriverId !== driver.id) {
+          throw new HttpError(403, "This booking is not assigned to the signed-in driver");
+        }
+      }
+      const ref = getAdminDb().collection("driver_locations").doc(driver.id);
       await ref.set(
         {
-          driverId: req.auth!.uid,
+          driverId: driver.id,
           ...location,
           heartbeatAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
@@ -1535,9 +2121,114 @@ async function startServer() {
       await publishRealtime({
         type: "driver.location_updated",
         audience: "admin",
-        payload: { driverId: req.auth!.uid, ...location },
+        payload: { driverId: driver.id, ...location },
       });
       res.json({ success: true });
+    }),
+  );
+
+  app.get(
+    "/api/drivers/me/jobs",
+    authenticate,
+    requireRoles("driver"),
+    asyncHandler(async (req, res) => {
+      const driver = await resolveDriverForUser(req.auth!.uid);
+      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      const jobs = await getAdminDb().collection("bookings")
+        .where("assignedDriverId", "==", driver.id)
+        .where("status", "in", ["Paid", "Confirmed", "Dispatched", "InTransit"])
+        .limit(30)
+        .get();
+      res.json({
+        driver: { id: driver.id, ...(driver.data() || {}) },
+        jobs: jobs.docs.map((job) => {
+          const data = job.data();
+          return {
+            id: job.id,
+            trackingId: data.trackingId || job.id,
+            serviceType: data.serviceType || "Transport service",
+            pickup: data.pickup || null,
+            destination: data.destination || null,
+            date: data.date || null,
+            time: data.time || null,
+            status: data.status || "Confirmed",
+            customerName: data.customerName || "Customer",
+          };
+        }),
+      });
+    }),
+  );
+
+  app.post(
+    "/api/drivers/me/availability",
+    authenticate,
+    requireRoles("driver"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const { state } = parseBody(DriverAvailabilitySchema, req.body);
+      const driver = await resolveDriverForUser(req.auth!.uid);
+      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      await driver.ref.update({ "availability.state": state, "availability.updatedAt": FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      await persistAudit(req, "DRIVER_AVAILABILITY_UPDATED", `drivers/${driver.id}`, { state });
+      res.json({ success: true, state });
+    }),
+  );
+
+  app.post(
+    "/api/drivers/jobs/action",
+    authenticate,
+    requireRoles("driver"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const { bookingId, action, note } = parseBody(DriverJobActionSchema, req.body);
+      const driver = await resolveDriverForUser(req.auth!.uid);
+      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      const bookingRef = getAdminDb().collection("bookings").doc(bookingId);
+      const bookingSnap = await bookingRef.get();
+      if (!bookingSnap.exists || bookingSnap.data()?.assignedDriverId !== driver.id) {
+        throw new HttpError(403, "This booking is not assigned to the signed-in driver");
+      }
+      const booking = bookingSnap.data() || {};
+      const statusByAction: Record<string, string> = { accept: "Confirmed", arrived: "Dispatched", in_transit: "InTransit", completed: "Completed" };
+
+      if (action === "reject") {
+        await bookingRef.update({
+          assignedDriverId: FieldValue.delete(),
+          status: "Paid",
+          driverRejections: FieldValue.arrayUnion({ driverId: driver.id, note: note || null, at: new Date().toISOString() }),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        await driver.ref.update({ assignedJobs: FieldValue.arrayRemove(bookingId), "availability.state": "available", updatedAt: FieldValue.serverTimestamp() });
+        await operationsQueue.enqueue("dispatch.assign", { bookingId, rejectedDriverId: driver.id });
+        await persistAudit(req, "DRIVER_JOB_REJECTED", `bookings/${bookingId}`, { driverId: driver.id, note: note || null });
+        return res.json({ success: true, status: "Paid" });
+      }
+
+      const status = statusByAction[action];
+      await bookingRef.update({
+        status,
+        currentCheckpoint: action === "arrived" ? booking.pickup || "Pickup point" : booking.currentCheckpoint || booking.pickup || null,
+        [`lifecycle.${status.toLowerCase()}At`]: FieldValue.serverTimestamp(),
+        "lifecycle.lastEvent": `driver.${action}`,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await getAdminDb().collection("booking_events").add({
+        bookingId,
+        type: `driver.${action}`,
+        actorId: req.auth!.uid,
+        actorRole: "driver",
+        metadata: { driverId: driver.id, note: note || null },
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      if (action === "completed") {
+        await driver.ref.update({ assignedJobs: FieldValue.arrayRemove(bookingId), "availability.state": "available", updatedAt: FieldValue.serverTimestamp() });
+      } else {
+        await driver.ref.update({ "availability.state": "assigned", updatedAt: FieldValue.serverTimestamp() });
+      }
+      await queueCustomerStatusNotifications(bookingId, booking, status);
+      await persistAudit(req, "DRIVER_JOB_STATUS_UPDATED", `bookings/${bookingId}`, { driverId: driver.id, action, status });
+      await publishRealtime({ type: "booking.status_updated", audience: "admin", userIds: [String(booking.customerId || "")], payload: { bookingId, status, driverId: driver.id } });
+      res.json({ success: true, status });
     }),
   );
 
@@ -1602,6 +2293,9 @@ async function startServer() {
       status: error.status,
       details: error.details,
     });
+    if (error.status >= 500) {
+      Sentry.captureException(err, { extra: { path: req.path, method: req.method } });
+    }
     res.status(error.status).json({
       error: error.message,
       details: isProduction ? undefined : error.details,

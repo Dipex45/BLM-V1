@@ -14,7 +14,10 @@ export async function getAuthHeaders(includeCsrf = false) {
   const headers: Record<string, string> = {};
   const token = await auth.currentUser?.getIdToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (includeCsrf) headers['x-csrf-token'] = await getCsrfToken();
+  if (includeCsrf) {
+    const csrf = await getCsrfToken();
+    if (csrf) headers['x-csrf-token'] = csrf;
+  }
   return headers;
 }
 

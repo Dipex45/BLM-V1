@@ -3,7 +3,10 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { company } from '../lib/company';
 import { db } from '../lib/firebase';
-import { collection, query, where, getDocs, doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
+import { apiGet } from '../lib/api';
+import LiveTrackingMap from '../components/LiveTrackingMap';
+import { useLocale } from '../contexts/LocaleContext';
 
 type TrackingRecord = {
   id: string;
@@ -15,6 +18,17 @@ type TrackingRecord = {
   assignedDriverId: string | null;
   driverName?: string;
   driverPhone?: string;
+  driver?: {
+    name: string;
+    photoUrl?: string | null;
+    vehiclePhotoUrl?: string | null;
+    rating?: number | null;
+    ratingCount?: number;
+    verificationStatus?: string;
+    insuranceStatus?: string;
+  } | null;
+  liveLocation?: { latitude: number; longitude: number; heading?: number | null; heartbeatAt?: string | null } | null;
+  liveTrackingEnabled?: boolean;
   vehicleClass: string | null;
   serviceType?: string;
   currentCheckpoint?: string;
@@ -51,6 +65,7 @@ function labelEvent(type: string) {
 }
 
 export default function Tracking() {
+  const { t } = useLocale();
   const [searchParams, setSearchParams] = useSearchParams();
   const [trackingInput, setTrackingInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -59,103 +74,25 @@ export default function Tracking() {
   const [activeLocationIndex, setActiveLocationIndex] = useState(0);
   const [error, setError] = useState('');
 
-  const loadTracking = async (reference: string) => {
+  const loadTracking = async (reference: string, silent = false) => {
     if (!reference) return;
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError('');
-    setRecord(null);
+    if (!silent) setRecord(null);
 
     try {
       const cleanRef = reference.trim();
-      let foundData: any = null;
-      let foundId = '';
-
-      // 1. Try finding booking by direct Document ID
-      try {
-        const directSnap = await getDoc(doc(db, 'bookings', cleanRef));
-        if (directSnap.exists()) {
-          foundData = directSnap.data();
-          foundId = directSnap.id;
-        }
-      } catch (e) {
-        // Continue to query
-      }
-
-      // 2. Try query by trackingId
-      if (!foundData) {
-        const qTrack = query(collection(db, 'bookings'), where('trackingId', '==', cleanRef));
-        const snapTrack = await getDocs(qTrack);
-        if (!snapTrack.empty) {
-          foundData = snapTrack.docs[0].data();
-          foundId = snapTrack.docs[0].id;
-        }
-      }
-
-      // 3. Try query by paymentReference
-      if (!foundData) {
-        const qPay = query(collection(db, 'bookings'), where('paymentReference', '==', cleanRef));
-        const snapPay = await getDocs(qPay);
-        if (!snapPay.empty) {
-          foundData = snapPay.docs[0].data();
-          foundId = snapPay.docs[0].id;
-        }
-      }
-
-      // 4. Try lookup in payments collection
-      if (!foundData) {
-        const qPayments = query(collection(db, 'payments'), where('paymentReference', '==', cleanRef));
-        const snapP = await getDocs(qPayments);
-        if (!snapP.empty) {
-          const pData = snapP.docs[0].data();
-          if (pData.bookingId) {
-            const bSnap = await getDoc(doc(db, 'bookings', pData.bookingId));
-            if (bSnap.exists()) {
-              foundData = bSnap.data();
-              foundId = bSnap.id;
-            }
-          }
-        }
-      }
-
-      if (foundData) {
-        const eventsList = Array.isArray(foundData.events) ? foundData.events : [];
-        // Add default status milestone if no events yet
-        if (eventsList.length === 0) {
-          eventsList.push({
-            id: 'evt-init',
-            type: `Order ${foundData.status || 'Received'}`,
-            createdAt: foundData.createdAt || new Date().toISOString(),
-            notes: `Booking recorded with tracking ID ${foundData.trackingId || foundId}`,
-          });
-        }
-
-        setRecord({
-          id: foundId,
-          trackingId: foundData.trackingId || foundId,
-          paymentReference: foundData.paymentReference,
-          pickup: foundData.pickup || 'Pickup Terminal',
-          destination: foundData.destination || 'Destination Hub',
-          status: foundData.status || 'Quoted',
-          assignedDriverId: foundData.assignedDriverId || null,
-          driverName: foundData.driverName,
-          driverPhone: foundData.driverPhone,
-          vehicleClass: foundData.vehicleClass || 'Standard Transit',
-          serviceType: foundData.serviceType,
-          currentCheckpoint: foundData.currentCheckpoint || foundData.pickup || 'En route',
-          date: foundData.date || null,
-          time: foundData.time || null,
-          updatedAt: foundData.updatedAt || foundData.createdAt || null,
-          events: eventsList,
-        });
-      } else {
-        setError('No tracking record found for this Reference / Tracking ID. Please double check and try again.');
-      }
+      const response = await apiGet<TrackingRecord>(`/api/tracking/${encodeURIComponent(cleanRef)}`);
+      const foundData = response.data;
+      const eventsList = Array.isArray(foundData.events) && foundData.events.length > 0
+        ? foundData.events
+        : [{ id: 'evt-init', type: `Order ${foundData.status || 'Received'}`, createdAt: foundData.updatedAt, notes: `Booking recorded with tracking ID ${foundData.trackingId || foundData.id}` }];
+      setRecord({ ...foundData, events: eventsList });
     } catch (err: any) {
-      console.error('Tracking query error:', err);
-      setError('Unable to load tracking details. Please check connection and try again.');
+      if (!silent) setError(err.response?.status === 404 ? 'No tracking record was found. Check the reference and try again.' : 'Unable to load tracking details. Check your connection and try again.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -189,6 +126,13 @@ export default function Tracking() {
     return () => window.clearInterval(interval);
   }, [trackingLocations.length]);
 
+  useEffect(() => {
+    if (!record?.liveTrackingEnabled) return;
+    const reference = record.trackingId || record.id;
+    const interval = window.setInterval(() => loadTracking(reference, true), 15000);
+    return () => window.clearInterval(interval);
+  }, [record?.id, record?.liveTrackingEnabled, record?.trackingId]);
+
   const handleTrack = async (e: FormEvent) => {
     e.preventDefault();
     if (!trackingInput.trim()) return;
@@ -208,10 +152,10 @@ export default function Tracking() {
               <span>Live Tracking & Transit Status</span>
             </div>
             <h1 className="text-3xl font-black leading-tight text-on-surface sm:text-4xl md:text-5xl">
-              Track Your BLM Booking or Shipment
+              {t('trackingTitle')}
             </h1>
             <p className="mt-4 text-base leading-relaxed text-on-surface-variant">
-              Enter your unique Tracking ID or Booking Reference to view live transit milestones, assigned drivers, and dispatch progress.
+              {t('trackingBody')}
             </p>
           </div>
           <a
@@ -246,7 +190,7 @@ export default function Tracking() {
             ) : (
               <>
                 <span className="material-symbols-outlined text-base">radar</span>
-                <span>Track Movement</span>
+                <span>{t('trackingAction')}</span>
               </>
             )}
           </button>
@@ -326,6 +270,22 @@ export default function Tracking() {
                     </div>
                   </div>
 
+                  {record.liveTrackingEnabled && record.liveLocation && (
+                    <div>
+                      <div className="mb-3">
+                        <h3 className="text-sm font-bold text-on-surface">Live vehicle position</h3>
+                        <p className="text-xs text-on-surface-variant">Position refreshes automatically while the trip is active.</p>
+                      </div>
+                      <LiveTrackingMap location={record.liveLocation} />
+                    </div>
+                  )}
+
+                  {record.liveTrackingEnabled && !record.liveLocation && (
+                    <div className="rounded-lg border border-outline bg-surface-container p-4 text-xs font-semibold text-on-surface-variant">
+                      The driver has been dispatched. Waiting for the next verified location heartbeat.
+                    </div>
+                  )}
+
                   {/* Drop Review CTA */}
                   <div className="rounded-2xl border border-primary/20 bg-primary/5 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div>
@@ -362,10 +322,20 @@ export default function Tracking() {
                     <div>
                       <dt className="font-semibold text-on-surface-variant">Assigned Chauffeur / Driver</dt>
                       <dd className="mt-1 font-bold text-on-surface text-sm">
-                        {record.driverName || record.assignedDriverId || 'Assigned on Dispatch'}
+                        {record.driver?.name || record.driverName || record.assignedDriverId || 'Assigned on Dispatch'}
                       </dd>
                     </div>
                   </dl>
+                  {record.driver && (
+                    <div className="mt-5 grid grid-cols-2 gap-2 border-t border-outline pt-4 text-[11px]">
+                      <span className="font-semibold text-on-surface-variant">Identity</span>
+                      <span className="text-right font-bold capitalize text-on-surface">{record.driver.verificationStatus?.replace(/_/g, ' ')}</span>
+                      <span className="font-semibold text-on-surface-variant">Insurance</span>
+                      <span className="text-right font-bold capitalize text-on-surface">{record.driver.insuranceStatus?.replace(/_/g, ' ')}</span>
+                      <span className="font-semibold text-on-surface-variant">Rating</span>
+                      <span className="text-right font-bold text-on-surface">{record.driver.rating ? `${record.driver.rating.toFixed(1)} (${record.driver.ratingCount || 0})` : 'New driver'}</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Tracking Milestones Timeline */}

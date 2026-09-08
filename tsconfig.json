@@ -24,7 +24,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "incremental": true,
-    "types": ["react", "react-dom", "node"]
+    "types": ["react", "react-dom", "node", "jest"]
   },
   "include": ["src/**/*", "server.ts"],
   "exclude": ["node_modules", "dist"]

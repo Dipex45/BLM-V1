@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { collection, getDocs, addDoc, query, orderBy, where } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import { storage } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { company } from '../lib/company';
 import DOMPurify from 'dompurify';
+import { apiGet, apiPost } from '../lib/api';
 
 export interface ReviewItem {
   id?: string;
@@ -18,50 +19,8 @@ export interface ReviewItem {
   bookingId?: string;
   verified: boolean;
   createdAt: string;
+  photoUrls?: string[];
 }
-
-const DEFAULT_REVIEWS: ReviewItem[] = [
-  {
-    id: 'rev-1',
-    customerName: 'Chidi Okafor',
-    serviceType: 'Long and short distance trips',
-    rating: 5,
-    title: 'Top notch interstate trip from Lagos to Abuja',
-    comment: 'Driver was punctual, courteous, and drove smoothly all the way. The car was spotless and comfortable throughout the journey.',
-    verified: true,
-    createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-  },
-  {
-    id: 'rev-2',
-    customerName: 'Amina Bello',
-    serviceType: 'Cross-border trips',
-    rating: 5,
-    title: 'Seamless Cotonou border clearance',
-    comment: 'Border passage was handled smoothly without delays. BLM motors took care of all clearance checkpoints. Highly recommend for regional travel.',
-    verified: true,
-    createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-  },
-  {
-    id: 'rev-3',
-    customerName: 'Tunde Adeleke',
-    serviceType: 'Car hire',
-    rating: 5,
-    title: 'Executive Toyota Highlander for weekend event',
-    comment: 'Picked up the car at the Victoria Island Hub in pristine condition. The caution deposit was returned promptly upon return. 10/10 service!',
-    verified: true,
-    createdAt: new Date(Date.now() - 12 * 86400000).toISOString(),
-  },
-  {
-    id: 'rev-4',
-    customerName: 'Efe Johnson',
-    serviceType: 'Pickup and logistics',
-    rating: 5,
-    title: 'Fast doorstep package delivery with live tracking',
-    comment: 'Shipped sensitive business equipment from Ikeja to Port Harcourt. Tracking updates were accurate and item arrived intact.',
-    verified: true,
-    createdAt: new Date(Date.now() - 15 * 86400000).toISOString(),
-  },
-];
 
 export default function Reviews() {
   const [searchParams] = useSearchParams();
@@ -83,6 +42,7 @@ export default function Reviews() {
   const [submitting, setSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [reviewPhotos, setReviewPhotos] = useState<File[]>([]);
 
   useEffect(() => {
     // Pre-fill if coming from tracking / booking page
@@ -107,16 +67,10 @@ export default function Reviews() {
   const fetchReviews = async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(query(collection(db, 'reviews'), orderBy('createdAt', 'desc')));
-      if (!snap.empty) {
-        const fetched = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as ReviewItem[];
-        setReviews(fetched);
-      } else {
-        setReviews(DEFAULT_REVIEWS);
-      }
+      const response = await apiGet<{ reviews: ReviewItem[] }>('/api/reviews');
+      setReviews(response.data.reviews || []);
     } catch (e) {
-      console.warn('Using default reviews', e);
-      setReviews(DEFAULT_REVIEWS);
+      setReviews([]);
     } finally {
       setLoading(false);
     }
@@ -124,7 +78,11 @@ export default function Reviews() {
 
   const handleSubmitReview = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formName.trim() || !formComment.trim() || !formTitle.trim()) {
+    if (!user) {
+      setSubmitError('Sign in and use a completed booking to submit a verified review.');
+      return;
+    }
+    if (!formBookingId.trim() || !formComment.trim() || !formTitle.trim()) {
       setSubmitError('Please fill in all required fields.');
       return;
     }
@@ -133,26 +91,28 @@ export default function Reviews() {
     setSubmitError(null);
 
     try {
-      const newReview: Omit<ReviewItem, 'id'> = {
-        customerName: DOMPurify.sanitize(formName.trim()),
-        customerEmail: DOMPurify.sanitize(formEmail.trim()),
-        serviceType: formService,
+      const photoUrls = await Promise.all(reviewPhotos.map(async (file) => {
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const fileRef = storageRef(storage, `review-photos/${user.uid}/${Date.now()}-${safeName}`);
+        await uploadBytes(fileRef, file, { contentType: file.type });
+        return getDownloadURL(fileRef);
+      }));
+      const payload = {
+        bookingId: DOMPurify.sanitize(formBookingId.trim()),
         rating: formRating,
         title: DOMPurify.sanitize(formTitle.trim()),
         comment: DOMPurify.sanitize(formComment.trim()),
-        bookingId: DOMPurify.sanitize(formBookingId.trim()),
-        verified: Boolean(user || formBookingId.trim()),
-        createdAt: new Date().toISOString(),
+        photoUrls,
       };
-
-      const docRef = await addDoc(collection(db, 'reviews'), newReview);
-      setReviews((prev) => [{ id: docRef.id, ...newReview }, ...prev]);
+      await apiPost('/api/reviews', payload);
+      await fetchReviews();
       setSubmitSuccess(true);
       setTimeout(() => {
         setSubmitSuccess(false);
         setShowModal(false);
         setFormTitle('');
         setFormComment('');
+        setReviewPhotos([]);
       }, 2000);
     } catch (err: any) {
       setSubmitError(err.message || 'Failed to submit review. Please try again.');
@@ -255,6 +215,11 @@ export default function Reviews() {
 
                 <h3 className="text-base font-bold text-on-surface mb-2">{rev.title}</h3>
                 <p className="text-xs text-on-surface-variant leading-relaxed mb-6">{rev.comment}</p>
+                {rev.photoUrls && rev.photoUrls.length > 0 && (
+                  <div className="mb-6 grid grid-cols-2 gap-2">
+                    {rev.photoUrls.slice(0, 4).map((photoUrl) => <img key={photoUrl} src={photoUrl} alt="Customer service review" loading="lazy" className="aspect-[4/3] w-full rounded-lg border border-outline object-cover" />)}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between border-t border-outline/60 pt-4 text-xs">
@@ -411,6 +376,21 @@ export default function Reviews() {
                         placeholder="Tell us about the vehicle, punctuality, driver, route satisfaction..."
                         className="w-full rounded-xl border border-outline bg-surface-container px-4 py-3 text-xs font-medium text-on-surface focus:border-primary focus:outline-none resize-none"
                       />
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">Photos (optional, up to 4)</label>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        multiple
+                        onChange={(event) => {
+                          const files = Array.from(event.target.files || []).filter((file) => file.size <= 5 * 1024 * 1024).slice(0, 4);
+                          setReviewPhotos(files);
+                        }}
+                        className="w-full rounded-lg border border-outline bg-surface-container p-3 text-xs font-medium"
+                      />
+                      {reviewPhotos.length > 0 && <p className="mt-1 text-[11px] font-semibold text-on-surface-variant">{reviewPhotos.length} photo{reviewPhotos.length === 1 ? '' : 's'} selected</p>}
                     </div>
 
                     <button

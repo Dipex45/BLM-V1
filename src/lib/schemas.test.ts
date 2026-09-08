@@ -13,6 +13,7 @@ describe('Production schemas', () => {
       customerId: 'user-1',
       customerName: 'Ada Lovelace',
       customerEmail: 'ada@example.com',
+      customerPhone: '+2348000000000',
       pickup: 'Lagos Hub',
       destination: 'Abuja Hub',
       vehicleClass: 'Business',

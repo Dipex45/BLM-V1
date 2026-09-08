@@ -14,7 +14,7 @@ const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-')
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' as const } },
 };
 
 const stagger = {
@@ -24,7 +24,7 @@ const stagger = {
 
 const fieldVariant = {
   hidden: { opacity: 0, y: 14 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' as const } },
 };
 
 const VALID_TIME_SLOTS = [
@@ -155,12 +155,12 @@ export default function ServiceOrder() {
 
       try {
         const hubsSnap = await getDocs(collection(db, 'hubs'));
-        const hData = hubsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const hData: any[] = hubsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
         if (hData.length > 0) {
           setHubs(hData);
           setFormData((prev) => ({
             ...prev,
-            selectedPickupHub: hData[0].name,
+            selectedPickupHub: hData[0].name || hData[0].location || hData[0].address || 'Main Hub',
           }));
         }
       } catch (e) {
@@ -254,17 +254,17 @@ export default function ServiceOrder() {
       };
     }
 
-    // 3. TOURING (5 PRESET PACKAGES, NO SIGHTSEEING STOPS SELECTOR)
+    // 3. TOURING (LOCATION-BASED PACKAGES, NOT DAILY)
     if (isTouring) {
       const selectedPkg = touringPackages.find((p) => p.id === formData.touringPackageId) || touringPackages[0];
-      const base = Number(selectedPkg?.price || 90000);
+      const locationCount = Number(selectedPkg?.locations || selectedPkg?.days || 1);
       const stateFactor = touringStates.find((s) => s.name === formData.touringState)?.factor || 1;
       const guideFee = formData.tourGuideNeeded ? 15000 : 0;
-      const pkgPrice = Math.round(base * stateFactor);
+      const pkgPrice = Math.round((Number(pricingRules.touringPerLocation || 15000) * locationCount) * stateFactor);
       return {
         basePrice: pkgPrice,
         extraFee: guideFee,
-        feeLabel: `${selectedPkg.name} in ${formData.touringState} ${guideFee > 0 ? '+ Professional Guide' : ''}`,
+        feeLabel: `${selectedPkg.name} (${locationCount} locations) in ${formData.touringState} ${guideFee > 0 ? '+ Professional Guide' : ''}`,
         total: pkgPrice + guideFee,
         vehicleClass: selectedPkg.title || selectedPkg.name,
       };
@@ -272,16 +272,15 @@ export default function ServiceOrder() {
 
     // 4. CROSS-BORDER TRIPS
     if (isCrossBorder) {
-      const crossObj = vehicles.find((v) => v.title.toLowerCase().includes('cross-border')) || { price: 180000 };
-      const base = Number(crossObj.price || 180000);
       const countryObj = internationalTours.find((c) => c.name === formData.crossBorderCountry);
       const countryFactor = countryObj?.factor || 1.1;
+      const passengerCount = Math.max(Number(formData.passengerCount) || 1, 1);
+      const baseTotal = Math.round((Number(pricingRules.crossBorderBasePerPassenger || 90000) * passengerCount) * countryFactor);
       const clearanceFee = formData.borderClearanceHelp ? Number(pricingRules.crossBorderProcessingFee || 30000) : 0;
-      const baseTotal = Math.round(base * countryFactor);
       return {
         basePrice: baseTotal,
         extraFee: clearanceFee,
-        feeLabel: `Border Clearance & Transit to ${formData.crossBorderCountry}`,
+        feeLabel: `${passengerCount} passenger${passengerCount > 1 ? 's' : ''} • ${formData.crossBorderCountry}`,
         total: baseTotal + clearanceFee,
         vehicleClass: 'Cross-Border transit',
       };
@@ -291,14 +290,16 @@ export default function ServiceOrder() {
     if (isLogistics) {
       const logObj = vehicles.find((v) => v.title.toLowerCase().includes('pickup') || v.title.toLowerCase().includes('logistics')) || { price: 65000 };
       const base = Number(logObj.price || 65000);
+      const routeDistanceKm = Math.max(Number(formData.distanceKm) || 1, 1);
       const handlingFee = Number(pricingRules.pickupLogisticsFee || 22000);
+      const routeFee = Math.round(routeDistanceKm * Number(pricingRules.logisticsPricePerKm || 250));
       const weightKg = Math.max(Number(formData.packageWeightKg) || 1, 1);
       const weightFee = Math.round(weightKg * Number(pricingRules.pricePerKg || 1200));
       return {
-        basePrice: base,
+        basePrice: base + routeFee,
         extraFee: handlingFee + weightFee,
-        feeLabel: `Handling Fee + ${weightKg}kg cargo weight`,
-        total: Math.round(base + handlingFee + weightFee),
+        feeLabel: `${routeDistanceKm}km route + Handling + ${weightKg}kg cargo`,
+        total: Math.round(base + routeFee + handlingFee + weightFee),
         vehicleClass: 'Pickup & Logistics',
       };
     }
@@ -742,7 +743,7 @@ export default function ServiceOrder() {
               </motion.div>
             )}
 
-            {/* 3. TOURING SELECTION (FIVE PREDEFINED PACKAGES) */}
+            {/* 3. TOURING SELECTION (LOCATION-BASED PACKAGES) */}
             {isTouring && (
               <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
                 <div className="flex items-center gap-3">
@@ -775,7 +776,7 @@ export default function ServiceOrder() {
                           <span className="text-xs font-bold text-primary">{formatPrice(pkg.price)}</span>
                         </div>
                         <span className="inline-block px-2 py-0.5 rounded bg-surface-container text-[10px] font-bold text-on-surface-variant mb-2">
-                          {pkg.days} Day{pkg.days > 1 ? 's' : ''} Tour
+                          {pkg.locations || pkg.days || 1} locations
                         </span>
                         <p className="text-xs text-on-surface-variant leading-relaxed">{pkg.desc}</p>
                       </div>
@@ -796,7 +797,7 @@ export default function ServiceOrder() {
                     >
                       {touringStates.map((st) => (
                         <option key={st.name} value={st.name}>
-                          {st.name} {st.factor > 1 ? `(${st.factor}x)` : ''}
+                          {st.name}
                         </option>
                       ))}
                     </select>
@@ -885,6 +886,21 @@ export default function ServiceOrder() {
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
+                      Estimated Route Distance (km)
+                    </label>
+                    <input
+                      type="number"
+                      name="distanceKm"
+                      min={1}
+                      max={5000}
+                      value={formData.distanceKm}
+                      onChange={(e) => setFormData({ ...formData, distanceKm: Math.max(Number(e.target.value) || 1, 1) })}
+                      className="w-full rounded-xl border border-outline bg-white p-3 text-sm font-medium"
+                    />
+                  </div>
+
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
                       Package Category

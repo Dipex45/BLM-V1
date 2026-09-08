@@ -4,6 +4,7 @@ import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 export enum AuditAction {
   CREATE_BOOKING = 'CREATE_BOOKING',
   UPDATE_BOOKING = 'UPDATE_BOOKING',
+  UPDATE_BOOKING_STATUS = 'UPDATE_BOOKING_STATUS',
   DELETE_BOOKING = 'DELETE_BOOKING',
   UPDATE_SETTING = 'UPDATE_SETTING',
   ADMIN_LOGIN = 'ADMIN_LOGIN',

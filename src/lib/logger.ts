@@ -1,9 +1,4 @@
 
-/**
- * BLM Motors Centralized Monitoring
- * In a production environment, this would integrate with Sentry, LogRocket, or Axiom.
- */
-
 export const logger = {
   info: (message: string, context?: any) => {
     console.log(`[INFO] [${new Date().toISOString()}] ${message}`, context || '');
@@ -13,9 +8,11 @@ export const logger = {
   },
   error: (message: string, error?: any) => {
     console.error(`[ERROR] [${new Date().toISOString()}] ${message}`, error || '');
-    
-    // Example: Transmit to an error tracking endpoint
-    // fetch('/api/logs/error', { method: 'POST', body: JSON.stringify({ message, error }) });
+    if (import.meta.env.VITE_SENTRY_DSN) {
+      void import('@sentry/react').then((Sentry) => {
+        Sentry.captureException(error instanceof Error ? error : new Error(message), { extra: { message, error } });
+      });
+    }
   },
   audit: (userId: string, action: string, details: any) => {
     console.log(`[AUDIT] User:${userId} Action:${action}`, details);

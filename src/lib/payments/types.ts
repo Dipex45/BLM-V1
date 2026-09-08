@@ -99,11 +99,3 @@ export interface PaymentProofSubmission {
   proofOfPaymentUrl: string;
   proofFileName?: string;
 }
-
-export interface PaymentProvider {
-  readonly name: PaymentProviderType;
-  initializePayment(booking: any, customer: any, config?: any): Promise<PaymentInitResult>;
-  submitProof(submission: PaymentProofSubmission, customerId: string): Promise<void>;
-  verifyPayment(paymentId: string, adminId: string, adminEmail: string, notes?: string): Promise<void>;
-  rejectPayment(paymentId: string, adminId: string, adminEmail: string, reason: string): Promise<void>;
-}

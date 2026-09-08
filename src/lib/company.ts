@@ -75,11 +75,11 @@ export const company = {
     { name: 'Accra Station', address: 'Airport City, Accra, Ghana' },
   ],
   touringPackages: [
-    { id: 'touring-basic', title: 'Touring Basic', name: 'Basic City Explorer', desc: '1-day guided city landmarks and essential cultural highlights tour.', price: 90000, days: 1 },
-    { id: 'touring-classic', title: 'Touring Classic', name: 'Classic Cultural Journey', desc: '2-day cultural immersion and heritage sites journey.', price: 140000, days: 2 },
-    { id: 'touring-premium', title: 'Touring Premium', name: 'Premium VIP Heritage', desc: '3-day premium guided excursion with priority access and chauffeur service.', price: 200000, days: 3 },
-    { id: 'touring-luxury', title: 'Touring Luxury', name: 'Luxury Scenic Expedition', desc: '5-day luxury resort and scenic nature retreat adventure.', price: 280000, days: 5 },
-    { id: 'touring-diamond', title: 'Touring Diamond', name: 'Diamond Royal Experience', desc: '7-day all-inclusive bespoke VIP tour with private concierge service.', price: 400000, days: 7 },
+    { id: 'touring-basic', title: 'Touring Basic', name: 'Basic City Explorer', desc: '2-location guided city route with essential cultural highlights.', price: 90000, locations: 2, days: 2 },
+    { id: 'touring-classic', title: 'Touring Classic', name: 'Classic Cultural Journey', desc: '5-location heritage and city route with guided stop coverage.', price: 140000, locations: 5, days: 5 },
+    { id: 'touring-premium', title: 'Touring Premium', name: 'Premium VIP Heritage', desc: '10-location premium route with priority access and chauffeur support.', price: 200000, locations: 10, days: 10 },
+    { id: 'touring-luxury', title: 'Touring Luxury', name: 'Luxury Scenic Expedition', desc: 'Custom multi-location scenic experience with luxury support.', price: 280000, locations: 12, days: 12 },
+    { id: 'touring-diamond', title: 'Touring Diamond', name: 'Diamond Royal Experience', desc: 'Bespoke premium route plan built for elevated long-form touring.', price: 400000, locations: 15, days: 15 },
   ],
   touringStates: [
     { name: 'Lagos', factor: 1 },
@@ -132,6 +132,7 @@ export const company = {
   ],
   pricingRules: {
     pricePerKm: 350,
+    logisticsPricePerKm: 250,
     standardServiceFee: 4500,
     touringPerLocation: 15000,
     internationalTourPerLocation: 25000,
@@ -139,6 +140,7 @@ export const company = {
     pricePerKg: 1200,
     carHireCautionFee: 25000,
     crossBorderProcessingFee: 30000,
+    crossBorderBasePerPassenger: 90000,
     defaultRouteFactor: 1,
     returnMultiplier: 2,
     maxTouringLocations: 20,
