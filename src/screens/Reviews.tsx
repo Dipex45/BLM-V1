@@ -32,9 +32,6 @@ export default function Reviews() {
   const [showModal, setShowModal] = useState(false);
 
   // Form State
-  const [formName, setFormName] = useState('');
-  const [formEmail, setFormEmail] = useState('');
-  const [formService, setFormService] = useState(company.services[0].title);
   const [formRating, setFormRating] = useState(5);
   const [formTitle, setFormTitle] = useState('');
   const [formComment, setFormComment] = useState('');
@@ -46,21 +43,11 @@ export default function Reviews() {
 
   useEffect(() => {
     // Pre-fill if coming from tracking / booking page
-    const prefillService = searchParams.get('service');
     const prefillBooking = searchParams.get('booking');
-    if (prefillService) {
-      setFormService(prefillService);
-      setShowModal(true);
-    }
     if (prefillBooking) {
       setFormBookingId(prefillBooking);
       setShowModal(true);
     }
-    if (user) {
-      setFormName(user.displayName || '');
-      setFormEmail(user.email || '');
-    }
-
     fetchReviews();
   }, [searchParams, user]);
 
@@ -127,7 +114,7 @@ export default function Reviews() {
 
   const averageRating = reviews.length > 0
     ? (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)
-    : '5.0';
+    : '0.0';
 
   return (
     <div className="min-h-screen bg-background px-4 py-12 sm:px-6 md:px-8 lg:px-12">
@@ -148,7 +135,7 @@ export default function Reviews() {
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-3 rounded-2xl border border-outline bg-white px-5 py-4 shadow-sm">
+            <div className="flex items-center gap-3 rounded-lg border border-outline bg-white px-5 py-4 shadow-sm">
               <span className="material-symbols-outlined text-3xl text-amber-500">star</span>
               <div>
                 <p className="text-2xl font-black text-on-surface">{averageRating}</p>
@@ -192,7 +179,7 @@ export default function Reviews() {
               key={rev.id}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="rounded-3xl border border-outline bg-white p-7 shadow-sm flex flex-col justify-between"
+              className="rounded-lg border border-outline bg-white p-7 shadow-sm flex flex-col justify-between"
             >
               <div>
                 <div className="flex items-center justify-between gap-2 mb-3">
@@ -253,7 +240,7 @@ export default function Reviews() {
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className="relative w-full max-w-lg rounded-3xl border border-outline bg-white p-7 shadow-2xl overflow-y-auto max-h-[90vh]"
+                className="relative w-full max-w-lg rounded-lg border border-outline bg-white p-7 shadow-2xl overflow-y-auto max-h-[90vh]"
               >
                 <div className="flex items-center justify-between pb-4 border-b border-outline mb-6">
                   <h3 className="text-xl font-bold text-on-surface">Share Your Feedback</h3>
@@ -307,47 +294,17 @@ export default function Reviews() {
 
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-1.5">
-                        Service Utilized
+                        Completed Booking ID *
                       </label>
-                      <select
-                        value={formService}
-                        onChange={(e) => setFormService(e.target.value)}
+                      <input
+                        type="text"
+                        required
+                        value={formBookingId}
+                        onChange={(e) => setFormBookingId(e.target.value)}
+                        placeholder="Booking ID from your dashboard"
                         className="w-full rounded-xl border border-outline bg-surface-container px-4 py-3 text-xs font-medium text-on-surface focus:border-primary focus:outline-none"
-                      >
-                        {company.services.map((s) => (
-                          <option key={s.title} value={s.title}>
-                            {s.title}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-1.5">
-                          Full Name *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={formName}
-                          onChange={(e) => setFormName(e.target.value)}
-                          placeholder="Your name"
-                          className="w-full rounded-xl border border-outline bg-surface-container px-4 py-3 text-xs font-medium text-on-surface focus:border-primary focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-1.5">
-                          Booking / Tracking ID
-                        </label>
-                        <input
-                          type="text"
-                          value={formBookingId}
-                          onChange={(e) => setFormBookingId(e.target.value)}
-                          placeholder="e.g. BLM-TRK-..."
-                          className="w-full rounded-xl border border-outline bg-surface-container px-4 py-3 text-xs font-medium text-on-surface focus:border-primary focus:outline-none"
-                        />
-                      </div>
+                      />
+                      <p className="mt-1.5 text-[11px] text-on-surface-variant">Your name and service are verified from the completed booking.</p>
                     </div>
 
                     <div>

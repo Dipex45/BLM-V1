@@ -1,20 +1,20 @@
 
 export const logger = {
-  info: (message: string, context?: any) => {
-    console.log(`[INFO] [${new Date().toISOString()}] ${message}`, context || '');
+  info: (message: string, context?: unknown) => {
+    if (import.meta.env.DEV) console.info(`[INFO] ${message}`, context || '');
   },
-  warn: (message: string, context?: any) => {
-    console.warn(`[WARN] [${new Date().toISOString()}] ${message}`, context || '');
+  warn: (message: string, context?: unknown) => {
+    if (import.meta.env.DEV) console.warn(`[WARN] ${message}`, context || '');
+    if (import.meta.env.VITE_SENTRY_DSN) {
+      void import('@sentry/react').then((Sentry) => Sentry.captureMessage(message, { level: 'warning', extra: { context } }));
+    }
   },
-  error: (message: string, error?: any) => {
-    console.error(`[ERROR] [${new Date().toISOString()}] ${message}`, error || '');
+  error: (message: string, error?: unknown) => {
+    if (import.meta.env.DEV) console.error(`[ERROR] ${message}`, error || '');
     if (import.meta.env.VITE_SENTRY_DSN) {
       void import('@sentry/react').then((Sentry) => {
         Sentry.captureException(error instanceof Error ? error : new Error(message), { extra: { message, error } });
       });
     }
-  },
-  audit: (userId: string, action: string, details: any) => {
-    console.log(`[AUDIT] User:${userId} Action:${action}`, details);
   }
 };

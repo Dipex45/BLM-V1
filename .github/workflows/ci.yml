@@ -32,5 +32,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Lighthouse quality budgets
+        run: npx --yes @lhci/cli@0.15.1 autorun
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: output/lighthouse
+
       - name: Production dependency audit
-        run: npm audit --omit=dev --audit-level=moderate
+        run: npm audit --omit=dev --audit-level=high

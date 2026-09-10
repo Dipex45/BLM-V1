@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
 export type SupportedCurrency = 'NGN' | 'XOF' | 'GHS' | 'USD' | 'EUR' | 'GBP';
@@ -63,14 +63,6 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
           setIsLiveRates(true);
           const nowStr = new Date().toISOString();
           setLastRateUpdate(nowStr);
-          try {
-            await setDoc(doc(db, 'settings', 'currency_rates'), { 
-              key: 'currency_rates', 
-              value: liveRates, 
-              lastUpdated: nowStr,
-              source: 'open.er-api.com'
-            }, { merge: true });
-          } catch (e) {}
           return true;
         }
       }
@@ -96,14 +88,6 @@ export function CurrencyProvider({ children }: { children: React.ReactNode }) {
           setIsLiveRates(true);
           const nowStr = new Date().toISOString();
           setLastRateUpdate(nowStr);
-          try {
-            await setDoc(doc(db, 'settings', 'currency_rates'), { 
-              key: 'currency_rates', 
-              value: liveRates, 
-              lastUpdated: nowStr,
-              source: 'api.exchangerate-api.com'
-            }, { merge: true });
-          } catch (e) {}
           return true;
         }
       }

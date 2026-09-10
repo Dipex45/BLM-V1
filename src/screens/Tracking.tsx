@@ -168,13 +168,13 @@ export default function Tracking() {
         </header>
 
         {/* Tracking Search Form */}
-        <form onSubmit={handleTrack} className="flex w-full max-w-3xl flex-col gap-3 rounded-2xl border border-outline bg-white p-3 shadow-md sm:flex-row">
+        <form onSubmit={handleTrack} className="flex w-full max-w-3xl flex-col gap-3 rounded-lg border border-outline bg-white p-3 shadow-md sm:flex-row">
           <label className="relative flex-1">
             <span className="sr-only">Tracking or Booking Reference</span>
             <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-primary">search</span>
             <input
               type="text"
-              placeholder="e.g. BLM-TRK-2026-ABC12 or booking ID"
+              placeholder="Booking or tracking ID"
               className="w-full rounded-xl border border-transparent bg-surface-container py-4 pl-12 pr-4 text-sm font-medium text-on-surface transition-colors focus:border-primary focus:bg-white focus:outline-none"
               value={trackingInput}
               onChange={(e) => setTrackingInput(e.target.value)}
@@ -197,7 +197,7 @@ export default function Tracking() {
         </form>
 
         {error && (
-          <div className="max-w-3xl rounded-2xl border border-error/20 bg-error-container p-5 text-sm font-bold text-on-error-container">
+          <div className="max-w-3xl rounded-lg border border-error/20 bg-error-container p-5 text-sm font-bold text-on-error-container">
             {error}
           </div>
         )}
@@ -211,7 +211,7 @@ export default function Tracking() {
               className="grid grid-cols-1 gap-8 lg:grid-cols-[1.5fr_0.85fr]"
             >
               {/* Left Main Tracking Card */}
-              <section className="rounded-3xl border border-outline bg-white shadow-sm overflow-hidden">
+              <section className="rounded-lg border border-outline bg-white shadow-sm overflow-hidden">
                 <div className="border-b border-outline p-6 md:p-8 bg-surface-container/20">
                   <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
                     <div>
@@ -224,7 +224,7 @@ export default function Tracking() {
                         Last Checkpoint: <strong className="text-on-surface font-semibold">{record.currentCheckpoint}</strong>
                       </p>
                     </div>
-                    <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-left md:text-right">
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-left md:text-right">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-primary">Live Tracking ID</p>
                       <p className="mt-1 font-mono text-lg font-black text-on-surface">{record.trackingId}</p>
                     </div>
@@ -234,7 +234,7 @@ export default function Tracking() {
                 <div className="p-6 md:p-8 space-y-8">
                   {/* Route Overview */}
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_1fr] md:items-center">
-                    <div className="rounded-2xl border border-outline bg-surface-container/40 p-5">
+                    <div className="rounded-lg border border-outline bg-surface-container/40 p-5">
                       <div className="flex items-center gap-2 text-xs font-bold text-primary mb-1">
                         <span className="material-symbols-outlined text-base">trip_origin</span>
                         <span>Pickup Location</span>
@@ -242,7 +242,7 @@ export default function Tracking() {
                       <p className="text-base font-bold text-on-surface break-words">{record.pickup || 'Designated Pickup Point'}</p>
                     </div>
                     <div className="hidden h-px w-16 bg-outline md:block" />
-                    <div className="rounded-2xl border border-outline bg-surface-container/40 p-5">
+                    <div className="rounded-lg border border-outline bg-surface-container/40 p-5">
                       <div className="flex items-center gap-2 text-xs font-bold text-primary mb-1">
                         <span className="material-symbols-outlined text-base">location_on</span>
                         <span>Destination Point</span>
@@ -287,7 +287,7 @@ export default function Tracking() {
                   )}
 
                   {/* Drop Review CTA */}
-                  <div className="rounded-2xl border border-primary/20 bg-primary/5 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div>
                       <h4 className="text-sm font-bold text-on-surface">How was your service experience?</h4>
                       <p className="text-xs text-on-surface-variant mt-0.5">Share your feedback to help us maintain elite transit quality.</p>
@@ -306,7 +306,7 @@ export default function Tracking() {
               {/* Right Side: Assignment & Event Milestones */}
               <aside className="space-y-6">
                 {/* Trip Specs */}
-                <div className="rounded-3xl border border-outline bg-white p-6 shadow-sm">
+                <div className="rounded-lg border border-outline bg-white p-6 shadow-sm">
                   <h3 className="text-base font-bold text-on-surface mb-4">Trip Information</h3>
                   <dl className="space-y-4 text-xs">
                     <div>
@@ -339,7 +339,7 @@ export default function Tracking() {
                 </div>
 
                 {/* Tracking Milestones Timeline */}
-                <div className="rounded-3xl border border-outline bg-white p-6 shadow-sm">
+                <div className="rounded-lg border border-outline bg-white p-6 shadow-sm">
                   <h3 className="text-base font-bold text-on-surface mb-4">Transit Milestones</h3>
                   {record.events && record.events.length > 0 ? (
                     <ol className="relative space-y-6 border-l-2 border-primary/30 pl-5 ml-2">
@@ -364,7 +364,7 @@ export default function Tracking() {
         </AnimatePresence>
 
         {/* Animated Movement Hubs */}
-        <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+        <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
           <h2 className="text-base font-bold text-on-surface mb-2">Operational Checkpoints & Transit Nodes</h2>
           <p className="text-xs text-on-surface-variant mb-6">
             Real-time movement milestones tracked across BLM inter-state and cross-border corridors.
@@ -376,7 +376,7 @@ export default function Tracking() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: index === activeLocationIndex ? 1 : 0.5, y: 0 }}
                 transition={{ duration: 0.4 }}
-                className={`rounded-2xl border p-4 text-xs font-medium transition-all ${
+                className={`rounded-lg border p-4 text-xs font-medium transition-all ${
                   index === activeLocationIndex
                     ? 'border-primary bg-primary/5 text-primary shadow-sm ring-1 ring-primary/20'
                     : 'border-outline bg-surface-container/30 text-on-surface-variant'

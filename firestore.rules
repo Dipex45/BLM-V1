@@ -41,18 +41,6 @@ service cloud.firestore {
       return hasRole(['dispatcher', 'customer_support_agent', 'finance_admin']);
     }
 
-    function isValidBooking(data) {
-      return data.keys().hasAll(['customerId', 'pickup', 'destination', 'date', 'time', 'vehicleClass', 'totalAmount', 'status', 'createdAt']) &&
-             data.customerId is string && data.customerId.size() <= 128 &&
-             data.pickup is string && data.pickup.size() <= 200 &&
-             data.destination is string && data.destination.size() <= 200 &&
-             data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
-             data.time is string && data.time.matches('^\\d{2}:\\d{2}$') &&
-             data.totalAmount is number &&
-             data.status in ['Quoted', 'Booked', 'Paid', 'Confirmed', 'Dispatched', 'InTransit', 'Completed', 'Cancelled'] &&
-             data.createdAt is string;
-    }
-
     match /admins/{adminId} {
       allow read: if hasRole(['dispatcher', 'finance_admin', 'customer_support_agent']);
       allow create, update, delete: if false;
@@ -74,32 +62,22 @@ service cloud.firestore {
 
     match /settings/{settingId} {
       allow read: if isSignedIn();
-      allow write: if hasRole(['dispatcher']);
+      allow write: if false;
     }
 
     match /hubs/{hubId} {
       allow read: if isSignedIn();
-      allow write: if hasRole(['dispatcher']);
+      allow write: if false;
     }
 
     match /blocked_dates/{dateId} {
       allow read: if isSignedIn();
-      allow write: if hasRole(['dispatcher']);
+      allow write: if false;
     }
 
     match /bookings/{bookingId} {
       allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isOps());
-      allow create: if isSignedIn() &&
-                    request.resource.data.customerId == request.auth.uid &&
-                    isValidBooking(request.resource.data);
-      allow update: if isSignedIn() &&
-                    (
-                      hasRole(['dispatcher', 'customer_support_agent']) ||
-                      (
-                        resource.data.customerId == request.auth.uid &&
-                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewId'])
-                      )
-                    );
+      allow create, update: if false;
       allow delete: if false;
     }
 
@@ -170,8 +148,7 @@ service cloud.firestore {
 
     match /reviews/{reviewId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.customerId == request.auth.uid;
-      allow update, delete: if false;
+      allow create, update, delete: if false;
     }
   }
 }

@@ -77,7 +77,13 @@ export default function Register() {
         });
       }
 
-      navigate('/dashboard');
+      const adminDoc = await getDoc(doc(db, 'admins', result.user.uid));
+      if (adminDoc.exists()) {
+        navigate('/admin');
+      } else {
+        const profile = await getDoc(doc(db, 'users', result.user.uid));
+        navigate(profile.data()?.role === 'driver' ? '/driver' : '/dashboard');
+      }
     } catch (err: any) {
       console.error('Google register error:', err.code, err.message);
       
@@ -106,15 +112,15 @@ export default function Register() {
         <img
           src={company.authImage}
           alt="BLM Motors transport service flyer"
-          className="absolute inset-0 h-full w-full object-cover object-center opacity-60"
+          className="absolute inset-0 h-full w-full object-cover object-center opacity-90"
         />
-        <div className="absolute inset-0 bg-black/50" />
+        <div className="absolute inset-0 bg-black/45" />
         <div className="relative z-10 max-w-lg text-white">
-          <div className="mb-10 inline-block">
+          <div className="brand-logo-glow mb-10">
             <img
               src={company.logo}
               alt="BLM Motors logo"
-              className="h-20 w-64 object-contain md:h-24 md:w-72 [filter:drop-shadow(0_0_15px_rgba(255,255,255,1))_drop-shadow(0_0_35px_rgba(255,255,255,0.9))_drop-shadow(0_0_60px_rgba(255,255,255,0.6))]"
+              className="h-20 w-64 object-contain md:h-24 md:w-72"
             />
           </div>
           <h2 className="mb-6 text-5xl font-bold leading-tight">Create your BLM account.</h2>
@@ -131,6 +137,9 @@ export default function Register() {
           className="w-full max-w-md rounded-lg border border-outline bg-white p-8 shadow-sm md:p-10"
         >
           <div className="mb-9 text-center">
+            <div className="brand-logo-glow mb-5 lg:hidden">
+              <img src={company.logo} alt="BLM Motors logo" className="h-16 w-48 object-contain" />
+            </div>
             <h1 className="mb-2 text-3xl font-bold">Create account</h1>
             <p className="text-sm text-on-surface-variant">Set up your profile for faster bookings.</p>
           </div>
@@ -173,6 +182,7 @@ export default function Register() {
               <label className="mb-2 block text-sm font-bold text-on-surface-variant">Full name</label>
               <input
                 type="text"
+                autoComplete="name"
                 required
                 className="w-full rounded-md border border-outline bg-surface-container px-4 py-3.5 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
                 placeholder="Chinedu Okafor"
@@ -184,6 +194,7 @@ export default function Register() {
               <label className="mb-2 block text-sm font-bold text-on-surface-variant">Email address</label>
               <input
                 type="email"
+                autoComplete="email"
                 required
                 className="w-full rounded-md border border-outline bg-surface-container px-4 py-3.5 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
                 placeholder="name@email.com"
@@ -196,6 +207,7 @@ export default function Register() {
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
                   required
                   className="w-full rounded-md border border-outline bg-surface-container px-4 py-3.5 pr-24 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
                   placeholder="Password"

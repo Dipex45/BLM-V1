@@ -4,14 +4,23 @@ import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
-  const env = loadEnv(mode, '.', '');
+  const env = loadEnv(mode, process.cwd(), '');
+  const verificationTags = [
+    { name: 'google-site-verification', content: env.VITE_GOOGLE_SITE_VERIFICATION },
+    { name: 'msvalidate.01', content: env.VITE_BING_SITE_VERIFICATION },
+  ].filter((tag) => tag.content);
+
   return {
-    plugins: [react(), tailwindcss()],
-    define: {
-      'process.env.GOOGLE_MAPS_PLATFORM_KEY': JSON.stringify(env.GOOGLE_MAPS_PLATFORM_KEY || ''),
-      'process.env.VITE_STRIPE_PUBLISHABLE_KEY': JSON.stringify(env.VITE_STRIPE_PUBLISHABLE_KEY || ''),
-      'process.env.VITE_PAYSTACK_PUBLIC_KEY': JSON.stringify(env.VITE_PAYSTACK_PUBLIC_KEY || ''),
-    },
+    plugins: [
+      {
+        name: 'search-verification-meta',
+        transformIndexHtml() {
+          return verificationTags.map((tag) => ({ tag: 'meta', attrs: tag, injectTo: 'head' as const }));
+        },
+      },
+      react(),
+      tailwindcss(),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
@@ -24,11 +33,15 @@ export default defineConfig(({mode}) => {
       minify: mode === 'production' ? 'terser' : false,
       rollupOptions: {
         output: {
-          manualChunks: {
-            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-            'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
-            'vendor-motion': ['framer-motion'],
-            'vendor-stripe': ['@stripe/stripe-js', '@stripe/react-stripe-js'],
+          manualChunks(id) {
+            const normalized = id.replace(/\\/g, '/');
+            if (normalized.includes('/src/screens/AdminDashboard')) return 'admin-dashboard';
+            if (normalized.includes('/src/screens/')) return `screen-${normalized.split('/src/screens/')[1].split('.')[0].toLowerCase()}`;
+            if (normalized.includes('/node_modules/recharts/') || normalized.includes('/node_modules/d3-')) return 'vendor-charts';
+            if (normalized.includes('/node_modules/firebase/')) return 'vendor-firebase';
+            if (normalized.includes('/node_modules/framer-motion/') || normalized.includes('/node_modules/motion-dom/')) return 'vendor-motion';
+            if (normalized.includes('/node_modules/@stripe/')) return 'vendor-stripe';
+            if (normalized.includes('/node_modules/react/') || normalized.includes('/node_modules/react-dom/') || normalized.includes('/node_modules/react-router')) return 'vendor-react';
           },
         },
       },

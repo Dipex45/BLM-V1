@@ -25,7 +25,7 @@ export default function CurrencySelector({ compact = false }: { compact?: boolea
   }
 
   return (
-    <div className="bg-white border border-outline rounded-2xl p-6 shadow-sm">
+    <div className="bg-white border border-outline rounded-lg p-6 shadow-sm">
       <div className="mb-6">
         <h3 className="text-sm font-bold text-on-surface mb-2">Select display currency</h3>
         <p className="text-xs text-on-surface-variant">

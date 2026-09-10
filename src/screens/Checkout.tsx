@@ -286,7 +286,7 @@ export default function Checkout() {
         {/* Status Banner */}
         <div className="mb-8">
           {isPaid && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-green-200 bg-green-50 p-6">
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-green-200 bg-green-50 p-6">
               <div className="flex items-center gap-4">
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-green-600 text-white">
                   <span className="material-symbols-outlined text-2xl">verified</span>
@@ -302,7 +302,7 @@ export default function Checkout() {
           )}
 
           {isUnderReview && !isPaid && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-amber-200 bg-amber-50 p-6">
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-amber-200 bg-amber-50 p-6">
               <div className="flex items-center gap-4">
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-amber-500 text-white">
                   <span className="material-symbols-outlined text-2xl">hourglass_top</span>
@@ -318,7 +318,7 @@ export default function Checkout() {
           )}
 
           {isRejected && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl border border-error/20 bg-error-container p-6">
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-error/20 bg-error-container p-6">
               <div className="flex items-center gap-4">
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-error text-white">
                   <span className="material-symbols-outlined text-2xl">error</span>
@@ -338,7 +338,7 @@ export default function Checkout() {
           {/* Left Column: Payment Methods & Bank Account Details */}
           <div className="space-y-6">
             {/* Payment Method Selector Card */}
-            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-primary">{t('paymentChannels')}</span>
@@ -353,7 +353,7 @@ export default function Checkout() {
                   type="button"
                   onClick={() => setSelectedMethod('bank_transfer')}
                   disabled={!publicConfig?.payments.manualBankTransfer || isPaid}
-                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                  className={`flex items-start gap-3 rounded-lg border p-4 text-left transition-all ${
                     selectedMethod === 'bank_transfer'
                       ? 'border-primary bg-primary/5 shadow-sm'
                       : 'border-outline hover:border-primary/50'
@@ -378,7 +378,7 @@ export default function Checkout() {
                   type="button"
                   onClick={() => setSelectedMethod('stripe')}
                   disabled={!publicConfig?.payments.stripe || !import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || isPaid}
-                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                  className={`flex items-start gap-3 rounded-lg border p-4 text-left transition-all ${
                     selectedMethod === 'stripe'
                       ? 'border-primary bg-primary/5 shadow-sm'
                       : 'border-outline hover:border-primary/50'
@@ -403,7 +403,7 @@ export default function Checkout() {
                   type="button"
                   onClick={() => setSelectedMethod('paystack')}
                   disabled={!publicConfig?.payments.paystack || isPaid}
-                  className={`flex items-start gap-3 rounded-2xl border p-4 text-left transition-all ${
+                  className={`flex items-start gap-3 rounded-lg border p-4 text-left transition-all ${
                     selectedMethod === 'paystack'
                       ? 'border-primary bg-primary/5 shadow-sm'
                       : 'border-outline hover:border-primary/50'
@@ -459,7 +459,7 @@ export default function Checkout() {
             </div>
 
             {selectedMethod === 'bank_transfer' && paymentRecord && (
-            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
               <div className="flex items-center justify-between border-b border-outline pb-6">
                 <div>
                   <span className="inline-block rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary mb-2">
@@ -474,7 +474,7 @@ export default function Checkout() {
               </div>
 
               {/* Unique Payment Reference Box */}
-              <div className="mt-6 rounded-2xl border border-primary/20 bg-primary/5 p-5">
+              <div className="mt-6 rounded-lg border border-primary/20 bg-primary/5 p-5">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-wider text-primary">Your Payment Reference</p>
@@ -496,7 +496,7 @@ export default function Checkout() {
 
               {/* Bank Account Details Grid */}
               <div className="mt-6 space-y-4">
-                <div className="rounded-2xl border border-outline bg-surface-container/30 p-5 space-y-4">
+                <div className="rounded-lg border border-outline bg-surface-container/30 p-5 space-y-4">
                   <div className="flex justify-between items-center pb-3 border-b border-outline/60">
                     <span className="text-xs font-bold text-on-surface-variant">Bank Name</span>
                     <span className="text-sm font-bold text-on-surface">{bankConfig.bankName}</span>
@@ -530,7 +530,7 @@ export default function Checkout() {
                   )}
                 </div>
 
-                <div className="rounded-2xl bg-surface-container-lowest border border-outline p-5 text-xs font-medium text-on-surface-variant space-y-2">
+                <div className="rounded-lg bg-surface-container-lowest border border-outline p-5 text-xs font-medium text-on-surface-variant space-y-2">
                   <p className="font-bold text-on-surface text-sm">Payment Process:</p>
                   <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
                     <li>Open your banking app or internet banking portal.</li>
@@ -549,7 +549,7 @@ export default function Checkout() {
           <div className="space-y-6">
             {/* Upload Proof Form Card */}
             {selectedMethod === 'bank_transfer' && paymentRecord && (
-            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
               <h3 className="text-lg font-bold text-on-surface mb-2">Upload Proof of Payment</h3>
               <p className="text-xs text-on-surface-variant mb-6 font-medium">
                 Upload your transfer receipt or bank transaction slip for verification.
@@ -567,7 +567,7 @@ export default function Checkout() {
                   <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
                     Payment Receipt (JPG, PNG, or PDF)
                   </label>
-                  <label className="relative flex min-h-[140px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-outline bg-surface-container/20 p-6 text-center transition-all hover:border-primary hover:bg-primary/5">
+                  <label className="relative flex min-h-[140px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-outline bg-surface-container/20 p-6 text-center transition-all hover:border-primary hover:bg-primary/5">
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/jpg,application/pdf"
@@ -627,7 +627,7 @@ export default function Checkout() {
             )}
 
             {/* Booking Summary Card */}
-            <div className="rounded-3xl border border-outline bg-white p-7 shadow-sm">
+            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
               <h4 className="text-sm font-bold uppercase tracking-wider text-on-surface mb-4">Trip Summary</h4>
               <dl className="space-y-3 text-xs">
                 <div className="flex justify-between">

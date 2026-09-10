@@ -4,5 +4,7 @@ dist/
 coverage/
 .DS_Store
 *.log
+.playwright-cli/
+output/
 .env*
 !.env.example

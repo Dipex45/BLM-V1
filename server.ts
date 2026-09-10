@@ -57,20 +57,33 @@ const productionEnvironmentKeys = [
   "APP_URL",
   "CORS_ORIGINS",
   "FIREBASE_PROJECT_ID",
+  "VITE_FIREBASE_API_KEY",
+  "VITE_FIREBASE_AUTH_DOMAIN",
+  "VITE_FIREBASE_PROJECT_ID",
+  "VITE_FIREBASE_STORAGE_BUCKET",
+  "VITE_FIREBASE_MESSAGING_SENDER_ID",
+  "VITE_FIREBASE_APP_ID",
   "REDIS_URL",
+  "VITE_STRIPE_PUBLISHABLE_KEY",
   "PAYSTACK_SECRET_KEY",
   "STRIPE_SECRET_KEY",
   "STRIPE_WEBHOOK_SECRET",
   "RESEND_API_KEY",
+  "NOTIFICATION_EMAIL_FROM",
+  "SUPPORT_ALERT_EMAIL",
   "TWILIO_ACCOUNT_SID",
   "TWILIO_AUTH_TOKEN",
   "TWILIO_FROM_NUMBER",
   "TWILIO_WHATSAPP_FROM",
+  "GOOGLE_MAPS_PLATFORM_KEY",
   "SENTRY_DSN",
 ];
 
 function validateEnvironment() {
   const missing = productionEnvironmentKeys.filter((key) => !process.env[key]?.trim());
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim() && !process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    missing.push("FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS");
+  }
   if (isProduction && missing.length > 0) {
     throw new Error(`Missing required production environment variables: ${missing.join(", ")}`);
   }
@@ -184,6 +197,18 @@ const StatusUpdateSchema = z.object({
   cancellationReason: z.string().trim().max(500).optional(),
 });
 
+const DriverAssignmentSchema = z.object({
+  bookingId: z.string().trim().min(3).max(160),
+  driverId: z.string().trim().min(3).max(160),
+});
+
+const CheckpointUpdateSchema = z.object({
+  bookingId: z.string().trim().min(3).max(160),
+  status: BookingStatusSchema,
+  location: z.string().trim().min(2).max(240),
+  notes: z.string().trim().max(500).optional(),
+});
+
 const DriverNotifySchema = z.object({
   bookingId: z.string().trim().min(3).max(160),
   driverId: z.string().trim().min(1).max(160).optional(),
@@ -202,7 +227,54 @@ const DriverOnboardingSchema = z.object({
   name: z.string().trim().min(2).max(160),
   license: z.string().trim().min(3).max(80),
   phone: z.string().trim().min(5).max(40),
+  authUid: z.string().trim().min(3).max(160),
   vehicleId: z.string().trim().max(160).optional(),
+});
+
+const AdminSettingKeySchema = z.enum([
+  "vehicle_types",
+  "pricing_rules",
+  "touring_packages",
+  "touring_states",
+  "international_tours",
+  "car_hire_options",
+  "tracking_locations",
+  "currency_rates",
+  "bank_accounts",
+  "feature_flags",
+]);
+
+const AdminSettingUpdateSchema = z.object({ value: z.unknown() });
+
+const PaymentReconciliationSchema = z.object({
+  paymentId: z.string().trim().min(3).max(160),
+  reconciled: z.boolean(),
+  notes: z.string().trim().max(500).optional(),
+});
+
+const ClientAuditSchema = z.object({
+  action: z.string().trim().min(2).max(100),
+  resource: z.string().trim().min(1).max(240).default("client"),
+  details: z.record(z.string(), z.unknown()).default({}),
+});
+
+const ArchiveBookingsSchema = z.object({
+  olderThanDays: z.number().int().min(30).max(3650).default(90),
+  reason: z.string().trim().min(5).max(500),
+});
+
+const HubSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  address: z.string().trim().min(5).max(240),
+});
+
+const BlockedDateSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  reason: z.string().trim().min(3).max(300),
+});
+
+const AdminDeleteSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
 });
 
 const DriverLocationSchema = z.object({
@@ -230,6 +302,24 @@ const ReviewSubmissionSchema = z.object({
   title: z.string().trim().min(3).max(120),
   comment: z.string().trim().min(10).max(1500),
   photoUrls: z.array(z.string().url().max(3000)).max(4).default([]),
+});
+
+const SupportTicketCreateSchema = z.object({
+  subject: z.string().trim().min(5).max(160),
+  category: z.enum(["booking", "payment", "driver", "logistics", "other"]),
+  priority: z.enum(["normal", "urgent"]).default("normal"),
+  message: z.string().trim().min(10).max(3000),
+  bookingId: z.string().trim().max(160).optional(),
+  phone: z.string().trim().max(40).optional(),
+});
+
+const SupportMessageSchema = z.object({
+  message: z.string().trim().min(1).max(3000),
+});
+
+const SupportStatusSchema = z.object({
+  status: z.enum(["open", "in_progress", "waiting_customer", "resolved", "closed"]),
+  escalationLevel: z.number().int().min(0).max(3).optional(),
 });
 
 const RouteDistanceSchema = z.object({
@@ -412,13 +502,14 @@ async function getRouteDistance(origin: string, destination: string) {
 
 async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSchema>) {
   const settings = getAdminDb().collection("settings");
-  const [rulesSnap, vehiclesSnap, packagesSnap, statesSnap, countriesSnap, carsSnap] = await Promise.all([
+  const [rulesSnap, vehiclesSnap, packagesSnap, statesSnap, countriesSnap, carsSnap, hubsSnap] = await Promise.all([
     settings.doc("pricing_rules").get(),
     settings.doc("vehicle_types").get(),
     settings.doc("touring_packages").get(),
     settings.doc("touring_states").get(),
     settings.doc("international_tours").get(),
     settings.doc("car_hire_options").get(),
+    getAdminDb().collection("hubs").get(),
   ]);
   const rules = { pricePerKm: 350, logisticsPricePerKm: 250, standardServiceFee: 4500, pickupLogisticsFee: 22000, pricePerKg: 1200, tourGuideFee: 15000, carHireDriverDailyFee: 10000, carHireCautionFee: 25000, crossBorderProcessingFee: 30000, crossBorderBasePerPassenger: 90000, returnMultiplier: 2, weekendSurchargePercent: 0, nightSurchargePercent: 0, ...(rulesSnap.data()?.value || {}) };
   const vehicles = Array.isArray(vehiclesSnap.data()?.value) ? vehiclesSnap.data()!.value : [];
@@ -426,6 +517,7 @@ async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSc
   const states = Array.isArray(statesSnap.data()?.value) ? statesSnap.data()!.value : [];
   const countries = Array.isArray(countriesSnap.data()?.value) ? countriesSnap.data()!.value : [];
   const cars = Array.isArray(carsSnap.data()?.value) ? carsSnap.data()!.value : [];
+  const hubs = hubsSnap.docs.map((document) => ({ id: document.id, ...document.data() } as Record<string, any>));
   const service = input.serviceType.toLowerCase();
   const snapshot = input.pricingSnapshot || {};
   let basePrice = 0;
@@ -434,32 +526,42 @@ async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSc
   let routeMetadata: Awaited<ReturnType<typeof getRouteDistance>> = null;
 
   if (service.includes("long") || service.includes("short") || service.includes("distance")) {
-    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase()) || {};
+    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase());
+    if (vehicles.length > 0 && !vehicle) throw new HttpError(422, "The selected vehicle class is no longer available");
     routeMetadata = await getRouteDistance(input.pickup, input.destination);
     const distanceKm = routeMetadata?.distanceKm || Math.max(Number(snapshot.distanceKm || 0), 1);
-    const kmRate = Number(vehicle.kmRate || rules.pricePerKm);
+    const kmRate = Number(vehicle?.kmRate || rules.pricePerKm);
     basePrice = Math.round(distanceKm * kmRate * (input.isReturn ? Number(rules.returnMultiplier) : 1));
     extraFee = Number(rules.standardServiceFee);
     feeLabel = `${distanceKm} km at NGN ${kmRate}/km plus service fee`;
   } else if (service.includes("car hire")) {
-    const car = cars.find((item: any) => item.id === input.carHireVehicle) || {};
+    const car = cars.find((item: any) => item.id === input.carHireVehicle);
+    if (cars.length > 0 && !car) throw new HttpError(422, "The selected hire vehicle is no longer in the fleet catalogue");
+    if (car?.available === false) throw new HttpError(409, "The selected hire vehicle is currently unavailable");
+    const selectedHub = hubs.find((hub) => hub.name === input.pickupHub || hub.location === input.pickupHub || hub.address === input.pickupHub);
+    if (hubs.length > 0 && (!selectedHub || selectedHub.active === false)) {
+      throw new HttpError(422, "The selected pickup location is no longer available");
+    }
     const genericVehicle = vehicles.find((item: any) => String(item.title).toLowerCase().includes("car hire")) || {};
     const days = Math.max(Number(input.carHireDurationDays || 1), 1);
-    basePrice = Number(car.pricePerDay || genericVehicle.price || 70000) * days;
+    basePrice = Number(car?.pricePerDay || genericVehicle.price || 70000) * days;
     extraFee = Number(rules.carHireCautionFee) + (input.carHireWithDriver ? Number(rules.carHireDriverDailyFee) * days : 0);
     feeLabel = "Refundable caution deposit and selected driver fee";
   } else if (service.includes("tour")) {
     const packageFallbacks: Record<string, number> = { "city discovery": 90000, "cultural trail": 140000, "signature escape": 200000, "grand expedition": 280000, "royal journey": 400000 };
     const selectedPackage = packages.find((item: any) => item.id === input.touringPackage || item.name === input.touringPackage || item.title === input.touringPackage) || {};
     const state = states.find((item: any) => item.name === input.touringState) || {};
+    if (packages.length > 0 && !Object.keys(selectedPackage).length) throw new HttpError(422, "The selected touring package is no longer available");
+    if (states.length > 0 && !Object.keys(state).length) throw new HttpError(422, "The selected touring destination is no longer available");
     const packageKey = String(input.touringPackage || "city discovery").toLowerCase();
     basePrice = Math.round(Number(selectedPackage.price || packageFallbacks[packageKey] || 90000) * Number(state.factor || 1));
     extraFee = input.tourGuideNeeded ? Number(rules.tourGuideFee) : 0;
     feeLabel = `${selectedPackage.locations || snapshot.locations || "Curated"} planned sightseeing stops`;
   } else if (service.includes("cross-border") || service.includes("cross border")) {
-    const country = countries.find((item: any) => item.name === input.internationalCountry) || {};
+    const country = countries.find((item: any) => item.name === input.internationalCountry);
+    if (countries.length > 0 && !country) throw new HttpError(422, "The selected international destination is no longer available");
     const passengers = Math.max(Number(input.passengerCount || 1), 1);
-    basePrice = Math.round(Number(rules.crossBorderBasePerPassenger) * passengers * Number(country.factor || 1.1));
+    basePrice = Math.round(Number(rules.crossBorderBasePerPassenger) * passengers * Number(country?.factor || 1.1));
     extraFee = input.borderClearanceHelp ? Number(rules.crossBorderProcessingFee) : 0;
     feeLabel = `${passengers} passenger${passengers === 1 ? "" : "s"}${extraFee ? " plus border support" : ""}`;
   } else if (service.includes("pickup") || service.includes("logistics")) {
@@ -527,22 +629,28 @@ function normalizeRole(role: string): Role {
   return role === "admin" ? "super_admin" : (role as Role);
 }
 
+function sessionIdForRequest(req: Request, userId: string) {
+  const userAgent = req.get("user-agent") || "unknown";
+  const ip = getClientIp(req);
+  return crypto.createHash("sha256").update(`${userId}:${ip}:${userAgent}`).digest("hex");
+}
+
 async function recordSession(req: Request, auth: AuthenticatedUser) {
   const userAgent = req.get("user-agent") || "unknown";
   const ip = getClientIp(req);
-  const sessionId = crypto.createHash("sha256").update(`${auth.uid}:${ip}:${userAgent}`).digest("hex");
+  const sessionId = sessionIdForRequest(req, auth.uid);
+  const ref = getAdminDb().collection("user_sessions").doc(sessionId);
+  const existing = await ref.get();
+  if (existing.data()?.revoked === true) throw new HttpError(401, "This device session has been revoked");
 
-  await getAdminDb()
-    .collection("user_sessions")
-    .doc(sessionId)
-    .set(
+  await ref.set(
       {
         userId: auth.uid,
         email: auth.email,
         role: auth.role,
         ip,
         userAgent,
-        revoked: false,
+        ...(existing.exists ? {} : { revoked: false, createdAt: FieldValue.serverTimestamp() }),
         lastSeenAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       },
@@ -861,8 +969,11 @@ function toMinorUnits(amount: number, currency: string) {
   return zeroDecimal.has(currency.toLowerCase()) ? Math.round(amount) : Math.round(amount * 100);
 }
 
-function convertFromNgn(amountInNgn: number, currency: z.infer<typeof SupportedCurrencySchema>) {
-  const rate = CURRENCY_RATES_FROM_NGN[currency] || 1;
+async function convertFromNgn(amountInNgn: number, currency: z.infer<typeof SupportedCurrencySchema>) {
+  const snapshot = await getAdminDb().collection("settings").doc("currency_rates").get();
+  const configured = snapshot.data()?.value;
+  const configuredRate = configured && typeof configured === "object" ? Number(configured[currency]) : Number.NaN;
+  const rate = Number.isFinite(configuredRate) && configuredRate > 0 ? configuredRate : CURRENCY_RATES_FROM_NGN[currency] || 1;
   return Number((amountInNgn * rate).toFixed(currency === "NGN" || currency === "XOF" ? 0 : 2));
 }
 
@@ -988,6 +1099,12 @@ async function markPaymentSucceeded(paymentRef: FirebaseFirestore.DocumentRefere
       metadata: { paymentId: paymentRef.id, provider: payment.provider, eventId },
       createdAt: FieldValue.serverTimestamp(),
     });
+    if (booking.customerId) {
+      tx.set(db.collection("customers").doc(String(booking.customerId)), {
+        paymentHistory: FieldValue.arrayUnion(paymentRef.id),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
     return String(payment.bookingId);
   });
   if (bookingId) {
@@ -1256,7 +1373,7 @@ async function startServer() {
     const token = crypto.randomBytes(32).toString("hex");
     res.cookie("blm_csrf", token, {
       httpOnly: true,
-      sameSite: "strict",
+      sameSite: isProduction ? "none" : "strict",
       secure: isProduction,
       path: "/",
       maxAge: 2 * 60 * 60 * 1000,
@@ -1265,6 +1382,28 @@ async function startServer() {
   });
 
   app.post("/api/auth/session", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    if (req.auth!.role === "customer") {
+      const ref = getAdminDb().collection("customers").doc(req.auth!.uid);
+      const existing = await ref.get();
+      const loginEvent = {
+        ip: getClientIp(req),
+        userAgent: req.get("user-agent") || "unknown",
+        at: new Date().toISOString(),
+      };
+      await ref.set({
+        profile: {
+          fullName: String(req.auth!.token.name || existing.data()?.profile?.fullName || "Customer"),
+          email: req.auth!.email || "",
+          phone: existing.data()?.profile?.phone || "",
+        },
+        role: "customer",
+        verificationStatus: req.auth!.emailVerified ? "verified" : "pending",
+        ...(existing.exists ? {} : { bookingHistory: [], paymentHistory: [], fraudFlags: [], deviceTracking: [] }),
+        loginHistory: FieldValue.arrayUnion(loginEvent),
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      }, { merge: true });
+    }
     await persistAudit(req, "AUTH_SESSION_SYNC", `users/${req.auth!.uid}`);
     res.json({
       uid: req.auth!.uid,
@@ -1272,6 +1411,49 @@ async function startServer() {
       role: req.auth!.role,
       emailVerified: req.auth!.emailVerified,
     });
+  }));
+
+  app.get("/api/auth/sessions", authenticate, asyncHandler(async (req, res) => {
+    const snapshot = await getAdminDb().collection("user_sessions").where("userId", "==", req.auth!.uid).limit(50).get();
+    const currentSessionId = sessionIdForRequest(req, req.auth!.uid);
+    const sessions = snapshot.docs.map((session) => {
+      const data = session.data();
+      return {
+        id: session.id,
+        current: session.id === currentSessionId,
+        ip: data.ip || "unknown",
+        userAgent: data.userAgent || "unknown",
+        revoked: data.revoked === true,
+        lastSeenAt: data.lastSeenAt?.toDate?.().toISOString?.() || null,
+      };
+    });
+    res.json({ sessions });
+  }));
+
+  app.delete("/api/auth/sessions/:id", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const id = z.string().trim().length(64).parse(req.params.id);
+    const ref = getAdminDb().collection("user_sessions").doc(id);
+    const snapshot = await ref.get();
+    if (!snapshot.exists || snapshot.data()?.userId !== req.auth!.uid) throw new HttpError(404, "Session not found");
+    await ref.update({ revoked: true, revokedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+    await persistAudit(req, "DEVICE_SESSION_REVOKED", `user_sessions/${id}`);
+    res.json({ success: true, current: id === sessionIdForRequest(req, req.auth!.uid) });
+  }));
+
+  app.post("/api/auth/sessions/revoke-all", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const snapshot = await getAdminDb().collection("user_sessions").where("userId", "==", req.auth!.uid).limit(100).get();
+    const batch = getAdminDb().batch();
+    snapshot.docs.forEach((session) => batch.update(session.ref, { revoked: true, revokedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }));
+    await batch.commit();
+    await getFirebaseAuth().revokeRefreshTokens(req.auth!.uid);
+    await persistAudit(req, "ALL_DEVICE_SESSIONS_REVOKED", `users/${req.auth!.uid}`, { count: snapshot.size });
+    res.json({ success: true, revoked: snapshot.size });
+  }));
+
+  app.post("/api/audit", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const event = parseBody(ClientAuditSchema, req.body);
+    await persistAudit(req, event.action, event.resource, event.details);
+    res.status(201).json({ success: true });
   }));
 
   app.post("/api/payment/manual/initialize", authenticate, requireCsrf, asyncHandler(async (req, res) => {
@@ -1411,6 +1593,12 @@ async function startServer() {
         status: "posted",
         createdAt: FieldValue.serverTimestamp(),
       }, { merge: true });
+      if (payment.customerId) {
+        transaction.set(getAdminDb().collection("customers").doc(String(payment.customerId)), {
+          paymentHistory: FieldValue.arrayUnion(payload.paymentId),
+          updatedAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
     });
     await persistAudit(req, "MANUAL_PAYMENT_APPROVED", `payments/${payload.paymentId}`, { bookingId: payment.bookingId });
     const paidBooking = await bookingRef.get();
@@ -1438,6 +1626,15 @@ async function startServer() {
       updatedAt: FieldValue.serverTimestamp(),
     };
     await ref.set(booking);
+    await getAdminDb().collection("customers").doc(req.auth!.uid).set({
+      profile: {
+        fullName: input.customerName,
+        email: req.auth!.email || input.customerEmail,
+        phone: input.customerPhone,
+      },
+      bookingHistory: FieldValue.arrayUnion(ref.id),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
     await getAdminDb().collection("booking_events").add({ bookingId: ref.id, type: "booking.booked", actorId: req.auth!.uid, actorRole: req.auth!.role, metadata: { trackingId, totalAmount: quote.total }, createdAt: FieldValue.serverTimestamp() });
     await persistAudit(req, "BOOKING_CREATED", `bookings/${ref.id}`, { serviceType: input.serviceType, totalAmount: quote.total });
     await queueCustomerStatusNotifications(ref.id, booking, "Booked");
@@ -1500,6 +1697,110 @@ async function startServer() {
     await getAdminDb().collection("bookings").doc(payload.bookingId).update({ reviewId: ref.id, updatedAt: FieldValue.serverTimestamp() });
     await persistAudit(req, "VERIFIED_REVIEW_CREATED", `reviews/${ref.id}`, { bookingId: payload.bookingId, rating: payload.rating });
     res.status(201).json({ id: ref.id });
+  }));
+
+  app.get("/api/support/tickets", authenticate, asyncHandler(async (req, res) => {
+    const supportAgent = hasRole(req.auth!, ["customer_support_agent"]);
+    const source = supportAgent
+      ? await getAdminDb().collection("support_tickets").limit(200).get()
+      : await getAdminDb().collection("support_tickets").where("customerId", "==", req.auth!.uid).limit(100).get();
+    const tickets = source.docs.map((ticket) => {
+      const data = ticket.data();
+      return {
+        id: ticket.id,
+        ...data,
+        createdAt: data.createdAt?.toDate?.().toISOString?.() || data.createdAt || null,
+        updatedAt: data.updatedAt?.toDate?.().toISOString?.() || data.updatedAt || null,
+      };
+    }).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    res.json({ tickets });
+  }));
+
+  app.post("/api/support/tickets", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const input = parseBody(SupportTicketCreateSchema, req.body);
+    if (input.bookingId) await loadBooking(input.bookingId, req.auth!, []);
+    const database = getAdminDb();
+    const ticketRef = database.collection("support_tickets").doc();
+    const messageRef = database.collection("support_conversations").doc(ticketRef.id).collection("messages").doc();
+    const batch = database.batch();
+    batch.set(ticketRef, {
+      ...input,
+      customerId: req.auth!.uid,
+      customerEmail: req.auth!.email,
+      status: "open",
+      escalationLevel: input.priority === "urgent" ? 1 : 0,
+      lastMessagePreview: input.message.slice(0, 180),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(messageRef, {
+      senderId: req.auth!.uid,
+      senderRole: req.auth!.role,
+      message: input.message,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    await queueNotification({
+      channel: "email",
+      to: process.env.SUPPORT_ALERT_EMAIL || "bookings@blmmotors.ng",
+      subject: `${input.priority === "urgent" ? "Urgent " : ""}support ticket: ${input.subject}`,
+      body: `${req.auth!.email || "A customer"} opened ticket ${ticketRef.id}. ${input.message}`,
+      template: "support_ticket_created",
+      metadata: { ticketId: ticketRef.id, customerId: req.auth!.uid },
+    });
+    await persistAudit(req, "SUPPORT_TICKET_CREATED", `support_tickets/${ticketRef.id}`, { category: input.category, priority: input.priority });
+    res.status(201).json({ id: ticketRef.id });
+  }));
+
+  app.get("/api/support/tickets/:id/messages", authenticate, asyncHandler(async (req, res) => {
+    const id = z.string().trim().min(3).max(160).parse(req.params.id);
+    const ticket = await getAdminDb().collection("support_tickets").doc(id).get();
+    if (!ticket.exists) throw new HttpError(404, "Support ticket not found");
+    const data = ticket.data() || {};
+    if (data.customerId !== req.auth!.uid && !hasRole(req.auth!, ["customer_support_agent"])) throw new HttpError(403, "Support ticket access denied");
+    const snapshot = await getAdminDb().collection("support_conversations").doc(id).collection("messages").orderBy("createdAt", "asc").limit(300).get();
+    const messages = snapshot.docs.map((message) => {
+      const value = message.data();
+      return { id: message.id, ...value, createdAt: value.createdAt?.toDate?.().toISOString?.() || value.createdAt || null };
+    });
+    res.json({ messages });
+  }));
+
+  app.post("/api/support/tickets/:id/messages", authenticate, requireCsrf, asyncHandler(async (req, res) => {
+    const id = z.string().trim().min(3).max(160).parse(req.params.id);
+    const { message } = parseBody(SupportMessageSchema, req.body);
+    const database = getAdminDb();
+    const ticketRef = database.collection("support_tickets").doc(id);
+    const ticket = await ticketRef.get();
+    if (!ticket.exists) throw new HttpError(404, "Support ticket not found");
+    const data = ticket.data() || {};
+    const supportAgent = hasRole(req.auth!, ["customer_support_agent"]);
+    if (data.customerId !== req.auth!.uid && !supportAgent) throw new HttpError(403, "Support ticket access denied");
+    if (data.status === "closed") throw new HttpError(409, "Closed tickets cannot receive replies");
+    const messageRef = database.collection("support_conversations").doc(id).collection("messages").doc();
+    const batch = database.batch();
+    batch.set(messageRef, { senderId: req.auth!.uid, senderRole: req.auth!.role, message, createdAt: FieldValue.serverTimestamp() });
+    batch.update(ticketRef, { status: supportAgent ? "waiting_customer" : "open", lastMessagePreview: message.slice(0, 180), updatedAt: FieldValue.serverTimestamp() });
+    await batch.commit();
+    if (supportAgent && data.customerEmail) {
+      await queueNotification({ channel: "email", to: String(data.customerEmail), subject: `BLM support update: ${data.subject}`, body: message, template: "support_ticket_reply", metadata: { ticketId: id } });
+    }
+    if (supportAgent && data.phone && (await getFeatureFlags()).whatsappNotifications) {
+      await queueNotification({ channel: "whatsapp", to: String(data.phone), body: `BLM Support: ${message}`, template: "support_ticket_reply", metadata: { ticketId: id } });
+    }
+    await persistAudit(req, "SUPPORT_MESSAGE_CREATED", `support_tickets/${id}`, { senderRole: req.auth!.role });
+    res.status(201).json({ id: messageRef.id });
+  }));
+
+  app.post("/api/support/tickets/:id/status", authenticate, requireRoles("customer_support_agent"), requireCsrf, asyncHandler(async (req, res) => {
+    const id = z.string().trim().min(3).max(160).parse(req.params.id);
+    const update = parseBody(SupportStatusSchema, req.body);
+    const ref = getAdminDb().collection("support_tickets").doc(id);
+    const ticket = await ref.get();
+    if (!ticket.exists) throw new HttpError(404, "Support ticket not found");
+    await ref.update({ ...update, assignedAgentId: req.auth!.uid, updatedAt: FieldValue.serverTimestamp() });
+    await persistAudit(req, "SUPPORT_TICKET_STATUS_UPDATED", `support_tickets/${id}`, update, ticket.data());
+    res.json({ success: true });
   }));
 
   app.get("/api/tracking/:bookingId", asyncHandler(async (req, res) => {
@@ -1617,7 +1918,7 @@ async function startServer() {
       if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Booking amount is invalid");
       const currency = String(requestedCurrency || booking.checkoutCurrency || booking.displayCurrency || booking.currency || "NGN").toUpperCase() as z.infer<typeof SupportedCurrencySchema>;
       SupportedCurrencySchema.parse(currency);
-      const amount = convertFromNgn(baseAmount, currency);
+      const amount = await convertFromNgn(baseAmount, currency);
 
       const paymentRef = getAdminDb().collection("payments").doc();
       const idempotencyKey =
@@ -1802,7 +2103,7 @@ async function startServer() {
       if (!["NGN", "GHS"].includes(currency)) {
         throw new HttpError(400, "Paystack checkout is enabled for NGN and GHS only. Use Stripe for this currency.");
       }
-      const amount = convertFromNgn(baseAmount, currency);
+      const amount = await convertFromNgn(baseAmount, currency);
 
       const paymentRef = existing?.ref || getAdminDb().collection("payments").doc();
       const reference = existing?.data.providerReference || `BLM-${bookingId}-${crypto.randomBytes(5).toString("hex")}`;
@@ -2016,6 +2317,91 @@ async function startServer() {
   );
 
   app.post(
+    "/api/dispatch/assign",
+    authenticate,
+    requireRoles("dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const { bookingId, driverId } = parseBody(DriverAssignmentSchema, req.body);
+      const database = getAdminDb();
+      const bookingRef = database.collection("bookings").doc(bookingId);
+      const driverRef = database.collection("drivers").doc(driverId);
+
+      const result = await database.runTransaction(async (transaction) => {
+        const [bookingSnap, driverSnap] = await Promise.all([
+          transaction.get(bookingRef),
+          transaction.get(driverRef),
+        ]);
+        if (!bookingSnap.exists) throw new HttpError(404, "Booking not found");
+        if (!driverSnap.exists) throw new HttpError(404, "Driver not found");
+
+        const booking = bookingSnap.data() || {};
+        const driver = driverSnap.data() || {};
+        if (!["Paid", "Confirmed", "Dispatched", "InTransit"].includes(String(booking.status))) {
+          throw new HttpError(409, "This booking is not ready for driver assignment");
+        }
+        if (["suspended", "rejected"].includes(String(driver.onboardingStatus || "").toLowerCase())) {
+          throw new HttpError(409, "This driver is not approved for assignments");
+        }
+
+        const previousDriverId = String(booking.assignedDriverId || booking.driverId || "");
+        const previousDriverRef = previousDriverId && previousDriverId !== driverId
+          ? database.collection("drivers").doc(previousDriverId)
+          : null;
+        const previousDriverSnap = previousDriverRef ? await transaction.get(previousDriverRef) : null;
+        transaction.update(bookingRef, {
+          assignedDriverId: driverId,
+          driverId,
+          status: booking.status === "Paid" ? "Confirmed" : booking.status,
+          updatedAt: FieldValue.serverTimestamp(),
+          "lifecycle.lastEvent": "dispatch.manually_assigned",
+          "lifecycle.assignedAt": FieldValue.serverTimestamp(),
+        });
+        transaction.update(driverRef, {
+          assignedJobs: FieldValue.arrayUnion(bookingId),
+          "availability.state": "assigned",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        if (previousDriverRef && previousDriverSnap?.exists) {
+          transaction.update(previousDriverRef, {
+            assignedJobs: FieldValue.arrayRemove(bookingId),
+            "availability.state": "available",
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
+        return { booking, driver, previousDriverId };
+      });
+
+      await database.collection("booking_events").add({
+        bookingId,
+        type: "dispatch.manually_assigned",
+        actorId: req.auth!.uid,
+        actorRole: req.auth!.role,
+        metadata: { driverId, previousDriverId: result.previousDriverId || null },
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      const phone = String(result.driver.phone || "");
+      if (phone) {
+        await queueNotification({
+          channel: "sms",
+          to: phone,
+          body: `DISPATCH ALERT: booking ${bookingId}. Route: ${result.booking.pickup || "Pickup"} -> ${result.booking.destination || "Destination"}.`,
+          template: "driver_dispatch_alert",
+          metadata: { bookingId, driverId },
+        });
+      }
+      await persistAudit(req, "DRIVER_ASSIGNED", `bookings/${bookingId}`, { driverId, previousDriverId: result.previousDriverId || null });
+      await publishRealtime({
+        type: "dispatch.assigned",
+        audience: "admin",
+        userIds: [String(result.booking.customerId || ""), driverId].filter(Boolean),
+        payload: { bookingId, driverId },
+      });
+      res.json({ bookingId, driverId });
+    }),
+  );
+
+  app.post(
     "/api/dispatch/auto-assign",
     authenticate,
     requireRoles("dispatcher"),
@@ -2032,6 +2418,7 @@ async function startServer() {
 
       await ref.update({
         assignedDriverId: chosen.id,
+        driverId: chosen.id,
         status: "Confirmed",
         updatedAt: FieldValue.serverTimestamp(),
         "lifecycle.confirmedAt": FieldValue.serverTimestamp(),
@@ -2054,19 +2441,68 @@ async function startServer() {
   );
 
   app.post(
+    "/api/bookings/checkpoint",
+    authenticate,
+    requireRoles("dispatcher", "customer_support_agent"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const update = parseBody(CheckpointUpdateSchema, req.body);
+      const { ref, booking } = await loadBooking(update.bookingId, req.auth!, ["dispatcher", "customer_support_agent"]);
+      const event = {
+        id: crypto.randomUUID(),
+        type: update.status,
+        createdAt: new Date().toISOString(),
+        location: update.location,
+        notes: update.notes || `Checkpoint updated: ${update.location}`,
+      };
+      await ref.update({
+        currentCheckpoint: update.location,
+        status: update.status,
+        events: FieldValue.arrayUnion(event),
+        "lifecycle.lastEvent": "booking.checkpoint_updated",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await getAdminDb().collection("booking_events").add({
+        bookingId: update.bookingId,
+        type: "booking.checkpoint_updated",
+        actorId: req.auth!.uid,
+        actorRole: req.auth!.role,
+        metadata: { location: update.location, status: update.status, notes: update.notes || null },
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      await queueCustomerStatusNotifications(update.bookingId, { ...booking, currentCheckpoint: update.location }, update.status);
+      await persistAudit(req, "BOOKING_CHECKPOINT_UPDATED", `bookings/${update.bookingId}`, { location: update.location, status: update.status });
+      await publishRealtime({ type: "booking.checkpoint_updated", audience: "admin", userIds: [String(booking.customerId || "")], payload: { bookingId: update.bookingId, location: update.location, status: update.status } });
+      res.json({ success: true, event });
+    }),
+  );
+
+  app.post(
     "/api/drivers/onboard",
     authenticate,
     requireRoles("dispatcher"),
     requireCsrf,
     asyncHandler(async (req, res) => {
       const driver = parseBody(DriverOnboardingSchema, req.body);
-      const ref = await getAdminDb().collection("drivers").add({
+      const firebaseUser = await getFirebaseAuth().getUser(driver.authUid).catch(() => null);
+      if (!firebaseUser) throw new HttpError(404, "No Firebase user exists for this driver UID");
+      const adminRecord = await getAdminDb().collection("admins").doc(driver.authUid).get();
+      if (adminRecord.exists) throw new HttpError(409, "An admin account cannot also be linked as a driver");
+
+      const ref = getAdminDb().collection("drivers").doc(driver.authUid);
+      const existing = await ref.get();
+      if (existing.exists) throw new HttpError(409, "This Firebase user is already linked to a driver profile");
+
+      await ref.set({
+        authUid: driver.authUid,
         profile: {
           name: driver.name,
           phone: driver.phone,
+          email: firebaseUser.email || null,
         },
         name: driver.name,
         phone: driver.phone,
+        email: firebaseUser.email || null,
         onboarding: {
           state: "pending_review",
           submittedAt: FieldValue.serverTimestamp(),
@@ -2087,6 +2523,17 @@ async function startServer() {
         assignedJobs: [],
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
+      });
+      await getAdminDb().collection("users").doc(driver.authUid).set({
+        uid: driver.authUid,
+        email: firebaseUser.email || null,
+        fullName: driver.name,
+        role: "driver",
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      await getFirebaseAuth().setCustomUserClaims(driver.authUid, {
+        ...(firebaseUser.customClaims || {}),
+        role: "driver",
       });
       await persistAudit(req, "DRIVER_ONBOARDED", `drivers/${ref.id}`, { driverId: ref.id });
       res.json({ id: ref.id });
@@ -2264,6 +2711,200 @@ async function startServer() {
       await getAdminDb().collection("admins").doc(uid).delete();
       await persistAudit(req, "ADMIN_ROLE_REVOKED", `admins/${uid}`);
       res.json({ success: true });
+    }),
+  );
+
+  app.post(
+    "/api/admin/settings/:key",
+    authenticate,
+    requireRoles("dispatcher", "finance_admin"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const key = AdminSettingKeySchema.parse(req.params.key);
+      const { value } = parseBody(AdminSettingUpdateSchema, req.body);
+      if (["bank_accounts", "currency_rates", "feature_flags"].includes(key) && !hasRole(req.auth!, ["finance_admin"])) {
+        throw new HttpError(403, "Finance administrator permission is required for this setting");
+      }
+      const serialized = JSON.stringify(value);
+      if (serialized.length > 500_000) throw new HttpError(413, "Setting payload is too large");
+      if (["vehicle_types", "touring_packages", "touring_states", "international_tours", "car_hire_options", "tracking_locations"].includes(key) && !Array.isArray(value)) {
+        throw new HttpError(400, "This setting must be an array");
+      }
+      if (["pricing_rules", "currency_rates", "bank_accounts", "feature_flags"].includes(key) && (!value || typeof value !== "object" || Array.isArray(value))) {
+        throw new HttpError(400, "This setting must be an object");
+      }
+
+      const ref = getAdminDb().collection("settings").doc(key);
+      const before = await ref.get();
+      await ref.set({
+        key,
+        value,
+        updatedBy: req.auth!.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      await persistAudit(req, "ADMIN_SETTING_UPDATED", `settings/${key}`, { key }, before.data(), { value });
+      res.json({ success: true, key });
+    }),
+  );
+
+  app.post(
+    "/api/admin/hubs",
+    authenticate,
+    requireRoles("dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const hub = parseBody(HubSchema, req.body);
+      const ref = await getAdminDb().collection("hubs").add({
+        ...hub,
+        active: true,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await persistAudit(req, "HUB_CREATED", `hubs/${ref.id}`, hub);
+      res.status(201).json({ id: ref.id, ...hub, active: true });
+    }),
+  );
+
+  app.delete(
+    "/api/admin/hubs/:id",
+    authenticate,
+    requireRoles("dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const id = z.string().trim().min(3).max(160).parse(req.params.id);
+      const { reason } = parseBody(AdminDeleteSchema, req.body);
+      const ref = getAdminDb().collection("hubs").doc(id);
+      const snapshot = await ref.get();
+      if (!snapshot.exists) throw new HttpError(404, "Hub not found");
+      await ref.delete();
+      await persistAudit(req, "HUB_DELETED", `hubs/${id}`, { reason }, snapshot.data());
+      res.json({ success: true });
+    }),
+  );
+
+  app.post(
+    "/api/admin/blocked-dates",
+    authenticate,
+    requireRoles("dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const block = parseBody(BlockedDateSchema, req.body);
+      const existing = await getAdminDb().collection("blocked_dates").where("date", "==", block.date).limit(1).get();
+      if (!existing.empty) throw new HttpError(409, "This service date is already blocked");
+      const ref = await getAdminDb().collection("blocked_dates").add({
+        ...block,
+        createdAt: FieldValue.serverTimestamp(),
+        createdBy: req.auth!.uid,
+      });
+      await persistAudit(req, "SERVICE_DATE_BLOCKED", `blocked_dates/${ref.id}`, block);
+      res.status(201).json({ id: ref.id, ...block });
+    }),
+  );
+
+  app.delete(
+    "/api/admin/blocked-dates/:id",
+    authenticate,
+    requireRoles("dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const id = z.string().trim().min(3).max(160).parse(req.params.id);
+      const { reason } = parseBody(AdminDeleteSchema, req.body);
+      const ref = getAdminDb().collection("blocked_dates").doc(id);
+      const snapshot = await ref.get();
+      if (!snapshot.exists) throw new HttpError(404, "Blocked date not found");
+      await ref.delete();
+      await persistAudit(req, "SERVICE_DATE_RESTORED", `blocked_dates/${id}`, { reason }, snapshot.data());
+      res.json({ success: true });
+    }),
+  );
+
+  app.post(
+    "/api/admin/payments/reconcile",
+    authenticate,
+    requireRoles("finance_admin"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(PaymentReconciliationSchema, req.body);
+      const ref = getAdminDb().collection("payments").doc(input.paymentId);
+      const snapshot = await ref.get();
+      if (!snapshot.exists) throw new HttpError(404, "Payment not found");
+      const now = new Date().toISOString();
+      await ref.update({
+        isReconciled: input.reconciled,
+        reconciledAt: input.reconciled ? now : null,
+        reconciledBy: input.reconciled ? req.auth!.email : null,
+        reconciliationNotes: input.notes || null,
+        events: FieldValue.arrayUnion({
+          id: crypto.randomUUID(),
+          eventType: "RECONCILED",
+          actorId: req.auth!.uid,
+          actorEmail: req.auth!.email,
+          actorRole: req.auth!.role,
+          timestamp: now,
+          notes: input.notes || (input.reconciled ? "Marked reconciled" : "Reconciliation reopened"),
+        }),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await persistAudit(req, input.reconciled ? "PAYMENT_RECONCILED" : "PAYMENT_RECONCILIATION_REOPENED", `payments/${input.paymentId}`, { notes: input.notes || null });
+      res.json({ success: true, reconciled: input.reconciled });
+    }),
+  );
+
+  app.get(
+    "/api/admin/maintenance/diagnostics",
+    authenticate,
+    requireRoles("super_admin"),
+    asyncHandler(async (_req, res) => {
+      const db = getAdminDb();
+      const [bookings, payments, drivers, failedNotifications] = await Promise.all([
+        db.collection("bookings").limit(500).get(),
+        db.collection("payments").limit(500).get(),
+        db.collection("drivers").limit(500).get(),
+        db.collection("notification_logs").where("deliveryState", "==", "failed").limit(100).get(),
+      ]);
+      const bookingRows = bookings.docs.map((doc) => doc.data());
+      res.json({
+        checkedAt: new Date().toISOString(),
+        counts: { bookings: bookings.size, payments: payments.size, drivers: drivers.size, failedNotifications: failedNotifications.size },
+        issues: {
+          bookingsMissingCustomer: bookingRows.filter((booking) => !booking.customerId || !booking.customerEmail).length,
+          bookingsMissingRoute: bookingRows.filter((booking) => !booking.pickup || !booking.destination).length,
+          bookingsMissingAmount: bookingRows.filter((booking) => !Number(booking.totalAmount)).length,
+        },
+      });
+    }),
+  );
+
+  app.post(
+    "/api/admin/maintenance/archive-bookings",
+    authenticate,
+    requireRoles("super_admin"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const input = parseBody(ArchiveBookingsSchema, req.body);
+      const cutoff = Date.now() - input.olderThanDays * 24 * 60 * 60 * 1000;
+      const snapshot = await getAdminDb().collection("bookings").orderBy("createdAt", "asc").limit(400).get();
+      const eligible = snapshot.docs.filter((bookingDoc) => {
+        const booking = bookingDoc.data();
+        const createdAt = booking.createdAt?.toDate?.()?.getTime?.() || Date.parse(String(booking.date || booking.createdAt || ""));
+        return ["Completed", "Cancelled"].includes(String(booking.status)) && Number.isFinite(createdAt) && createdAt < cutoff;
+      }).slice(0, 200);
+
+      if (eligible.length === 0) return res.json({ success: true, archived: 0 });
+      const batch = getAdminDb().batch();
+      for (const bookingDoc of eligible) {
+        batch.set(getAdminDb().collection("archived_bookings").doc(bookingDoc.id), {
+          ...bookingDoc.data(),
+          sourceBookingId: bookingDoc.id,
+          archivedBy: req.auth!.uid,
+          archivedReason: input.reason,
+          archivedAt: FieldValue.serverTimestamp(),
+        });
+        batch.delete(bookingDoc.ref);
+      }
+      await batch.commit();
+      await persistAudit(req, "BOOKINGS_ARCHIVED", "bookings", { count: eligible.length, olderThanDays: input.olderThanDays, reason: input.reason });
+      res.json({ success: true, archived: eligible.length });
     }),
   );
 
