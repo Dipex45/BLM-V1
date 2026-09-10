@@ -28,7 +28,7 @@ export default function Sidebar({ isMobile = false }: SidebarProps) {
 
   const sidebarClasses = isMobile 
     ? "flex flex-col h-full bg-white relative z-60" 
-    : "hidden md:flex flex-col w-64 bg-white border-r border-outline fixed left-0 top-20 bottom-0 z-40 overflow-y-auto";
+    : "hidden xl:flex flex-col w-64 bg-white border-r border-outline fixed left-0 top-20 bottom-0 z-40 overflow-y-auto";
 
   return (
     <aside className={sidebarClasses}>

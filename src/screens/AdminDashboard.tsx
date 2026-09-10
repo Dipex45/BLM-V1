@@ -647,7 +647,7 @@ export default function AdminDashboard() {
   });
 
   return (
-    <div className="w-full max-w-full overflow-x-hidden bg-background min-h-screen px-3 py-4 sm:px-4 md:px-8 md:py-8">
+    <div className="mx-auto min-h-screen w-full min-w-0 max-w-[1500px] bg-background px-3 py-4 sm:px-5 md:px-6 md:py-8 2xl:px-8">
       <header className="flex flex-col gap-6 md:gap-8">
         <div>
           <div className="mb-2 flex flex-wrap items-center gap-2 sm:gap-3">
@@ -662,8 +662,8 @@ export default function AdminDashboard() {
           </p>
         </div>
 
-        <nav className="flex flex-col gap-3 rounded-lg border border-outline bg-white p-2 shadow-sm md:flex-row md:items-center md:justify-between">
-          <div className="overflow-x-auto no-scrollbar">
+        <nav className="flex min-w-0 flex-col gap-3 rounded-lg border border-outline bg-white p-2 shadow-sm 2xl:flex-row 2xl:items-center 2xl:justify-between">
+          <div className="min-w-0 overflow-x-auto no-scrollbar">
             <div className="flex min-w-max gap-1">
               {(['bookings', 'payments', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
                 <button
@@ -682,7 +682,7 @@ export default function AdminDashboard() {
           </div>
 
           {activeTab === 'bookings' && (
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end md:pr-2">
+            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end 2xl:pr-2">
                <div className="relative w-full sm:w-48">
                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-sm text-on-surface-variant">search</span>
                  <input 
@@ -719,7 +719,7 @@ export default function AdminDashboard() {
         </nav>
       </header>
 
-      <main className="mt-6 flex-1">
+      <main className="mt-6 min-w-0 flex-1">
         <AnimatePresence mode="wait">
           {activeTab === 'bookings' && (
             <motion.div 

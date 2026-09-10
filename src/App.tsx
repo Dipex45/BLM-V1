@@ -52,9 +52,9 @@ export default function App() {
     <Router>
         <div className="min-h-screen bg-background text-on-surface font-sans flex flex-col selection:bg-primary selection:text-white overflow-x-hidden">
           <Navbar />
-          <div className="flex flex-1 pt-20">
+          <div className="flex min-w-0 flex-1 pt-20">
             {user && isVerified && <Sidebar />}
-            <main className={`flex-1 transition-all duration-300 ${user && isVerified ? 'md:ml-64' : ''}`}>
+            <main className={`min-w-0 flex-1 transition-[margin] duration-300 ${user && isVerified ? 'xl:ml-64' : ''}`}>
               <ErrorBoundary>
                 <Routes>
                   <Route path="/" element={user ? <Navigate to={!isVerified ? "/verify-email" : isUserAdmin ? "/admin" : "/dashboard"} replace /> : <About />} />
