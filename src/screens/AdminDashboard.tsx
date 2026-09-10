@@ -1560,7 +1560,7 @@ export default function AdminDashboard() {
                             <label className="text-[10px] uppercase tracking-widest text-on-surface-variant block mb-1">Image URL (External or Local)</label>
                             <input
                               type="text"
-                              placeholder="https://... or /brand/car-01.jpg"
+                              placeholder="https://... or /brand/car-01.webp"
                               value={car.image || ''}
                               className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
                               onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: e.target.value } : item))}
