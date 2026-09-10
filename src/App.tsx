@@ -31,7 +31,7 @@ export default function App() {
       <div className="flex h-screen w-screen items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-6">
           <img
-            src="/brand/blm-logo.png"
+            src="/brand/blm-logo-wide.png"
             alt="BLM Motors"
             className="h-14 w-36 object-contain opacity-80"
           />
