@@ -1,10 +1,11 @@
 import { FormEvent, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { createUserWithEmailAndPassword, GoogleAuthProvider, sendEmailVerification, signInWithPopup } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { createUserWithEmailAndPassword, GoogleAuthProvider, OAuthProvider, sendEmailVerification, signInWithPopup, updateProfile } from 'firebase/auth';
 import { motion } from 'framer-motion';
-import { auth, db } from '../lib/firebase';
+import { Apple } from 'lucide-react';
+import { auth } from '../lib/firebase';
 import { company } from '../lib/company';
+import { ensureCustomerProfile, getAuthenticatedLandingPath, getProviderAuthError } from '../lib/authFlow';
 
 export default function Register() {
   const [email, setEmail] = useState('');
@@ -26,6 +27,8 @@ export default function Register() {
         return 'Please enter a valid email address.';
       case 'auth/network-request-failed':
         return 'Network connection error. Please check your internet and try again.';
+      case 'auth/operation-not-allowed':
+        return 'Email and password registration is not enabled. Please contact BLM support.';
       default:
         return 'Registration failed. Please try again or contact support.';
     }
@@ -38,19 +41,26 @@ export default function Register() {
     setMessage('');
 
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      await sendEmailVerification(userCredential.user);
+      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedName = fullName.trim();
+      const userCredential = await createUserWithEmailAndPassword(auth, normalizedEmail, password);
+      await updateProfile(userCredential.user, { displayName: normalizedName });
 
-      await setDoc(doc(db, 'users', userCredential.user.uid), {
-        uid: userCredential.user.uid,
-        fullName,
-        email,
-        role: 'customer',
-        createdAt: new Date().toISOString(),
-      });
+      try {
+        await ensureCustomerProfile(userCredential.user, normalizedName);
+      } catch (profileError) {
+        console.warn('Customer profile sync will be retried by the server', profileError);
+      }
 
-      setMessage('Account created. Please verify your email to continue.');
-      navigate('/verify-email');
+      let verificationSent = true;
+      try {
+        await sendEmailVerification(userCredential.user);
+      } catch (verificationError) {
+        verificationSent = false;
+        console.warn('Initial verification email could not be sent', verificationError);
+      }
+
+      navigate('/verify-email', { replace: true, state: { verificationSent } });
     } catch (err: any) {
       setError(getFriendlyAuthError(err.code));
     } finally {
@@ -58,52 +68,34 @@ export default function Register() {
     }
   };
 
-  const handleGoogleRegister = async () => {
+  const handleProviderRegister = async (providerName: 'Google' | 'Apple', provider: GoogleAuthProvider | OAuthProvider) => {
     setLoading(true);
     setError('');
+    setMessage('');
 
     try {
-      const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
-
-      const userDoc = await getDoc(doc(db, 'users', result.user.uid));
-      if (!userDoc.exists()) {
-        await setDoc(doc(db, 'users', result.user.uid), {
-          uid: result.user.uid,
-          fullName: result.user.displayName || 'Google User',
-          email: result.user.email,
-          role: 'customer',
-          createdAt: new Date().toISOString(),
-        });
+      try {
+        await ensureCustomerProfile(result.user, `${providerName} Customer`);
+      } catch (profileError) {
+        console.warn(`${providerName} profile sync will be retried by the server`, profileError);
       }
-
-      const adminDoc = await getDoc(doc(db, 'admins', result.user.uid));
-      if (adminDoc.exists()) {
-        navigate('/admin');
-      } else {
-        const profile = await getDoc(doc(db, 'users', result.user.uid));
-        navigate(profile.data()?.role === 'driver' ? '/driver' : '/dashboard');
-      }
+      navigate(await getAuthenticatedLandingPath(result.user), { replace: true });
     } catch (err: any) {
-      console.error('Google register error:', err.code, err.message);
-      
-      // Detect specific error types
-      if (err.code === 'auth/popup-blocked') {
-        setError('Popup was blocked by your browser. Please: 1) Disable popup blockers (including ad blockers), 2) Try a different browser, or 3) Use incognito/private mode.');
-      } else if (err.code === 'auth/popup-closed-by-user') {
-        setError('Google sign up was cancelled. Please try again and complete the sign-in process.');
-      } else if (err.code === 'auth/cancelled-popup-request') {
-        setError('Another popup request is pending. Please wait a moment and try again.');
-      } else if (err.code === 'auth/network-request-failed') {
-        setError('Network connection error. Please check your internet and try again.');
-      } else if (err.code === 'auth/unauthorized-domain') {
-        setError('Google Sign-In is not configured for this domain. The website administrator needs to add this domain to Firebase Console settings (Project Settings > Authorized domains). Please contact support or try email/password registration.');
-      } else {
-        setError(`Google sign up failed (${err.code}). Please try again or use email/password registration.`);
-      }
+      console.error(`${providerName} registration error:`, err.code, err.message);
+      setError(getProviderAuthError(providerName, err.code));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGoogleRegister = () => handleProviderRegister('Google', new GoogleAuthProvider());
+
+  const handleAppleRegister = () => {
+    const provider = new OAuthProvider('apple.com');
+    provider.addScope('email');
+    provider.addScope('name');
+    return handleProviderRegister('Apple', provider);
   };
 
   return (
@@ -169,6 +161,15 @@ export default function Register() {
                 <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
               </svg>
               Continue with Google
+            </button>
+            <button
+              type="button"
+              onClick={handleAppleRegister}
+              disabled={loading}
+              className="flex w-full items-center justify-center gap-3 rounded-md bg-black py-4 font-bold text-white transition-colors hover:bg-black/85 disabled:opacity-60"
+            >
+              <Apple className="h-5 w-5" aria-hidden="true" fill="currentColor" />
+              Continue with Apple
             </button>
             <div className="flex items-center gap-4 px-2">
               <div className="h-px flex-1 bg-outline" />

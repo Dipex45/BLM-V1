@@ -42,7 +42,7 @@ The current local verification passes TypeScript, 14 unit/contract tests, produc
 - Complete one low-value Stripe payment and one refund.
 - Upload and approve one real bank-transfer proof after entering the official company account.
 - Assign a driver, accept the job, share location, progress every status, and complete the trip.
-- Verify Google sign-in on every production domain and test email verification/password reset.
+- Verify Google and Apple sign-in on every production domain, then test email registration, verification, login, and password reset.
 - Test Chrome on Android over throttled mobile data, Safari on iPhone, tablet, and desktop.
 - Confirm Sentry receives frontend and backend test exceptions.
 - Verify device-session revocation from a second browser and confirm the revoked browser receives an authentication error.

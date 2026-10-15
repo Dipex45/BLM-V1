@@ -46,7 +46,9 @@ export default function App() {
   }
 
   const isUserAdmin = ['admin', 'super_admin', 'dispatcher', 'finance_admin', 'customer_support_agent'].includes(user?.role);
-  const isVerified = user?.emailVerified || user?.isAnonymous || user?.providerData?.some((p: any) => p.providerId === 'google.com');
+  const isVerified = user?.emailVerified || user?.isAnonymous || user?.providerData?.some(
+    (provider: any) => provider.providerId === 'google.com' || provider.providerId === 'apple.com',
+  );
 
   return (
     <Router>

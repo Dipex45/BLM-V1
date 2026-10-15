@@ -5,7 +5,7 @@ import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
-import { useCurrency } from '../hooks/useCurrency';
+import { type SupportedCurrency, useCurrency } from '../hooks/useCurrency';
 import { paymentService } from '../lib/payments/paymentService';
 import { BankAccountConfig, PaymentRecord } from '../lib/payments/types';
 import { DEFAULT_BANK_CONFIG } from '../lib/payments/bankConfig';
@@ -38,6 +38,14 @@ export default function Checkout() {
   const [gatewayLoading, setGatewayLoading] = useState(false);
   const [gatewayError, setGatewayError] = useState('');
   const [stripeClientSecret, setStripeClientSecret] = useState('');
+
+  const supportedCurrencies: SupportedCurrency[] = ['NGN', 'XOF', 'GHS', 'USD', 'EUR', 'GBP'];
+  const requestedInvoiceCurrency = booking?.displayCurrency;
+  const invoiceCurrency: SupportedCurrency = supportedCurrencies.includes(requestedInvoiceCurrency)
+    ? requestedInvoiceCurrency
+    : displayCurrency;
+  const paystackCurrency: 'NGN' | 'GHS' = invoiceCurrency === 'GHS' ? 'GHS' : 'NGN';
+  const formatInvoicePrice = (amount: number) => formatPrice(amount, invoiceCurrency);
 
   // Upload Proof Form State
   const [proofFile, setProofFile] = useState<File | null>(null);
@@ -138,8 +146,7 @@ export default function Checkout() {
     setGatewayLoading(true);
     setGatewayError('');
     try {
-      const currency = displayCurrency === 'GHS' ? 'GHS' : 'NGN';
-      const response = await apiPost<any>('/api/payment/paystack/initialize', { bookingId, currency });
+      const response = await apiPost<any>('/api/payment/paystack/initialize', { bookingId, currency: paystackCurrency });
       const authorizationUrl = response.data?.data?.authorization_url;
       if (!authorizationUrl) throw new Error('Paystack did not return a checkout URL.');
       window.location.assign(authorizationUrl);
@@ -154,7 +161,7 @@ export default function Checkout() {
     setGatewayLoading(true);
     setGatewayError('');
     try {
-      const response = await apiPost<{ clientSecret: string }>('/api/payment/stripe/create-intent', { bookingId, currency: displayCurrency });
+      const response = await apiPost<{ clientSecret: string }>('/api/payment/stripe/create-intent', { bookingId, currency: invoiceCurrency });
       setStripeClientSecret(response.data.clientSecret);
     } catch (error: any) {
       setGatewayError(error.response?.data?.error || error.message || 'Stripe checkout could not start.');
@@ -429,7 +436,7 @@ export default function Checkout() {
 
               {!isPaid && selectedMethod === 'paystack' && publicConfig?.payments.paystack && (
                 <button type="button" onClick={startPaystack} disabled={gatewayLoading} className="mt-5 w-full rounded-lg bg-primary px-5 py-4 text-sm font-bold text-white disabled:opacity-50">
-                  {gatewayLoading ? 'Opening secure checkout...' : `Pay ${formatPrice(booking.totalAmount)} with Paystack`}
+                  {gatewayLoading ? 'Opening secure checkout...' : `Pay ${formatPrice(booking.totalAmount, paystackCurrency)} with Paystack`}
                 </button>
               )}
 
@@ -469,7 +476,7 @@ export default function Checkout() {
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-on-surface-variant font-medium">Total Amount Due</p>
-                  <p className="text-2xl font-black text-primary">{formatPrice(booking.totalAmount)}</p>
+                  <p className="text-2xl font-black text-primary">{formatPrice(booking.totalAmount, 'NGN')}</p>
                 </div>
               </div>
 
@@ -534,7 +541,7 @@ export default function Checkout() {
                   <p className="font-bold text-on-surface text-sm">Payment Process:</p>
                   <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
                     <li>Open your banking app or internet banking portal.</li>
-                    <li>Transfer the exact total of <strong className="text-on-surface">{formatPrice(booking.totalAmount)}</strong> to the account above.</li>
+                    <li>Transfer the exact total of <strong className="text-on-surface">{formatPrice(booking.totalAmount, 'NGN')}</strong> to the account above.</li>
                     <li>Set narration to <strong className="font-mono text-primary">{paymentRef}</strong>.</li>
                     <li>Take a screenshot or download the payment receipt.</li>
                     <li>Upload your receipt in the form on the right to complete verification.</li>
@@ -660,7 +667,7 @@ export default function Checkout() {
                   <>
                     <div className="flex justify-between border-t border-outline pt-3">
                       <dt className="font-medium text-on-surface-variant">Base price</dt>
-                      <dd className="font-bold text-on-surface">{formatPrice(Number(booking.pricingSnapshot.basePrice || 0))}</dd>
+                      <dd className="font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.basePrice || 0))}</dd>
                     </div>
                     {Number(booking.pricingSnapshot.distanceKm || booking.distanceKm || 0) > 0 && (
                       <div className="flex justify-between gap-3">
@@ -671,20 +678,20 @@ export default function Checkout() {
                     {Number(booking.pricingSnapshot.variableFee || booking.pricingSnapshot.extraFee || 0) > 0 && (
                       <div className="flex justify-between gap-3">
                         <dt className="font-medium text-on-surface-variant">{booking.pricingSnapshot.feeLabel || 'Service fee'}</dt>
-                        <dd className="text-right font-bold text-on-surface">{formatPrice(Number(booking.pricingSnapshot.variableFee || booking.pricingSnapshot.extraFee))}</dd>
+                        <dd className="text-right font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.variableFee || booking.pricingSnapshot.extraFee))}</dd>
                       </div>
                     )}
                     {Number(booking.pricingSnapshot.weekendSurcharge || 0) > 0 && (
-                      <div className="flex justify-between gap-3"><dt className="font-medium text-on-surface-variant">Weekend surcharge</dt><dd className="font-bold text-on-surface">{formatPrice(Number(booking.pricingSnapshot.weekendSurcharge))}</dd></div>
+                      <div className="flex justify-between gap-3"><dt className="font-medium text-on-surface-variant">Weekend surcharge</dt><dd className="font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.weekendSurcharge))}</dd></div>
                     )}
                     {Number(booking.pricingSnapshot.nightSurcharge || 0) > 0 && (
-                      <div className="flex justify-between gap-3"><dt className="font-medium text-on-surface-variant">Night surcharge</dt><dd className="font-bold text-on-surface">{formatPrice(Number(booking.pricingSnapshot.nightSurcharge))}</dd></div>
+                      <div className="flex justify-between gap-3"><dt className="font-medium text-on-surface-variant">Night surcharge</dt><dd className="font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.nightSurcharge))}</dd></div>
                     )}
                   </>
                 )}
                 <div className="flex justify-between border-t border-outline pt-3 text-sm">
                   <dt className="font-bold text-on-surface">Total</dt>
-                  <dd className="font-black text-primary">{formatPrice(Number(booking.totalAmount || 0))}</dd>
+                  <dd className="font-black text-primary">{formatInvoicePrice(Number(booking.totalAmount || 0))}</dd>
                 </div>
               </dl>
             </div>

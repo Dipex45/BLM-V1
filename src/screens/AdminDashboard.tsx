@@ -49,10 +49,26 @@ const defaultTrackingLocations = [
   'Package on route to Togo',
 ];
 
+const adminTabs = [
+  'bookings',
+  'payments',
+  'prices',
+  'settings',
+  'hubs',
+  'schedules',
+  'drivers',
+  'admins',
+  'analytics',
+  'reviews',
+  'maintenance',
+] as const;
+
+type AdminTab = (typeof adminTabs)[number];
+
 export default function AdminDashboard() {
   const { user } = useAuth();
   const { formatPrice, convertPrice, rates, isLiveRates, lastRateUpdate, refreshRates } = useCurrency();
-  const [activeTab, setActiveTab] = useState<'bookings' | 'payments' | 'prices' | 'settings' | 'hubs' | 'schedules' | 'admins' | 'drivers' | 'analytics' | 'maintenance' | 'reviews'>('bookings');
+  const [activeTab, setActiveTab] = useState<AdminTab>('bookings');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [testNairaAmount, setTestNairaAmount] = useState<number>(50000);
@@ -465,9 +481,18 @@ export default function AdminDashboard() {
     const name = window.prompt('New car hire option name?');
     if (!name?.trim()) return;
     const seats = parseInt(window.prompt('Number of seats?') || '4');
+    const pricePerDay = parseInt(window.prompt('Daily hire rate in NGN?') || '70000');
     const desc = window.prompt('Short description for this car option?') || '';
     const image = window.prompt('Optional image URL for this car option?') || '';
-    await handleUpdateCarHireOptions([...carHireOptions, { id: name.trim().toLowerCase().replace(/\s+/g, '-'), name: name.trim(), seats: isNaN(seats) ? 4 : seats, desc, image }]);
+    await handleUpdateCarHireOptions([...carHireOptions, {
+      id: name.trim().toLowerCase().replace(/\s+/g, '-'),
+      name: name.trim(),
+      seats: isNaN(seats) ? 4 : seats,
+      pricePerDay: isNaN(pricePerDay) ? 70000 : pricePerDay,
+      available: true,
+      desc,
+      image,
+    }]);
   };
 
   const handleAddTrackingLocation = async () => {
@@ -663,19 +688,33 @@ export default function AdminDashboard() {
         </div>
 
         <nav className="flex min-w-0 flex-col gap-3 rounded-lg border border-outline bg-white p-2 shadow-sm 2xl:flex-row 2xl:items-center 2xl:justify-between">
-          <div className="min-w-0 overflow-x-auto no-scrollbar">
-            <div className="flex min-w-max gap-1">
-              {(['bookings', 'payments', 'prices', 'settings', 'hubs', 'drivers', 'admins', 'analytics', 'reviews', 'maintenance'] as const).map((tab) => (
+          <div className="min-w-0 flex-1">
+            <label className="sr-only" htmlFor="admin-section">Admin section</label>
+            <select
+              id="admin-section"
+              value={activeTab}
+              onChange={(event) => setActiveTab(event.target.value as AdminTab)}
+              className="w-full rounded-md border border-outline bg-surface-container px-3 py-3 text-sm font-bold capitalize text-on-surface sm:hidden"
+            >
+              {adminTabs.map((tab) => (
+                <option key={tab} value={tab}>
+                  {tab === 'payments' ? 'Payment verifications' : tab}
+                </option>
+              ))}
+            </select>
+
+            <div className="hidden flex-wrap justify-center gap-1 sm:flex 2xl:justify-start">
+              {adminTabs.map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`rounded-md px-3 py-2.5 text-xs font-bold capitalize transition-all whitespace-nowrap sm:px-4 sm:text-sm ${
+                  className={`rounded-md px-3 py-2.5 text-xs font-bold capitalize transition-all whitespace-nowrap 2xl:px-4 2xl:text-sm ${
                     activeTab === tab 
                       ? 'bg-primary text-white' 
                       : 'text-on-surface-variant hover:bg-surface-container'
                   }`}
                 >
-                  {tab === 'payments' ? '💰 Payment Verifications' : tab}
+                  {tab === 'payments' ? 'Payment verifications' : tab}
                 </button>
               ))}
             </div>
@@ -729,14 +768,14 @@ export default function AdminDashboard() {
               exit={{ opacity: 0, y: -20 }}
               className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden"
             >
-              <div className="p-8 border-b border-outline bg-surface-container/30">
+              <div className="border-b border-outline bg-surface-container/30 p-4 sm:p-6">
                 <h3 className="font-bold flex items-center gap-2">
                   <span className="material-symbols-outlined text-primary">analytics</span> 
                   All Bookings & Real-Time Tracking
                 </h3>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+                <table className="w-full min-w-[960px] border-collapse text-left">
                   <thead>
                     <tr className="bg-surface-container/20 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">
                       <th className="p-6 border-b border-outline">Booking & Tracking ID</th>
@@ -755,7 +794,10 @@ export default function AdminDashboard() {
                           <p className="font-mono text-xs font-bold text-primary">{b.trackingId || b.id?.slice(-8)}</p>
                           <p className="font-mono text-[10px] text-on-surface-variant">ID: {b.id?.slice(-6)}</p>
                           {b.currentCheckpoint && (
-                            <p className="text-[10px] text-green-700 font-semibold mt-1">📍 {b.currentCheckpoint}</p>
+                            <p className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-green-700">
+                              <span className="material-symbols-outlined text-xs" aria-hidden="true">location_on</span>
+                              {b.currentCheckpoint}
+                            </p>
                           )}
                         </td>
                         <td className="p-6 border-b border-outline font-medium">
@@ -852,7 +894,7 @@ export default function AdminDashboard() {
               className="space-y-8"
             >
               {/* Payment Summary Header */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-4">
                 <div className="bg-white p-6 rounded-2xl border border-outline shadow-sm">
                   <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Total Submissions</p>
                   <p className="text-3xl font-black text-on-surface mt-1">{payments.length}</p>
@@ -879,7 +921,7 @@ export default function AdminDashboard() {
 
               {/* Payments List Table Container */}
               <div className="bg-white rounded-2xl border border-outline shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-outline flex flex-col md:flex-row md:items-center justify-between gap-4 bg-surface-container/20">
+                <div className="flex flex-col justify-between gap-4 border-b border-outline bg-surface-container/20 p-4 sm:p-6 xl:flex-row xl:items-center">
                   <div>
                     <h3 className="font-bold text-lg text-on-surface flex items-center gap-2">
                       <span className="material-symbols-outlined text-primary">verified_user</span>
@@ -910,7 +952,7 @@ export default function AdminDashboard() {
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full min-w-[1080px] border-collapse text-left">
                     <thead>
                       <tr className="bg-surface-container/30 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">
                         <th className="p-5 border-b border-outline">Payment Ref & Tracking</th>
@@ -1051,8 +1093,8 @@ export default function AdminDashboard() {
               className="space-y-8"
             >
               {/* Top Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm group">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-4">
+                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
                     <div className="flex items-center justify-between mb-4">
                        <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Global Revenue</span>
                        <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">payments</span>
@@ -1060,7 +1102,7 @@ export default function AdminDashboard() {
                     <p className="text-4xl font-bold">{formatPrice(analyticsData.totalRevenue)}</p>
                     <p className="text-xs font-semibold text-on-surface-variant mt-2">Gross revenue</p>
                  </div>
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm group">
+                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
                     <div className="flex items-center justify-between mb-4">
                        <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Fleet Efficiency</span>
                        <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">network_check</span>
@@ -1068,7 +1110,7 @@ export default function AdminDashboard() {
                     <p className="text-4xl font-bold">98.4%</p>
                     <p className="text-xs font-semibold text-on-surface-variant mt-2">Operational uptime</p>
                  </div>
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm group">
+                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
                     <div className="flex items-center justify-between mb-4">
                        <span className="text-xs font-bold text-on-surface-variant">Total bookings</span>
                        <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">hub</span>
@@ -1076,7 +1118,7 @@ export default function AdminDashboard() {
                     <p className="text-4xl font-bold">{bookings.length + (lastVisible ? '+' : '')}</p>
                     <p className="text-xs font-semibold text-on-surface-variant mt-2">Registered routes</p>
                  </div>
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm group">
+                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
                     <div className="flex items-center justify-between mb-4">
                        <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Recurring Ratio</span>
                        <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">sync</span>
@@ -1327,7 +1369,7 @@ export default function AdminDashboard() {
               </div>
               <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
                 {prices.map((p, i) => (
-                  <div key={i} className="bg-white p-8 rounded-lg border border-outline shadow-sm flex flex-col gap-6">
+                  <div key={i} className="flex flex-col gap-5 rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
                     <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
                       <span className="material-symbols-outlined text-3xl">{p.icon}</span>
                     </div>
@@ -1401,8 +1443,8 @@ export default function AdminDashboard() {
               animate={{ opacity: 1, y: 0 }}
               className="space-y-8"
             >
-              <div className="grid gap-8 lg:grid-cols-2">
-                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+              <div className="grid gap-6 2xl:grid-cols-2">
+                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <div className="flex items-center justify-between gap-4 mb-6">
                     <div>
                       <h3 className="text-xl font-bold">Touring states</h3>
@@ -1450,7 +1492,7 @@ export default function AdminDashboard() {
                   </div>
                 </section>
 
-                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <div className="flex items-center justify-between gap-4 mb-6">
                     <div>
                       <h3 className="text-xl font-bold">International tours</h3>
@@ -1499,8 +1541,8 @@ export default function AdminDashboard() {
                 </section>
               </div>
 
-              <div className="grid gap-8 lg:grid-cols-2">
-                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+              <div className="grid gap-6 2xl:grid-cols-2">
+                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <div className="flex items-center justify-between gap-4 mb-6">
                     <div>
                       <h3 className="text-xl font-bold">Car hire fleet</h3>
@@ -1517,7 +1559,7 @@ export default function AdminDashboard() {
                   <div className="space-y-6">
                     {carHireOptions.map((car, index) => (
                       <div key={car.id + index} className="p-4 rounded-xl border border-outline bg-surface-container/30 space-y-4">
-                        <div className="grid gap-3 md:grid-cols-[1fr_0.7fr_0.6fr] items-end">
+                        <div className="grid items-end gap-3 sm:grid-cols-2">
                           <div>
                             <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
                             <input
@@ -1536,14 +1578,33 @@ export default function AdminDashboard() {
                               onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, seats: parseInt(e.target.value) || 1 } : item))}
                             />
                           </div>
-                          <button
-                            type="button"
-                            className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
-                            onClick={() => handleUpdateCarHireOptions(carHireOptions.filter((_, idx) => idx !== index))}
-                          >
-                            Remove car
-                          </button>
+                          <div>
+                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Daily rate (NGN)</label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={car.pricePerDay || 0}
+                              className="w-full rounded-xl border border-outline bg-white p-3 text-sm font-medium"
+                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, pricePerDay: parseInt(e.target.value) || 0 } : item))}
+                            />
+                          </div>
+                          <label className="flex min-h-12 items-center gap-3 rounded-xl border border-outline bg-white px-3 text-xs font-bold text-on-surface">
+                            <input
+                              type="checkbox"
+                              checked={car.available !== false}
+                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, available: e.target.checked } : item))}
+                              className="h-4 w-4"
+                            />
+                            Available for booking
+                          </label>
                         </div>
+                        <button
+                          type="button"
+                          className="rounded-md bg-error/10 px-4 py-3 text-xs font-bold text-error"
+                          onClick={() => handleUpdateCarHireOptions(carHireOptions.filter((_, idx) => idx !== index))}
+                        >
+                          Remove car
+                        </button>
 
                         <div>
                           <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Description</label>
@@ -1610,7 +1671,7 @@ export default function AdminDashboard() {
                   </div>
                 </section>
 
-                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <div className="flex items-center justify-between gap-4 mb-6">
                     <div>
                       <h3 className="text-xl font-bold">Tracking locations</h3>
@@ -1647,8 +1708,8 @@ export default function AdminDashboard() {
               </div>
 
               {/* Currency Rates & Global Pricing Rules */}
-              <div className="grid gap-8 lg:grid-cols-2">
-                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+              <div className="grid gap-6 2xl:grid-cols-2">
+                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
@@ -1713,7 +1774,7 @@ export default function AdminDashboard() {
                   </div>
                 </section>
 
-                <section className="bg-white p-8 rounded-lg border border-outline shadow-sm">
+                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <div className="flex items-center justify-between gap-4 mb-6">
                     <div>
                       <h3 className="text-xl font-bold">Extra Fees & Caution Rules</h3>
@@ -1800,6 +1861,28 @@ export default function AdminDashboard() {
                     </div>
                     <div>
                       <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Car Hire Chauffeur Fee Per Day (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.carHireDriverDailyFee}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, carHireDriverDailyFee: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                        Certified Tour Guide Fee (NGN)
+                      </label>
+                      <input
+                        type="number"
+                        value={pricingRulesSettings.tourGuideFee}
+                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, tourGuideFee: parseInt(e.target.value) || 0 })}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
                         Cross-Border Processing Fee (NGN)
                       </label>
                       <input
@@ -1856,12 +1939,40 @@ export default function AdminDashboard() {
                         />
                       </div>
                     </div>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                          Weekend Surcharge (%)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.1"
+                          value={pricingRulesSettings.weekendSurchargePercent}
+                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, weekendSurchargePercent: parseFloat(e.target.value) || 0 })}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
+                          Night Surcharge (%)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.1"
+                          value={pricingRulesSettings.nightSurchargePercent}
+                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
+                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, nightSurchargePercent: parseFloat(e.target.value) || 0 })}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </section>
               </div>
 
               {/* Official Bank Account Details Configuration */}
-              <section className="bg-white p-8 rounded-2xl border border-outline shadow-sm">
+              <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                 <div className="flex items-center justify-between gap-4 mb-6">
                   <div>
                     <h3 className="text-xl font-bold text-on-surface flex items-center gap-2">
@@ -1960,9 +2071,9 @@ export default function AdminDashboard() {
               key="hubs"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 lg:grid-cols-2 gap-12"
+              className="grid grid-cols-1 gap-6 2xl:grid-cols-2"
             >
-              <div className="bg-white p-10 rounded-lg border border-outline shadow-sm">
+              <div className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                 <h3 className="font-bold text-xl mb-8">Add new hub</h3>
                 <form onSubmit={handleAddHub} className="space-y-6">
                   <div>
@@ -1980,25 +2091,25 @@ export default function AdminDashboard() {
               </div>
 
               <div className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden flex flex-col">
-                <div className="p-8 border-b border-outline bg-surface-container/30">
+                <div className="border-b border-outline bg-surface-container/30 p-4 sm:p-6">
                   <h3 className="font-bold">Active Hub Network</h3>
                 </div>
                 <div className="divide-y divide-outline">
                   {hubs.map((hub) => (
-                    <div key={hub.id} className="p-6 flex items-center justify-between group">
-                      <div>
+                    <div key={hub.id} className="group flex flex-col items-start justify-between gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
+                      <div className="min-w-0">
                         <p className="font-bold text-lg">{hub.name}</p>
                         <p className="text-xs text-on-surface-variant">{hub.address}</p>
                       </div>
                       <button 
                         onClick={() => handleDeleteHub(hub.id, hub.name)}
-                        className="w-10 h-10 rounded-xl bg-primary/10 text-primary opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all"
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary transition-all sm:opacity-0 sm:group-hover:opacity-100"
                       >
                         <span className="material-symbols-outlined">delete</span>
                       </button>
                     </div>
                   ))}
-                  {hubs.length === 0 && <div className="p-10 text-center text-on-surface-variant italic">No hubs defined. Use form to add.</div>}
+                  {hubs.length === 0 && <div className="p-6 text-center text-on-surface-variant italic sm:p-10">No hubs defined. Use form to add.</div>}
                 </div>
               </div>
             </motion.div>
@@ -2009,7 +2120,7 @@ export default function AdminDashboard() {
                key="schedules"
                initial={{ opacity: 0, y: 20 }}
                animate={{ opacity: 1, y: 0 }}
-               className="bg-white p-12 rounded-lg border border-outline shadow-sm text-center"
+               className="rounded-lg border border-outline bg-white p-5 text-center shadow-sm sm:p-8"
              >
                 <span className="material-symbols-outlined text-6xl text-primary mb-6">event_busy</span>
                 <h3 className="text-2xl font-bold mb-4">Availability control</h3>
@@ -2018,9 +2129,9 @@ export default function AdminDashboard() {
                 </p>
                 
                 <div className="max-w-xl mx-auto space-y-8">
-                   <div className="p-6 border border-outline rounded-lg bg-surface-container/30 text-left">
+                   <div className="rounded-lg border border-outline bg-surface-container/30 p-4 text-left sm:p-6">
                       <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">Select Date to Block</label>
-                      <div className="flex gap-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
                         <input type="date" className="flex-1 bg-white border border-outline p-4 rounded-xl" id="blockDate" />
                         <button 
                           onClick={async () => {
@@ -2030,7 +2141,7 @@ export default function AdminDashboard() {
                              dateInput.value = '';
                              alert('Date blocked.');
                           }}
-                          className="px-8 bg-primary text-white font-bold rounded-md text-sm"
+                          className="min-h-12 rounded-md bg-primary px-6 py-3 text-sm font-bold text-white"
                         >
                           Block date
                         </button>
@@ -2040,8 +2151,8 @@ export default function AdminDashboard() {
                    <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Active Disruptions</p>
                    <div className="grid grid-cols-1 gap-4">
                       {blockedDays.map((block) => (
-                        <div key={block.id} className="p-4 bg-white border border-outline rounded-xl flex items-center justify-between">
-                           <div className="flex items-center gap-4">
+                        <div key={block.id} className="flex items-center justify-between gap-3 rounded-md border border-outline bg-white p-4">
+                           <div className="flex min-w-0 items-center gap-3 sm:gap-4">
                               <span className="material-symbols-outlined text-primary text-xl">block</span>
                               <div>
                                  <p className="font-bold text-sm">{block.date}</p>
@@ -2067,9 +2178,9 @@ export default function AdminDashboard() {
               key="drivers"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 lg:grid-cols-2 gap-12"
+              className="grid grid-cols-1 gap-6 2xl:grid-cols-2"
             >
-              <div className="bg-white p-10 rounded-lg border border-outline shadow-sm">
+              <div className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                   <h3 className="font-bold text-xl mb-8">Register new driver</h3>
                   <form onSubmit={async (e: any) => {
                     e.preventDefault();
@@ -2084,7 +2195,7 @@ export default function AdminDashboard() {
                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Full Legal Name</label>
                        <input name="driverName" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="e.g. Samuel Okafor" />
                      </div>
-                     <div className="grid grid-cols-2 gap-4">
+                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <div>
                           <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">License Reference</label>
                           <input name="license" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="A-XXXXX-XXXX" />
@@ -2101,7 +2212,7 @@ export default function AdminDashboard() {
               </div>
 
               <div className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden flex flex-col">
-                <div className="p-8 border-b border-outline bg-surface-container/30 flex justify-between items-center">
+                <div className="flex flex-col items-start justify-between gap-2 border-b border-outline bg-surface-container/30 p-4 sm:flex-row sm:items-center sm:p-6">
                   <h3 className="font-bold flex items-center gap-2">
                     <span className="material-symbols-outlined text-primary">badge</span>
                     Fleet Personnel
@@ -2110,8 +2221,8 @@ export default function AdminDashboard() {
                 </div>
                 <div className="divide-y divide-outline">
                   {drivers.map((driver) => (
-                    <div key={driver.id} className="p-6 flex items-center justify-between group">
-                       <div className="flex items-center gap-4">
+                    <div key={driver.id} className="group flex flex-col items-start justify-between gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
+                       <div className="flex min-w-0 items-center gap-4">
                           <div className="w-12 h-12 rounded-2xl bg-surface-container flex items-center justify-center text-on-surface-variant font-bold">
                              {driver.name?.[0]}
                           </div>
@@ -2140,9 +2251,9 @@ export default function AdminDashboard() {
               key="admins"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 lg:grid-cols-2 gap-12"
+              className="grid grid-cols-1 gap-6 2xl:grid-cols-2"
             >
-              <div className="bg-white p-10 rounded-lg border border-outline shadow-sm h-fit">
+              <div className="h-fit rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
                 <h3 className="font-bold text-xl mb-2">Promote admin</h3>
                 <p className="text-xs text-on-surface-variant mb-8 font-medium">Elevate a user to operational control by searching their system UID.</p>
                 
@@ -2168,7 +2279,7 @@ export default function AdminDashboard() {
               </div>
 
               <div className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden flex flex-col">
-                <div className="p-8 border-b border-outline bg-surface-container/30 flex justify-between items-center">
+                <div className="flex flex-col items-start justify-between gap-2 border-b border-outline bg-surface-container/30 p-4 sm:flex-row sm:items-center sm:p-6">
                   <h3 className="font-bold flex items-center gap-2">
                     <span className="material-symbols-outlined text-primary">security</span>
                     Operational Staff
@@ -2177,8 +2288,8 @@ export default function AdminDashboard() {
                 </div>
                 <div className="divide-y divide-outline">
                   {/* Super Admin Always First */}
-                  <div className="p-6 flex items-center justify-between bg-primary/5">
-                     <div className="flex items-center gap-4">
+                  <div className="flex flex-col items-start justify-between gap-4 bg-primary/5 p-4 sm:flex-row sm:items-center sm:p-6">
+                     <div className="flex min-w-0 items-center gap-4">
                         <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white">
                            <span className="material-symbols-outlined">stars</span>
                         </div>
@@ -2190,8 +2301,8 @@ export default function AdminDashboard() {
                   </div>
 
                   {admins.map((admin) => (
-                    <div key={admin.id} className="p-6 flex items-center justify-between group">
-                      <div className="flex items-center gap-4">
+                    <div key={admin.id} className="group flex flex-col items-start justify-between gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
+                      <div className="flex min-w-0 items-center gap-4">
                         <div className="w-10 h-10 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
                            <span className="material-symbols-outlined">person</span>
                         </div>
@@ -2335,7 +2446,7 @@ export default function AdminDashboard() {
             </div>
 
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4 rounded-xl bg-surface-container/30 p-4 text-xs">
+              <div className="grid grid-cols-1 gap-4 rounded-md bg-surface-container/30 p-4 text-xs sm:grid-cols-2">
                 <div>
                   <p className="text-on-surface-variant font-medium">Customer</p>
                   <p className="font-bold text-on-surface">{selectedPaymentProof.customerName}</p>

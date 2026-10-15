@@ -1,9 +1,9 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import { auth, db } from '../lib/firebase';
-import { onIdTokenChanged, User } from 'firebase/auth';
+import { onIdTokenChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { logger } from '../lib/logger';
-import { apiPost } from '../lib/api';
+import { getAuthenticatedRole, isFederatedUser } from '../lib/authFlow';
 
 interface AuthContextType {
   user: any | null;
@@ -22,18 +22,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (firebaseUser) {
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          let userData = userDoc.exists() ? userDoc.data() : {};
-          
-          // Check if user is in the admins collection
-          const adminDoc = await getDoc(doc(db, 'admins', firebaseUser.uid));
-          if (adminDoc.exists()) {
-            const adminData = adminDoc.data();
-            userData.role = adminData.role || 'super_admin';
+          const userData = userDoc.exists() ? userDoc.data() : {};
+          let role = String(userData.role || 'customer');
+
+          if (firebaseUser.emailVerified || isFederatedUser(firebaseUser)) {
+            try {
+              role = await getAuthenticatedRole(firebaseUser);
+            } catch (error) {
+              logger.warn('Server session sync failed', error);
+            }
           }
 
-          setUser({ ...firebaseUser, ...userData });
-          apiPost('/api/auth/session', {}).catch((error) => {
-            logger.warn('Server session sync failed', error);
+          setUser({
+            ...userData,
+            uid: firebaseUser.uid,
+            email: firebaseUser.email,
+            displayName: firebaseUser.displayName || userData.fullName || null,
+            emailVerified: firebaseUser.emailVerified,
+            isAnonymous: firebaseUser.isAnonymous,
+            providerData: firebaseUser.providerData,
+            role,
           });
           logger.info('Authentication state synchronized', { uid: firebaseUser.uid });
         } catch (error) {

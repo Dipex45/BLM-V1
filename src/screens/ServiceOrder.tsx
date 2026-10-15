@@ -4,13 +4,19 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { company, defaultVehicles } from '../lib/company';
 import { useCurrency } from '../hooks/useCurrency';
 import { useAuth } from '../hooks/useAuth';
-import { doc, getDoc, collection, getDocs, addDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import DOMPurify from 'dompurify';
-import { logAudit, AuditAction } from '../lib/audit';
-import { BookingSchema } from '../lib/schemas';
+import { apiPost } from '../lib/api';
+import { calculateBookingQuote } from '../lib/bookingPricing';
 
 const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+const getCarImage = (car: { id?: string; image?: string }) => {
+  const savedImage = String(car.image || '').trim();
+  const compatibleImage = savedImage.replace(/^(\/brand\/car-0[1-3])\.(?:jpe?g|png)$/i, '$1.webp');
+  return compatibleImage || company.carHireOptions.find((item) => item.id === car.id)?.image || '/brand/car-01.webp';
+};
 
 const fadeUp = {
   hidden: { opacity: 0, y: 20 },
@@ -120,7 +126,12 @@ export default function ServiceOrder() {
       try {
         const carSnap = await getDoc(doc(db, 'settings', 'car_hire_options'));
         if (carSnap.exists() && Array.isArray(carSnap.data().value) && carSnap.data().value.length > 0) {
-          setCarHireOptions(carSnap.data().value);
+          const configuredCars = carSnap.data().value;
+          setCarHireOptions(configuredCars);
+          const firstAvailableCar = configuredCars.find((car: any) => car.available !== false);
+          if (firstAvailableCar) {
+            setFormData((previous) => ({ ...previous, selectedCarId: firstAvailableCar.id }));
+          }
         }
       } catch (e) {
         console.warn('Using default car hire options');
@@ -215,107 +226,28 @@ export default function ServiceOrder() {
     }
   };
 
-  // Price Calculation tailored per service
-  const calculatePrice = () => {
-    // 1. LONG & SHORT DISTANCE TRIPS (CHARGED PER KILOMETER)
-    if (isDistanceTrips) {
-      const selected = vehicles.find((v) => v.title === formData.vehicleClass) || vehicles[0];
-      const kmRate = Number(selected?.kmRate || (selected?.price ? Math.round(selected.price / 80) : 350)) || Number(pricingRules.pricePerKm || 350);
-      const km = Math.max(Number(formData.distanceKm) || 1, 1);
-      const baseDistanceFare = km * kmRate;
-      const mult = formData.isReturn ? Number(pricingRules.returnMultiplier || 2) : 1;
-      const serviceFee = Number(pricingRules.standardServiceFee || 4500);
-      const subtotal = Math.round(baseDistanceFare * mult);
-      return {
-        basePrice: subtotal,
-        extraFee: serviceFee,
-        feeLabel: `Distance: ${km} km @ ${formatPrice(kmRate)}/km ${formData.isReturn ? '(Round Trip 2x)' : ''} + Standard Service Fee`,
-        total: subtotal + serviceFee,
-        vehicleClass: selected?.title || 'Economy',
-        kmRate,
-        km,
-      };
-    }
-
-    // 2. CAR HIRE (SELECTED PICKUP HUB, DURATION IN DAYS, CAUTION DEPOSIT)
-    if (isCarHire) {
-      const carHireVehicleObj = vehicles.find((v) => v.title.toLowerCase().includes('car hire')) || { price: 70000 };
-      const basePerDay = Number(carHireVehicleObj.price || 70000);
-      const days = Math.max(Number(formData.hireDurationDays) || 1, 1);
-      const caution = Number(pricingRules.carHireCautionFee || 25000);
-      const driverFee = formData.withDriver ? 10000 * days : 0;
-      const baseTotal = basePerDay * days;
-      return {
-        basePrice: baseTotal,
-        extraFee: caution + driverFee,
-        feeLabel: `Caution Deposit (${formatPrice(caution)}) ${driverFee > 0 ? `+ Chauffeur (${formatPrice(driverFee)})` : ''}`,
-        total: Math.round(baseTotal + caution + driverFee),
-        vehicleClass: 'Car Hire',
-      };
-    }
-
-    // 3. TOURING (LOCATION-BASED PACKAGES, NOT DAILY)
-    if (isTouring) {
-      const selectedPkg = touringPackages.find((p) => p.id === formData.touringPackageId) || touringPackages[0];
-      const locationCount = Number(selectedPkg?.locations || selectedPkg?.days || 1);
-      const stateFactor = touringStates.find((s) => s.name === formData.touringState)?.factor || 1;
-      const guideFee = formData.tourGuideNeeded ? 15000 : 0;
-      const pkgPrice = Math.round((Number(pricingRules.touringPerLocation || 15000) * locationCount) * stateFactor);
-      return {
-        basePrice: pkgPrice,
-        extraFee: guideFee,
-        feeLabel: `${selectedPkg.name} (${locationCount} locations) in ${formData.touringState} ${guideFee > 0 ? '+ Professional Guide' : ''}`,
-        total: pkgPrice + guideFee,
-        vehicleClass: selectedPkg.title || selectedPkg.name,
-      };
-    }
-
-    // 4. CROSS-BORDER TRIPS
-    if (isCrossBorder) {
-      const countryObj = internationalTours.find((c) => c.name === formData.crossBorderCountry);
-      const countryFactor = countryObj?.factor || 1.1;
-      const passengerCount = Math.max(Number(formData.passengerCount) || 1, 1);
-      const baseTotal = Math.round((Number(pricingRules.crossBorderBasePerPassenger || 90000) * passengerCount) * countryFactor);
-      const clearanceFee = formData.borderClearanceHelp ? Number(pricingRules.crossBorderProcessingFee || 30000) : 0;
-      return {
-        basePrice: baseTotal,
-        extraFee: clearanceFee,
-        feeLabel: `${passengerCount} passenger${passengerCount > 1 ? 's' : ''} • ${formData.crossBorderCountry}`,
-        total: baseTotal + clearanceFee,
-        vehicleClass: 'Cross-Border transit',
-      };
-    }
-
-    // 5. PICKUP AND LOGISTICS (CUSTOMER SETS DOORSTEP PICKUP & DELIVERY)
-    if (isLogistics) {
-      const logObj = vehicles.find((v) => v.title.toLowerCase().includes('pickup') || v.title.toLowerCase().includes('logistics')) || { price: 65000 };
-      const base = Number(logObj.price || 65000);
-      const routeDistanceKm = Math.max(Number(formData.distanceKm) || 1, 1);
-      const handlingFee = Number(pricingRules.pickupLogisticsFee || 22000);
-      const routeFee = Math.round(routeDistanceKm * Number(pricingRules.logisticsPricePerKm || 250));
-      const weightKg = Math.max(Number(formData.packageWeightKg) || 1, 1);
-      const weightFee = Math.round(weightKg * Number(pricingRules.pricePerKg || 1200));
-      return {
-        basePrice: base + routeFee,
-        extraFee: handlingFee + weightFee,
-        feeLabel: `${routeDistanceKm}km route + Handling + ${weightKg}kg cargo`,
-        total: Math.round(base + routeFee + handlingFee + weightFee),
-        vehicleClass: 'Pickup & Logistics',
-      };
-    }
-
-    // Default Fallback
-    const def = vehicles[0] || { price: 25000, title: 'Economy' };
-    return {
-      basePrice: Number(def.price || 25000),
-      extraFee: 4500,
-      feeLabel: 'Standard Service Fee',
-      total: Number(def.price || 25000) + 4500,
-      vehicleClass: def.title,
-    };
-  };
-
-  const calculatedQuote = calculatePrice();
+  const calculatedQuote = calculateBookingQuote(
+    {
+      serviceType: service.title,
+      vehicleClass: formData.vehicleClass,
+      date: formData.date,
+      time: formData.time,
+      distanceKm: Number(formData.distanceKm),
+      isReturn: formData.isReturn,
+      carHireVehicle: formData.selectedCarId,
+      carHireDurationDays: Number(formData.hireDurationDays),
+      carHireWithDriver: formData.withDriver,
+      touringPackage: formData.touringPackageId,
+      touringState: formData.touringState,
+      tourGuideNeeded: formData.tourGuideNeeded,
+      internationalCountry: formData.crossBorderCountry,
+      passengerCount: Number(formData.passengerCount),
+      borderClearanceHelp: formData.borderClearanceHelp,
+      packageWeightKg: Number(formData.packageWeightKg),
+    },
+    { rules: pricingRules, vehicles, touringPackages, touringStates, internationalTours, carHireOptions },
+    formatPrice,
+  );
 
   // WhatsApp Order message builder
   const buildWhatsAppMessage = (): string => {
@@ -350,6 +282,7 @@ export default function ServiceOrder() {
       isCrossBorder && `*Passengers:* ${formData.passengerCount}`,
       isLogistics && `*Cargo Category:* ${formData.packageType}`,
       isLogistics && `*Declared Weight:* ${formData.packageWeightKg}kg`,
+      isLogistics && `*Package Declaration:* I confirm that the shipment contains no illegal or prohibited items.`,
       formData.notes && `*Special Notes:* ${formData.notes}`,
     ].filter(Boolean);
     return lines.join('\n');
@@ -357,6 +290,11 @@ export default function ServiceOrder() {
 
   const handleWhatsAppOrder = (e: FormEvent) => {
     e.preventDefault();
+    const selectedHireCar = carHireOptions.find((car) => car.id === formData.selectedCarId);
+    if (isCarHire && (!selectedHireCar || selectedHireCar.available === false)) {
+      setOrderError('Please select a car that is currently available.');
+      return;
+    }
     if (isCarHire && !formData.cautionFeeConsent) {
       setOrderError('Please consent to the refundable caution fee terms to book Car Hire.');
       return;
@@ -387,6 +325,12 @@ export default function ServiceOrder() {
       return;
     }
 
+    const selectedHireCar = carHireOptions.find((car) => car.id === formData.selectedCarId);
+    if (isCarHire && (!selectedHireCar || selectedHireCar.available === false)) {
+      setOrderError('Please select a car that is currently available.');
+      return;
+    }
+
     if (isLogistics && !formData.logisticsDetails.trim()) {
       setOrderError('Please describe package contents and handling instructions.');
       return;
@@ -409,50 +353,48 @@ export default function ServiceOrder() {
       const destLoc = isCarHire ? `Car Hire Rental (${formData.selectedPickupHub})` : formData.destination.trim();
 
       const bookingPayload = {
-        customerId: user.uid,
         customerName: DOMPurify.sanitize(formData.fullName.trim() || user.displayName || user.email || 'Customer'),
         customerEmail: DOMPurify.sanitize(formData.email.trim() || user.email || 'customer@blmmotors.com'),
+        customerPhone: DOMPurify.sanitize(formData.phone.trim()),
         pickup: DOMPurify.sanitize(pickupLoc || 'Pickup Terminal'),
         destination: DOMPurify.sanitize(destLoc || 'Destination Hub'),
         vehicleClass: DOMPurify.sanitize(quote.vehicleClass),
         date: formData.date,
         time: formData.time,
-        totalAmount: quote.total,
-        currency: 'NGN',
         displayCurrency,
         isReturn: formData.isReturn,
         notes: DOMPurify.sanitize(formData.notes),
-        status: 'Quoted' as const,
         serviceType: service.title,
+        touringPackage: formData.touringPackageId,
         touringState: formData.touringState,
+        tourGuideNeeded: formData.tourGuideNeeded,
         internationalCountry: formData.crossBorderCountry,
+        passengerCount: Number(formData.passengerCount),
+        borderClearanceHelp: formData.borderClearanceHelp,
         logisticsDetails: DOMPurify.sanitize(formData.logisticsDetails),
-        packageWeightKg: formData.packageWeightKg,
+        packageWeightKg: Number(formData.packageWeightKg),
         carHireVehicle: formData.selectedCarId,
+        carHireDurationDays: Number(formData.hireDurationDays),
+        carHireWithDriver: formData.withDriver,
+        pickupHub: formData.selectedPickupHub,
+        distanceKm: (isDistanceTrips || isLogistics) ? Number(formData.distanceKm) : undefined,
         pricingSnapshot: {
           basePrice: quote.basePrice,
           extraFee: quote.extraFee,
           feeLabel: quote.feeLabel,
           total: quote.total,
-          ...(isDistanceTrips ? { distanceKm: formData.distanceKm } : {}),
+          weekendSurcharge: quote.weekendSurcharge,
+          nightSurcharge: quote.nightSurcharge,
+          ...((isDistanceTrips || isLogistics) ? { distanceKm: Number(formData.distanceKm) } : {}),
         },
-        createdAt: new Date().toISOString(),
       };
 
-      const validated = BookingSchema.parse(bookingPayload);
-      const docRef = await addDoc(collection(db, 'bookings'), validated);
+      const response = await apiPost<{ id: string; totalAmount: number }>('/api/bookings', bookingPayload);
 
-      await logAudit(user.uid, user.email || 'unknown', AuditAction.CREATE_BOOKING, {
-        bookingId: docRef.id,
-        service: service.title,
-        amount: quote.total,
-      });
-
-      // Direct navigation to the payment checkout page!
-      navigate(`/checkout/${encodeURIComponent(docRef.id)}`);
+      navigate(`/checkout/${encodeURIComponent(response.data.id)}`);
     } catch (err: any) {
       console.error('Booking online failed:', err);
-      setOrderError(err.message || 'Unable to place booking right now. Please check your inputs and try again.');
+      setOrderError(err.response?.data?.error || err.message || 'Unable to place booking right now. Please check your inputs and try again.');
     } finally {
       setSubmitting(false);
     }
@@ -643,7 +585,7 @@ export default function ServiceOrder() {
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  {carHireOptions.map((car) => (
+                  {carHireOptions.filter((car) => car.available !== false).map((car) => (
                     <label
                       key={car.id}
                       className={`relative flex cursor-pointer flex-col justify-between rounded-xl border p-4 transition-all ${
@@ -660,9 +602,16 @@ export default function ServiceOrder() {
                         onChange={handleChange}
                         className="sr-only"
                       />
-                      {car.image && (
-                        <img src={car.image} alt={car.name} className="h-24 w-full rounded-lg object-cover mb-3" />
-                      )}
+                      <img
+                        src={getCarImage(car)}
+                        alt={car.name}
+                        className="mb-3 h-24 w-full rounded-lg object-cover"
+                        loading="lazy"
+                        onError={(event) => {
+                          event.currentTarget.onerror = null;
+                          event.currentTarget.src = company.carHireOptions.find((item) => item.id === car.id)?.image || '/brand/car-01.webp';
+                        }}
+                      />
                       <div>
                         <div className="flex items-center justify-between">
                           <p className="font-bold text-sm text-on-surface">{car.name}</p>
@@ -674,6 +623,11 @@ export default function ServiceOrder() {
                       </div>
                     </label>
                   ))}
+                  {carHireOptions.every((car) => car.available === false) && (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900 sm:col-span-3">
+                      No hire vehicles are currently available. Please contact BLM support for assistance.
+                    </p>
+                  )}
                 </div>
 
                 {/* Car Hire Pickup Location Dropdown (Pre-set locations only, no text input) */}
@@ -722,7 +676,7 @@ export default function ServiceOrder() {
                       onChange={(e) => setFormData({ ...formData, withDriver: e.target.value === 'yes' })}
                       className={inputClasses}
                     >
-                      <option value="yes">With Professional BLM Chauffeur (+{formatPrice(10000)}/day)</option>
+                      <option value="yes">With Professional BLM Chauffeur (+{formatPrice(Number(pricingRules.carHireDriverDailyFee || 10000))}/day)</option>
                       <option value="no">Self-Drive</option>
                     </select>
                   </div>
@@ -813,7 +767,7 @@ export default function ServiceOrder() {
                       onChange={(e) => setFormData({ ...formData, tourGuideNeeded: e.target.value === 'yes' })}
                       className={inputClasses}
                     >
-                      <option value="yes">Include Certified Local Tour Guide (+{formatPrice(15000)})</option>
+                      <option value="yes">Include Certified Local Tour Guide (+{formatPrice(Number(pricingRules.tourGuideFee || 15000))})</option>
                       <option value="no">Chauffeur / Self-Guided Only</option>
                     </select>
                   </div>
@@ -947,6 +901,14 @@ export default function ServiceOrder() {
                     placeholder="Describe items, dimensions, fragility, recipient contact info..."
                     className={`${inputClasses} resize-none`}
                   />
+                </div>
+
+                <div className="flex gap-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm leading-relaxed text-amber-950">
+                  <span className="material-symbols-outlined shrink-0 text-xl" aria-hidden="true">gpp_maybe</span>
+                  <p>
+                    <strong>Package disclaimer:</strong> BLM Motors is not responsible for illegal or prohibited items.
+                    We reserve the right to inspect, reject, or report any package whose contents are not fully declared or appear unlawful.
+                  </p>
                 </div>
               </motion.div>
             )}
@@ -1112,8 +1074,8 @@ export default function ServiceOrder() {
 
           {/* Right Live Price Summary Sidebar */}
           <motion.aside
-            initial={{ opacity: 0, x: 24 }}
-            whileInView={{ opacity: 1, x: 0 }}
+            initial={{ opacity: 0, y: 16 }}
+            whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
             transition={{ duration: 0.6, delay: 0.2 }}
             className="order-1 space-y-6 lg:order-2"
@@ -1143,6 +1105,20 @@ export default function ServiceOrder() {
                     <span className="max-w-[180px] truncate">{calculatedQuote.feeLabel}</span>
                     <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.extraFee)}</span>
                   </div>
+
+                  {calculatedQuote.weekendSurcharge > 0 && (
+                    <div className="flex items-center justify-between gap-3 text-on-surface-variant font-medium">
+                      <span>Weekend surcharge</span>
+                      <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.weekendSurcharge)}</span>
+                    </div>
+                  )}
+
+                  {calculatedQuote.nightSurcharge > 0 && (
+                    <div className="flex items-center justify-between gap-3 text-on-surface-variant font-medium">
+                      <span>Night surcharge</span>
+                      <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.nightSurcharge)}</span>
+                    </div>
+                  )}
 
                   <div className="flex justify-between items-center text-on-surface-variant font-medium">
                     <span>Safety & Passenger Insurance</span>

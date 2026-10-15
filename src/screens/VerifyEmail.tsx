@@ -2,10 +2,15 @@ import React, { useState } from 'react';
 import { auth } from '../lib/firebase';
 import { sendEmailVerification, signOut } from 'firebase/auth';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 export default function VerifyEmail() {
-  const [message, setMessage] = useState('');
+  const location = useLocation();
+  const [message, setMessage] = useState(
+    location.state?.verificationSent === false
+      ? 'Your account was created, but the first email could not be sent. Use the resend button below.'
+      : '',
+  );
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const user = auth.currentUser;
@@ -23,8 +28,28 @@ export default function VerifyEmail() {
     }
   };
 
-  const handleRefresh = () => {
-    window.location.reload();
+  const handleRefresh = async () => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      navigate('/login', { replace: true });
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+    try {
+      await currentUser.reload();
+      await currentUser.getIdToken(true);
+      if (currentUser.emailVerified) {
+        navigate('/dashboard', { replace: true });
+      } else {
+        setMessage('Your email is not verified yet. Open the verification link in your inbox, then check again.');
+      }
+    } catch {
+      setMessage('We could not refresh your verification status. Check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -61,9 +86,10 @@ export default function VerifyEmail() {
         <div className="grid grid-cols-1 gap-4">
           <button
             onClick={handleRefresh}
+            disabled={loading}
             className="w-full py-4 bg-primary text-white font-bold rounded-md text-sm hover:bg-primary-container transition-colors"
           >
-            I have verified my email
+            {loading ? 'Checking...' : 'I have verified my email'}
           </button>
           
           <button

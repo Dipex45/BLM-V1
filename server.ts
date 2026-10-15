@@ -15,6 +15,8 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import * as Sentry from "@sentry/node";
+import { company, defaultVehicles } from "./src/lib/company";
+import { calculateBookingQuote } from "./src/lib/bookingPricing";
 
 type Role =
   | "super_admin"
@@ -138,6 +140,7 @@ const BookingCreateSchema = BookingValidationSchema.extend({
   carHireDurationDays: z.number().int().min(1).max(365).optional(),
   carHireWithDriver: z.boolean().optional(),
   pickupHub: z.string().trim().max(200).optional(),
+  distanceKm: z.number().positive().max(50_000).optional(),
   pricingSnapshot: z.record(z.string(), z.unknown()).optional(),
 }).omit({ totalAmount: true });
 
@@ -512,28 +515,19 @@ async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSc
     getAdminDb().collection("hubs").get(),
   ]);
   const rules = { pricePerKm: 350, logisticsPricePerKm: 250, standardServiceFee: 4500, pickupLogisticsFee: 22000, pricePerKg: 1200, tourGuideFee: 15000, carHireDriverDailyFee: 10000, carHireCautionFee: 25000, crossBorderProcessingFee: 30000, crossBorderBasePerPassenger: 90000, returnMultiplier: 2, weekendSurchargePercent: 0, nightSurchargePercent: 0, ...(rulesSnap.data()?.value || {}) };
-  const vehicles = Array.isArray(vehiclesSnap.data()?.value) ? vehiclesSnap.data()!.value : [];
-  const packages = Array.isArray(packagesSnap.data()?.value) ? packagesSnap.data()!.value : [];
-  const states = Array.isArray(statesSnap.data()?.value) ? statesSnap.data()!.value : [];
-  const countries = Array.isArray(countriesSnap.data()?.value) ? countriesSnap.data()!.value : [];
-  const cars = Array.isArray(carsSnap.data()?.value) ? carsSnap.data()!.value : [];
+  const vehicles = Array.isArray(vehiclesSnap.data()?.value) && vehiclesSnap.data()!.value.length ? vehiclesSnap.data()!.value : defaultVehicles;
+  const packages = Array.isArray(packagesSnap.data()?.value) && packagesSnap.data()!.value.length ? packagesSnap.data()!.value : company.touringPackages;
+  const states = Array.isArray(statesSnap.data()?.value) && statesSnap.data()!.value.length ? statesSnap.data()!.value : company.touringStates;
+  const countries = Array.isArray(countriesSnap.data()?.value) && countriesSnap.data()!.value.length ? countriesSnap.data()!.value : company.internationalTours;
+  const cars = Array.isArray(carsSnap.data()?.value) && carsSnap.data()!.value.length ? carsSnap.data()!.value : company.carHireOptions;
   const hubs = hubsSnap.docs.map((document) => ({ id: document.id, ...document.data() } as Record<string, any>));
   const service = input.serviceType.toLowerCase();
-  const snapshot = input.pricingSnapshot || {};
-  let basePrice = 0;
-  let extraFee = 0;
-  let feeLabel = "Service fee";
   let routeMetadata: Awaited<ReturnType<typeof getRouteDistance>> = null;
 
   if (service.includes("long") || service.includes("short") || service.includes("distance")) {
     const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase());
     if (vehicles.length > 0 && !vehicle) throw new HttpError(422, "The selected vehicle class is no longer available");
     routeMetadata = await getRouteDistance(input.pickup, input.destination);
-    const distanceKm = routeMetadata?.distanceKm || Math.max(Number(snapshot.distanceKm || 0), 1);
-    const kmRate = Number(vehicle?.kmRate || rules.pricePerKm);
-    basePrice = Math.round(distanceKm * kmRate * (input.isReturn ? Number(rules.returnMultiplier) : 1));
-    extraFee = Number(rules.standardServiceFee);
-    feeLabel = `${distanceKm} km at NGN ${kmRate}/km plus service fee`;
   } else if (service.includes("car hire")) {
     const car = cars.find((item: any) => item.id === input.carHireVehicle);
     if (cars.length > 0 && !car) throw new HttpError(422, "The selected hire vehicle is no longer in the fleet catalogue");
@@ -542,49 +536,48 @@ async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSc
     if (hubs.length > 0 && (!selectedHub || selectedHub.active === false)) {
       throw new HttpError(422, "The selected pickup location is no longer available");
     }
-    const genericVehicle = vehicles.find((item: any) => String(item.title).toLowerCase().includes("car hire")) || {};
-    const days = Math.max(Number(input.carHireDurationDays || 1), 1);
-    basePrice = Number(car?.pricePerDay || genericVehicle.price || 70000) * days;
-    extraFee = Number(rules.carHireCautionFee) + (input.carHireWithDriver ? Number(rules.carHireDriverDailyFee) * days : 0);
-    feeLabel = "Refundable caution deposit and selected driver fee";
   } else if (service.includes("tour")) {
-    const packageFallbacks: Record<string, number> = { "city discovery": 90000, "cultural trail": 140000, "signature escape": 200000, "grand expedition": 280000, "royal journey": 400000 };
     const selectedPackage = packages.find((item: any) => item.id === input.touringPackage || item.name === input.touringPackage || item.title === input.touringPackage) || {};
     const state = states.find((item: any) => item.name === input.touringState) || {};
     if (packages.length > 0 && !Object.keys(selectedPackage).length) throw new HttpError(422, "The selected touring package is no longer available");
     if (states.length > 0 && !Object.keys(state).length) throw new HttpError(422, "The selected touring destination is no longer available");
-    const packageKey = String(input.touringPackage || "city discovery").toLowerCase();
-    basePrice = Math.round(Number(selectedPackage.price || packageFallbacks[packageKey] || 90000) * Number(state.factor || 1));
-    extraFee = input.tourGuideNeeded ? Number(rules.tourGuideFee) : 0;
-    feeLabel = `${selectedPackage.locations || snapshot.locations || "Curated"} planned sightseeing stops`;
   } else if (service.includes("cross-border") || service.includes("cross border")) {
     const country = countries.find((item: any) => item.name === input.internationalCountry);
     if (countries.length > 0 && !country) throw new HttpError(422, "The selected international destination is no longer available");
-    const passengers = Math.max(Number(input.passengerCount || 1), 1);
-    basePrice = Math.round(Number(rules.crossBorderBasePerPassenger) * passengers * Number(country?.factor || 1.1));
-    extraFee = input.borderClearanceHelp ? Number(rules.crossBorderProcessingFee) : 0;
-    feeLabel = `${passengers} passenger${passengers === 1 ? "" : "s"}${extraFee ? " plus border support" : ""}`;
   } else if (service.includes("pickup") || service.includes("logistics")) {
-    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase().includes("logistics")) || {};
     routeMetadata = await getRouteDistance(input.pickup, input.destination);
-    const distanceKm = routeMetadata?.distanceKm || Math.max(Number(snapshot.distanceKm || 0), 1);
-    const weightKg = Math.max(Number(input.packageWeightKg || 1), 1);
-    basePrice = Number(vehicle.price || 65000) + Math.round(distanceKm * Number(rules.logisticsPricePerKm));
-    extraFee = Number(rules.pickupLogisticsFee) + Math.round(weightKg * Number(rules.pricePerKg));
-    feeLabel = `${distanceKm} km route, handling and ${weightKg} kg cargo`;
-  } else {
-    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase()) || {};
-    basePrice = Number(vehicle.price || 25000);
-    extraFee = Number(rules.standardServiceFee);
   }
 
-  const subtotal = Math.round(basePrice + extraFee);
-  const travelDate = new Date(`${input.date}T${input.time}:00`);
-  const weekend = [0, 6].includes(travelDate.getDay());
-  const night = travelDate.getHours() < 6 || travelDate.getHours() >= 22;
-  const weekendSurcharge = weekend ? Math.round(subtotal * Number(rules.weekendSurchargePercent || 0) / 100) : 0;
-  const nightSurcharge = night ? Math.round(subtotal * Number(rules.nightSurchargePercent || 0) / 100) : 0;
-  return { basePrice, extraFee, feeLabel, weekendSurcharge, nightSurcharge, total: subtotal + weekendSurcharge + nightSurcharge, routeMetadata };
+  const quote = calculateBookingQuote(
+    {
+      serviceType: input.serviceType,
+      vehicleClass: input.vehicleClass,
+      date: input.date,
+      time: input.time,
+      distanceKm: routeMetadata?.distanceKm || input.distanceKm,
+      isReturn: input.isReturn,
+      carHireVehicle: input.carHireVehicle,
+      carHireDurationDays: input.carHireDurationDays,
+      carHireWithDriver: input.carHireWithDriver,
+      touringPackage: input.touringPackage,
+      touringState: input.touringState,
+      tourGuideNeeded: input.tourGuideNeeded,
+      internationalCountry: input.internationalCountry,
+      passengerCount: input.passengerCount,
+      borderClearanceHelp: input.borderClearanceHelp,
+      packageWeightKg: input.packageWeightKg,
+    },
+    {
+      rules,
+      vehicles,
+      touringPackages: packages,
+      touringStates: states,
+      internationalTours: countries,
+      carHireOptions: cars,
+    },
+  );
+
+  return { ...quote, routeMetadata };
 }
 
 function getFirebaseAuth() {

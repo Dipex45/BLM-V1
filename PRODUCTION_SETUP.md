@@ -12,9 +12,21 @@ Railway uses `railway.json`, builds with `npm ci && npm run build`, starts with 
 
 - Browser config: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`, `VITE_FIRESTORE_DATABASE_ID`
 - Server config: `FIREBASE_PROJECT_ID` and either `FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`
-- Enable Email/Password and Google in Firebase Authentication.
+- In Firebase Console > Authentication > Sign-in method, enable Email/Password, Google, and Apple.
 - Add the Vercel and Railway/custom domains to Authentication > Settings > Authorized domains.
 - Deploy rules with `firebase deploy --only firestore:rules,storage` from the production Firebase project.
+
+#### Apple sign-in configuration
+
+Apple sign-in does not use an application environment variable. Configure it in Firebase Authentication with credentials from the Apple Developer portal:
+
+1. Create a Sign in with Apple Services ID for the production website domain.
+2. Register `https://gen-lang-client-0039054423.firebaseapp.com/__/auth/handler` as the return URL in that Services ID.
+3. Create a Sign in with Apple key and download its `.p8` private key. Apple permits this file to be downloaded only once.
+4. Copy the Apple Team ID, Services ID, Key ID, and private-key contents into Firebase Console > Authentication > Sign-in method > Apple.
+5. Test both a normal Apple email and Apple's Hide My Email relay flow on the production domain.
+
+Never commit the `.p8` key or paste it into a frontend environment variable.
 
 ### Payments
 

@@ -126,9 +126,9 @@ export const company = {
     { name: 'Togo', factor: 1.08 },
   ],
   carHireOptions: [
-    { id: 'toyota-corolla', name: 'Toyota Corolla', seats: 4, desc: 'Sedan for airport transfer, meetings, and city travel.', image: '/brand/car-01.webp' },
-    { id: 'toyota-highlander', name: 'Toyota Highlander', seats: 6, desc: 'Spacious crossover for family and executive movement.', image: '/brand/car-02.webp' },
-    { id: 'bus-mini', name: 'Mini Bus', seats: 14, desc: 'Group travel for events, tours, and shared pickups.', image: '/brand/car-03.webp' },
+    { id: 'toyota-corolla', name: 'Toyota Corolla', seats: 4, pricePerDay: 70000, available: true, desc: 'Sedan for airport transfer, meetings, and city travel.', image: '/brand/car-01.webp' },
+    { id: 'toyota-highlander', name: 'Toyota Highlander', seats: 6, pricePerDay: 110000, available: true, desc: 'Spacious crossover for family and executive movement.', image: '/brand/car-02.webp' },
+    { id: 'bus-mini', name: 'Mini Bus', seats: 14, pricePerDay: 150000, available: true, desc: 'Group travel for events, tours, and shared pickups.', image: '/brand/car-03.webp' },
   ],
   pricingRules: {
     pricePerKm: 350,
@@ -138,12 +138,16 @@ export const company = {
     internationalTourPerLocation: 25000,
     pickupLogisticsFee: 22000,
     pricePerKg: 1200,
+    tourGuideFee: 15000,
     carHireCautionFee: 25000,
+    carHireDriverDailyFee: 10000,
     crossBorderProcessingFee: 30000,
     crossBorderBasePerPassenger: 90000,
     defaultRouteFactor: 1,
     returnMultiplier: 2,
     maxTouringLocations: 20,
+    weekendSurchargePercent: 0,
+    nightSurchargePercent: 0,
   },
 };
 
