@@ -13,6 +13,14 @@ export default defineConfig(({mode}) => {
   return {
     plugins: [
       {
+        // Point canonical and social-preview links at the live address (APP_URL) at build time.
+        name: 'site-url',
+        transformIndexHtml(html: string) {
+          const siteUrl = (env.APP_URL || '').replace(/\/$/, '');
+          return siteUrl ? html.replaceAll('https://blm-v1.vercel.app', siteUrl) : html;
+        },
+      },
+      {
         name: 'search-verification-meta',
         transformIndexHtml() {
           return verificationTags.map((tag) => ({ tag: 'meta', attrs: tag, injectTo: 'head' as const }));
@@ -35,7 +43,7 @@ export default defineConfig(({mode}) => {
         output: {
           manualChunks(id) {
             const normalized = id.replace(/\\/g, '/');
-            if (normalized.includes('/src/screens/AdminDashboard')) return 'admin-dashboard';
+            if (normalized.includes('/src/screens/AdminDashboard') || normalized.includes('/src/screens/admin/')) return 'admin-dashboard';
             if (normalized.includes('/src/screens/')) return `screen-${normalized.split('/src/screens/')[1].split('.')[0].toLowerCase()}`;
             if (normalized.includes('/node_modules/recharts/') || normalized.includes('/node_modules/d3-')) return 'vendor-charts';
             if (normalized.includes('/node_modules/firebase/')) return 'vendor-firebase';

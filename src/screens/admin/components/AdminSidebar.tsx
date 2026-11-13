@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { AdminRole, AdminTab } from "../types";
+import { AdminRole, AdminTab, roleLabel } from "../types";
 
 type NavItem = {
   tab: AdminTab;
@@ -45,13 +45,13 @@ const commercial: NavItem[] = [
   },
   {
     tab: "hubs",
-    label: "Hubs",
+    label: "Pickup points",
     icon: "hub",
     roles: ["admin", "super_admin", "dispatcher"],
   },
   {
     tab: "schedules",
-    label: "Schedules",
+    label: "Closed days",
     icon: "event_busy",
     roles: ["admin", "super_admin", "dispatcher"],
   },
@@ -65,7 +65,7 @@ const configuration: NavItem[] = [
   },
   {
     tab: "admins",
-    label: "Roles",
+    label: "Staff access",
     icon: "admin_panel_settings",
     roles: ["admin", "super_admin"],
   },
@@ -73,24 +73,24 @@ const configuration: NavItem[] = [
 const insights: NavItem[] = [
   {
     tab: "analytics",
-    label: "Analytics",
+    label: "Reports",
     icon: "monitoring",
     roles: ["admin", "super_admin", "dispatcher", "finance_admin"],
   },
   { tab: "reviews", label: "Reviews", icon: "reviews", roles: allRoles },
   {
     tab: "maintenance",
-    label: "System health",
+    label: "System check",
     icon: "health_and_safety",
     roles: ["admin", "super_admin"],
   },
 ];
 
 const groups = [
-  { label: "Operations", items: operations },
-  { label: "Commercial", items: commercial },
-  { label: "Configuration", items: configuration },
-  { label: "Insights", items: insights },
+  { label: "Day to day", items: operations },
+  { label: "Prices and places", items: commercial },
+  { label: "Setup", items: configuration },
+  { label: "Reports", items: insights },
 ];
 
 interface AdminSidebarProps {
@@ -110,7 +110,7 @@ function SidebarContent({
   return (
     <div className="flex h-full flex-col bg-[#151719] text-white">
       <div className="border-b border-white/10 px-5 py-5">
-        <p className="text-sm font-bold">Operations Console</p>
+        <p className="text-sm font-bold">Admin panel</p>
         <p className="mt-1 text-xs text-white/60">BLM Motors</p>
       </div>
       <nav
@@ -150,7 +150,7 @@ function SidebarContent({
         })}
       </nav>
       <div className="border-t border-white/10 px-5 py-4 text-xs text-white/55">
-        Role: {role.replaceAll("_", " ")}
+        Your access: {roleLabel(role)}
       </div>
     </div>
   );

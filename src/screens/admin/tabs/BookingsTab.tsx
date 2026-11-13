@@ -23,6 +23,7 @@ type Props = {
   ) => Promise<void>;
   onLoadMore: () => void;
   hasMore: boolean;
+  checkpointSuggestions: string[];
 };
 
 export default function BookingsTab({
@@ -37,6 +38,7 @@ export default function BookingsTab({
   onCheckpoint,
   onLoadMore,
   hasMore,
+  checkpointSuggestions,
 }: Props) {
   const [selected, setSelected] = useState<any | null>(null);
   const [dateFrom, setDateFrom] = useState("");
@@ -59,10 +61,10 @@ export default function BookingsTab({
         <div className="flex flex-col gap-4 border-b border-outline px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-              Booking operations
+              All bookings
             </h2>
             <p className="mt-1 text-xs text-on-surface-variant">
-              Open a row for route history, tracking, and dispatch controls.
+              Click a booking to see details, assign a driver or post an update.
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
@@ -118,7 +120,7 @@ export default function BookingsTab({
                       {booking.trackingId || booking.id?.slice(-8)}
                     </p>
                     <p className="mt-1 text-xs text-on-surface-variant">
-                      {booking.date || "Date pending"}
+                      {booking.date || "No date yet"}
                     </p>
                   </td>
                   <td className={tableCellClass}>
@@ -174,7 +176,7 @@ export default function BookingsTab({
           <EmptyState
             icon="route"
             title="No bookings found"
-            description="Bookings matching the active search and date filters will appear here."
+            description="Try a different search or date range."
           />
         )}
         {hasMore && (
@@ -205,7 +207,7 @@ export default function BookingsTab({
             <motion.aside
               role="dialog"
               aria-modal="true"
-              aria-label="Booking details"
+              aria-label="Booking detailss"
               className="fixed bottom-0 right-0 top-0 z-[90] w-full max-w-xl overflow-y-auto bg-white shadow-2xl"
               initial={{ x: "100%" }}
               animate={{ x: 0 }}
@@ -215,7 +217,7 @@ export default function BookingsTab({
               <header className="sticky top-0 z-10 flex items-start justify-between border-b border-outline bg-white px-5 py-4">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-                    Booking detail
+                    Booking details
                   </p>
                   <h2 className="mt-1 font-mono text-lg font-bold">
                     {selected.trackingId || selected.id}
@@ -244,7 +246,7 @@ export default function BookingsTab({
                 </div>
                 <section>
                   <h3 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-                    Lifecycle
+                    Status
                   </h3>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <StatusBadge status={selected.status} />
@@ -255,7 +257,7 @@ export default function BookingsTab({
                 </section>
                 {canUpdateStatus && (
                   <section className="rounded-lg border border-outline p-4">
-                    <h3 className="text-sm font-bold">Update status</h3>
+                    <h3 className="text-sm font-bold">Change status</h3>
                     <select
                       value={selected.status}
                       onChange={async (event) => {
@@ -268,6 +270,7 @@ export default function BookingsTab({
                       className="mt-3 h-11 w-full rounded-md border border-outline bg-surface-container px-3 text-sm"
                     >
                       <option>Quoted</option>
+                      <option>Booked</option>
                       <option>Paid</option>
                       <option>Confirmed</option>
                       <option>Dispatched</option>
@@ -282,7 +285,7 @@ export default function BookingsTab({
                     selected.status,
                   ) && (
                     <section className="rounded-lg border border-outline p-4">
-                      <h3 className="text-sm font-bold">Driver assignment</h3>
+                      <h3 className="text-sm font-bold">Assign a driver</h3>
                       <div className="mt-3 flex flex-col gap-3 sm:flex-row">
                         <select
                           value={
@@ -313,7 +316,7 @@ export default function BookingsTab({
                           }}
                           className="h-11 rounded-md border border-outline px-4 text-sm font-bold hover:border-primary hover:text-primary"
                         >
-                          Auto assign
+                          Pick for me
                         </button>
                       </div>
                     </section>
@@ -331,11 +334,12 @@ export default function BookingsTab({
                       setSelected(null);
                     }}
                   >
-                    <h3 className="text-sm font-bold">Tracking checkpoint</h3>
+                    <h3 className="text-sm font-bold">Post a trip update</h3>
                     <label className="mt-3 block text-sm font-semibold">
-                      Customer-facing location
+                      Where is the trip now? (customer sees this)
                       <input
                         required
+                        list="checkpoint-suggestions"
                         value={checkpoint}
                         onChange={(event) => setCheckpoint(event.target.value)}
                         className="mt-1.5 h-11 w-full rounded-md border border-outline bg-surface-container px-3 text-sm"
@@ -356,8 +360,11 @@ export default function BookingsTab({
                         <option>Completed</option>
                       </select>
                     </label>
+                    <datalist id="checkpoint-suggestions">
+                      {checkpointSuggestions.map((item) => <option key={item} value={item} />)}
+                    </datalist>
                     <button className="mt-4 h-10 w-full rounded-md bg-primary px-4 text-sm font-bold text-white hover:bg-primary-container">
-                      Save checkpoint
+                      Post update
                     </button>
                   </form>
                 )}

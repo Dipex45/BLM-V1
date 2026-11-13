@@ -112,7 +112,7 @@ export function useAdminFeedback() {
             </p>
             {confirmation.requireReason && (
               <label className="mt-4 block text-sm font-semibold">
-                Reason required
+                Please give a reason
                 <textarea
                   autoFocus
                   rows={3}

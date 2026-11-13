@@ -22,7 +22,7 @@ function loadGoogleMaps(apiKey: string) {
     script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&v=weekly`;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Google Maps could not be loaded.'));
+    script.onerror = () => reject(new Error('The map couldn’t load.'));
     document.head.appendChild(script);
   });
   return window.__blmGoogleMapsPromise;
@@ -53,7 +53,7 @@ export default function LiveTrackingMap({ location }: { location: Location }) {
           markerRef.current = new window.google.maps.Marker({
             map: mapRef.current,
             position,
-            title: 'BLM vehicle location',
+            title: 'Your BLM car',
           });
         } else {
           mapRef.current.panTo(position);
@@ -65,14 +65,14 @@ export default function LiveTrackingMap({ location }: { location: Location }) {
   }, [apiKey, location.latitude, location.longitude]);
 
   if (!apiKey) {
-    return <p className="rounded-lg border border-outline bg-surface-container p-4 text-xs font-semibold text-on-surface-variant">Live coordinates are available, but the map provider is not configured.</p>;
+    return <p className="rounded-lg border border-outline bg-surface-container p-4 text-xs font-semibold text-on-surface-variant">We know where the car is, but the map isn’t available right now.</p>;
   }
 
   return (
     <div className="space-y-2">
       <div ref={containerRef} className="h-72 w-full overflow-hidden rounded-lg border border-outline bg-surface-container" aria-label="Live vehicle location map" />
       {error && <p role="alert" className="text-xs font-semibold text-error">{error}</p>}
-      {location.heartbeatAt && <p className="text-[11px] font-medium text-on-surface-variant">Last location update: {new Date(location.heartbeatAt).toLocaleString()}</p>}
+      {location.heartbeatAt && <p className="text-[11px] font-medium text-on-surface-variant">Location last updated: {new Date(location.heartbeatAt).toLocaleString()}</p>}
     </div>
   );
 }

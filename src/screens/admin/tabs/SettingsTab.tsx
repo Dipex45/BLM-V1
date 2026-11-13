@@ -10,6 +10,7 @@ type Props = {
   internationalTours: any[];
   carHireOptions: any[];
   trackingLocations: string[];
+  routes: string[];
   bankConfig: BankAccountConfig;
   featureFlags: Record<string, boolean>;
   currencyRates: Record<string, number>;
@@ -18,15 +19,16 @@ type Props = {
 };
 
 const sections = [
-  ["pricing", "Pricing rules", "calculate"],
+  ["pricing", "Fees and charges", "calculate"],
   ["packages", "Tour packages", "tour"],
-  ["states", "Nigeria tours", "map"],
-  ["international", "International tours", "public"],
-  ["fleet", "Car hire fleet", "car_rental"],
-  ["tracking", "Tracking locations", "pin_drop"],
-  ["currency", "Currency rates", "currency_exchange"],
+  ["states", "Tour states", "map"],
+  ["international", "Countries", "public"],
+  ["fleet", "Hire cars", "car_rental"],
+  ["routes", "Routes we cover", "alt_route"],
+  ["tracking", "Trip update places", "pin_drop"],
+  ["currency", "Exchange rates", "currency_exchange"],
   ["bank", "Bank account", "account_balance"],
-  ["providers", "Providers", "toggle_on"],
+  ["providers", "Payment and message options", "toggle_on"],
 ] as const;
 
 export default function SettingsTab(props: Props) {
@@ -72,13 +74,13 @@ export default function SettingsTab(props: Props) {
         {active === "packages" && (
           <ObjectList
             title="Tour packages"
-            description="Customers choose one package; the location count is fixed here by operations."
+            description="The tours customers can choose from."
             items={props.touringPackages}
             fields={[
               ["title", "Package name", "text"],
-              ["locations", "Sightseeing stops", "number"],
-              ["days", "Duration (days)", "number"],
-              ["price", "Base price (NGN)", "number"],
+              ["locations", "Number of stops", "number"],
+              ["days", "Number of days", "number"],
+              ["price", "Price (₦)", "number"],
               ["desc", "Description", "text"],
             ]}
             newItem={{
@@ -94,25 +96,25 @@ export default function SettingsTab(props: Props) {
         )}
         {active === "states" && (
           <ObjectList
-            title="Nigeria touring destinations"
-            description="Lagos stays at the lowest multiplier; distance and operating complexity can increase other state factors."
+            title="Tour states"
+            description="Each state’s price multiplier. 1 = normal price, 1.2 = 20% more."
             items={props.touringStates}
             fields={[
-              ["name", "State or destination", "text"],
-              ["factor", "Price multiplier", "number"],
+              ["name", "State", "text"],
+              ["factor", "Price multiplier (1 = normal)", "number"],
             ]}
-            newItem={{ name: "New destination", factor: 1 }}
+            newItem={{ name: "New state", factor: 1 }}
             onSave={(value) => props.onSave("touring_states", value)}
           />
         )}
         {active === "international" && (
           <ObjectList
-            title="International touring destinations"
-            description="Manage supported West African tour countries and route multipliers."
+            title="Countries"
+            description="Countries for cross-border trips and their price multiplier. 1.1 = 10% more."
             items={props.internationalTours}
             fields={[
-              ["name", "Country or route", "text"],
-              ["factor", "Price multiplier", "number"],
+              ["name", "Country", "text"],
+              ["factor", "Price multiplier (1 = normal)", "number"],
             ]}
             newItem={{ name: "New country", factor: 1.1 }}
             onSave={(value) => props.onSave("international_tours", value)}
@@ -127,10 +129,18 @@ export default function SettingsTab(props: Props) {
         )}
         {active === "tracking" && (
           <StringList
-            title="Customer tracking locations"
-            description="These labels appear in the simple checkpoint animation instead of a live map."
+            title="Trip update places"
+            description="Place names staff can pick quickly when posting a trip update."
             items={props.trackingLocations}
             onSave={(value) => props.onSave("tracking_locations", value)}
+          />
+        )}
+        {active === "routes" && (
+          <StringList
+            title="Routes we cover"
+            description="Shown on the home page, services page and at the bottom of every page."
+            items={props.routes}
+            onSave={(value) => props.onSave("routes", value)}
           />
         )}
         {active === "currency" && (
@@ -188,24 +198,24 @@ function PricingRules({
   const [draft, setDraft] = useState(values);
   useEffect(() => setDraft(values), [values]);
   const labels: Record<string, string> = {
-    pricePerKm: "Distance trip price per km",
-    logisticsPricePerKm: "Logistics distance price per km",
-    standardServiceFee: "Standard service fee",
-    touringPerLocation: "Touring per-location fee",
-    internationalTourPerLocation: "International tour per-location fee",
-    pickupLogisticsFee: "Pickup and logistics handling fee",
-    pricePerKg: "Logistics price per kg",
-    carHireCautionFee: "Car hire caution fee",
-    crossBorderProcessingFee: "Cross-border processing fee",
-    crossBorderBasePerPassenger: "Cross-border base per passenger",
-    defaultRouteFactor: "Default route multiplier",
-    returnMultiplier: "Return trip multiplier",
-    maxTouringLocations: "Maximum tour locations",
+    pricePerKm: "Price per km (if a car has no price set)",
+    logisticsPricePerKm: "Delivery price per km",
+    standardServiceFee: "Booking fee (rides)",
+    touringPerLocation: "Tour price per stop (if a tour has no price)",
+    internationalTourPerLocation: "Cross-border price per stop",
+    pickupLogisticsFee: "Delivery handling fee",
+    pricePerKg: "Delivery price per kg",
+    carHireCautionFee: "Car hire refundable deposit",
+    crossBorderProcessingFee: "Border help fee",
+    crossBorderBasePerPassenger: "Cross-border price per passenger",
+    defaultRouteFactor: "Default price multiplier",
+    returnMultiplier: "Return trip multiplier (2 = double)",
+    maxTouringLocations: "Most stops allowed on a tour",
   };
   return (
     <Card
-      title="Pricing rules"
-      description="Authoritative server-side values used for future quotes. Existing booking snapshots are not rewritten."
+      title="Fees and charges"
+      description="Used to work out prices for new bookings. Existing bookings keep their price."
     >
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
         {Object.entries(draft).map(([key, value]) => (
@@ -317,7 +327,7 @@ function ObjectList({
         }
         className="mt-4 inline-flex h-10 items-center gap-2 rounded-md border border-outline px-4 text-sm font-bold hover:border-primary hover:text-primary"
       >
-        <span className="material-symbols-outlined text-lg">add</span>Add row
+        <span className="material-symbols-outlined text-lg">add</span>Add
       </button>
       <SaveBar
         changed={JSON.stringify(draft) !== JSON.stringify(items)}
@@ -373,10 +383,10 @@ function StringList({
       </div>
       <button
         type="button"
-        onClick={() => setDraft((current) => [...current, "New checkpoint"])}
+        onClick={() => setDraft((current) => [...current, "New place"])}
         className="mt-4 h-10 rounded-md border border-outline px-4 text-sm font-bold hover:border-primary hover:text-primary"
       >
-        + Add location
+        + Add place
       </button>
       <SaveBar
         changed={JSON.stringify(draft) !== JSON.stringify(items)}
@@ -399,8 +409,8 @@ function FleetEditor({
   useEffect(() => setDraft(items), [items]);
   return (
     <Card
-      title="Car hire fleet"
-      description="Manage every customer-visible hire vehicle, image, seat count, availability, and daily rate."
+      title="Hire cars"
+      description="The cars customers can hire: photo, seats, daily price and whether they’re available."
     >
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         {draft.map((car, index) => (
@@ -547,7 +557,7 @@ function FleetEditor({
         }
         className="mt-4 h-10 rounded-md border border-outline px-4 text-sm font-bold hover:border-primary hover:text-primary"
       >
-        + Add vehicle
+        + Add car
       </button>
       <SaveBar
         changed={JSON.stringify(draft) !== JSON.stringify(items)}
@@ -569,9 +579,22 @@ function CurrencyEditor({
   useEffect(() => setDraft(supported), [supported]);
   return (
     <Card
-      title="Currency rates"
-      description="Rates express one Nigerian naira in the selected currency. Automatic internet rates can be synced from the page header."
+      title="Exchange rates"
+      description="How much ₦1 is worth in each currency. Customers see and pay with these exact rates."
     >
+      <button
+        type="button"
+        onClick={async () => {
+          const response = await fetch("https://open.er-api.com/v6/latest/NGN");
+          const body = await response.json();
+          if (body?.result !== "success") throw new Error("Market rates are unavailable right now");
+          setDraft((current) => Object.fromEntries(Object.keys(current).map((code) => [code, code === "NGN" ? 1 : Number(body.rates?.[code]) || current[code as keyof typeof current]])) as typeof current);
+        }}
+        className="mt-4 inline-flex h-9 items-center gap-2 rounded-md border border-outline px-3 text-xs font-bold hover:border-primary hover:text-primary"
+      >
+        <span className="material-symbols-outlined text-base">sync</span>
+        Get today’s rates (check them, then save)
+      </button>
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
         {Object.entries(draft).map(([code, rate]) => (
           <label key={code} className="text-sm font-semibold">
@@ -614,13 +637,13 @@ function BankEditor({
     ["branchName", "Branch", "text"],
     ["contactPhone", "Support phone", "tel"],
     ["contactEmail", "Support email", "email"],
-    ["deadlineHours", "Payment deadline (hours)", "number"],
-    ["instructions", "Customer instructions", "text"],
+    ["deadlineHours", "Hours customers have to pay", "number"],
+    ["instructions", "Instructions for customers", "text"],
   ];
   return (
     <Card
-      title="Official bank account"
-      description="These authoritative details are presented only when manual transfer is enabled."
+      title="Bank account"
+      description="Shown to customers who choose to pay by bank transfer."
     >
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
         {fields.map(([key, label, type]) => (
@@ -665,8 +688,8 @@ function ProviderEditor({
   useEffect(() => setDraft(values), [values]);
   return (
     <Card
-      title="Operational providers"
-      description="Enable a provider only after its production credentials, webhook, and delivery verification are complete."
+      title="Payment and message options"
+      description="Turn an option on only after it has been fully set up and tested."
     >
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         {Object.entries(draft).map(([key, enabled]) => (
@@ -674,7 +697,7 @@ function ProviderEditor({
             key={key}
             className="flex min-h-14 items-center justify-between gap-4 rounded-lg border border-outline bg-surface-container/30 px-4 text-sm font-semibold"
           >
-            <span className="capitalize">{key.replace(/([A-Z])/g, " $1")}</span>
+            <span>{({ paystack: "Paystack payments", stripe: "Card payments (Stripe)", manualBankTransfer: "Bank transfer", liveTracking: "Live map tracking", whatsappNotifications: "WhatsApp messages", smsNotifications: "SMS messages", french: "French language" } as Record<string, string>)[key] || key}</span>
             <input
               type="checkbox"
               checked={enabled}

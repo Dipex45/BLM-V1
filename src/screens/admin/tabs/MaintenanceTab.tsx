@@ -32,14 +32,14 @@ export default function MaintenanceTab({
     <div className="grid gap-6 xl:grid-cols-2">
       <section className="rounded-lg border border-outline bg-white p-5 shadow-sm">
         <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-          Archive retained bookings
+          Tidy up old bookings
         </h2>
         <p className="mt-2 text-sm leading-6 text-on-surface-variant">
-          Moves up to 200 completed or cancelled bookings older than 90 days
-          into the audit archive. This is a server-side, logged operation.
+          Moves up to 200 finished or cancelled bookings older than 90 days
+          into the archive. They aren’t deleted, and this action is recorded.
         </p>
         <label className="mt-5 block text-sm font-semibold">
-          Required reason
+          Reason
           <textarea
             value={reason}
             onChange={(event) => setReason(event.target.value)}
@@ -55,8 +55,7 @@ export default function MaintenanceTab({
             className="mt-1 h-4 w-4 accent-primary"
           />
           <span>
-            I confirm that these records have passed the active operational
-            retention period.
+            I confirm we no longer need these bookings day to day.
           </span>
         </label>
         <button
@@ -68,8 +67,8 @@ export default function MaintenanceTab({
               const count = await onArchive(reason);
               setMessage(
                 count
-                  ? `${count} bookings archived.`
-                  : "No qualifying bookings found.",
+                  ? `${count} bookings moved to the archive.`
+                  : "There are no old bookings to move.",
               );
               setReason("");
               setConfirmed(false);
@@ -79,7 +78,7 @@ export default function MaintenanceTab({
           }}
           className="mt-5 h-10 w-full rounded-md bg-red-700 px-4 text-sm font-bold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {busy ? "Archiving..." : "Archive eligible bookings"}
+          {busy ? "Moving…" : "Move old bookings to archive"}
         </button>
         {message && (
           <p className="mt-3 text-sm font-semibold text-on-surface">
@@ -90,11 +89,10 @@ export default function MaintenanceTab({
 
       <section className="rounded-lg border border-outline bg-white p-5 shadow-sm">
         <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-          Data diagnostics
+          Check for problems
         </h2>
         <p className="mt-2 text-sm leading-6 text-on-surface-variant">
-          Checks current bookings, payments, drivers, and failed notification
-          records from the trusted API.
+          Looks through bookings, payments, drivers and messages that failed to send.
         </p>
         <button
           type="button"
@@ -109,7 +107,7 @@ export default function MaintenanceTab({
           }}
           className="mt-5 h-10 rounded-md border border-outline bg-white px-4 text-sm font-bold hover:border-primary hover:text-primary"
         >
-          Run diagnostics
+          Run check
         </button>
         {result && (
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -121,7 +119,7 @@ export default function MaintenanceTab({
             </div>
             <div className="rounded-lg bg-surface-container p-4">
               <p className="text-xs text-on-surface-variant">
-                Failed notifications
+                Messages that failed to send
               </p>
               <p className="mt-1 text-xl font-bold">
                 {result.counts.failedNotifications}

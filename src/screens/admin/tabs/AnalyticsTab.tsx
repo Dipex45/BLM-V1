@@ -114,13 +114,13 @@ export default function AnalyticsTab({
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KPICard
-          label="Total revenue"
+          label="Money earned"
           value={formatPrice(data.totalRevenue)}
           icon="payments"
           tone="green"
         />
         <KPICard
-          label="Active bookings"
+          label="Trips in progress"
           value={data.active}
           icon="local_shipping"
           tone="blue"
@@ -142,13 +142,13 @@ export default function AnalyticsTab({
         <div className="mt-6 rounded-lg border border-outline bg-white">
           <EmptyState
             icon="monitoring"
-            title="No analytics data"
-            description="No bookings fall within the selected date range."
+            title="Nothing to show yet"
+            description="There are no bookings in this date range."
           />
         </div>
       ) : (
         <div className="mt-6 grid gap-6 xl:grid-cols-2">
-          <Chart title="Revenue trend">
+          <Chart title="Money earned over time">
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={data.dailyRevenue}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -167,7 +167,7 @@ export default function AnalyticsTab({
               </LineChart>
             </ResponsiveContainer>
           </Chart>
-          <Chart title="Booking status">
+          <Chart title="Bookings by status">
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
                 <Pie
@@ -189,7 +189,7 @@ export default function AnalyticsTab({
             </ResponsiveContainer>
           </Chart>
           <div className="xl:col-span-2">
-            <Chart title="Revenue by vehicle class">
+            <Chart title="Money earned by car type">
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={data.revenueByVehicle}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />

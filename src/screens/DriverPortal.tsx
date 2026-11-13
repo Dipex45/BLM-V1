@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { apiGet, apiPost } from '../lib/api';
+import { apiErrorMessage, apiGet, apiPost } from '../lib/api';
+import { statusLabel } from '../hooks/useMyBookings';
 
 type DriverJob = {
   id: string;
@@ -33,7 +34,7 @@ export default function DriverPortal() {
       setData(response.data);
       setError('');
     } catch (loadError: any) {
-      setError(loadError.response?.data?.error || 'Driver jobs could not be loaded.');
+      setError(apiErrorMessage(loadError, 'We couldn’t load your trips.'));
     } finally {
       setLoading(false);
     }
@@ -51,7 +52,7 @@ export default function DriverPortal() {
       await apiPost('/api/drivers/me/availability', { state });
       await load();
     } catch (actionError: any) {
-      setError(actionError.response?.data?.error || 'Availability could not be updated.');
+      setError(apiErrorMessage(actionError, 'We couldn’t change your status. Please try again.'));
     } finally {
       setBusy('');
     }
@@ -63,7 +64,7 @@ export default function DriverPortal() {
       await apiPost('/api/drivers/jobs/action', { bookingId: job.id, action });
       await load();
     } catch (actionError: any) {
-      setError(actionError.response?.data?.error || 'The job status could not be updated.');
+      setError(apiErrorMessage(actionError, 'We couldn’t update this trip. Please try again.'));
     } finally {
       setBusy('');
     }
@@ -77,7 +78,7 @@ export default function DriverPortal() {
       return;
     }
     if (!navigator.geolocation) {
-      setError('This device does not support location sharing.');
+      setError('This phone can’t share its location.');
       return;
     }
     watchId.current = navigator.geolocation.watchPosition(
@@ -93,10 +94,10 @@ export default function DriverPortal() {
           heading: position.coords.heading ?? undefined,
           speedKph: position.coords.speed == null ? undefined : Math.max(0, position.coords.speed * 3.6),
           accuracy: position.coords.accuracy,
-        }).catch((locationError) => setError(locationError.response?.data?.error || 'A location update failed.'));
+        }).catch((locationError) => setError(apiErrorMessage(locationError, 'We couldn’t send your location.')));
       },
       (locationError) => {
-        setError(locationError.message || 'Location permission was denied.');
+        setError(locationError.message || 'Please allow location access to share your location.');
         setSharing(false);
       },
       { enableHighAccuracy: true, maximumAge: 10_000, timeout: 20_000 },
@@ -115,13 +116,13 @@ export default function DriverPortal() {
       <div className="mx-auto max-w-3xl space-y-6">
         <header className="flex flex-col gap-4 border-b border-outline pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase text-primary">Driver operations</p>
-            <h1 className="mt-1 text-3xl font-black text-on-surface">Today&apos;s jobs</h1>
+            <p className="text-xs font-bold uppercase text-primary">Driver</p>
+            <h1 className="mt-1 text-3xl font-black text-on-surface">My trips</h1>
             <p className="mt-1 text-sm text-on-surface-variant">{data?.driver.profile?.name || data?.driver.name || 'BLM driver'}</p>
           </div>
           <button type="button" onClick={toggleLocation} className={`inline-flex min-h-12 items-center justify-center gap-2 rounded-lg px-5 text-sm font-bold ${sharing ? 'bg-green-700 text-white' : 'border border-outline bg-white text-on-surface'}`}>
             <span className="material-symbols-outlined text-lg">{sharing ? 'location_on' : 'location_off'}</span>
-            {sharing ? 'Location sharing on' : 'Share live location'}
+            {sharing ? 'Sharing my location' : 'Share my location'}
           </button>
         </header>
 
@@ -129,12 +130,12 @@ export default function DriverPortal() {
 
         <section className="flex items-center justify-between gap-4 rounded-lg border border-outline bg-white p-4">
           <div>
-            <p className="text-sm font-bold text-on-surface">Availability</p>
-            <p className="text-xs capitalize text-on-surface-variant">Currently {availability}</p>
+            <p className="text-sm font-bold text-on-surface">Can you take trips?</p>
+            <p className="text-xs text-on-surface-variant">You are {availability === 'available' ? 'available' : availability === 'assigned' ? 'on a trip' : 'offline'}</p>
           </div>
           <div className="flex rounded-lg border border-outline p-1">
             {(['available', 'offline'] as const).map((state) => (
-              <button key={state} type="button" disabled={Boolean(busy)} onClick={() => setAvailability(state)} className={`rounded-md px-4 py-2 text-xs font-bold capitalize ${availability === state ? 'bg-primary text-white' : 'text-on-surface-variant'}`}>{state}</button>
+              <button key={state} type="button" disabled={Boolean(busy)} onClick={() => setAvailability(state)} className={`rounded-md px-4 py-2 text-xs font-bold ${availability === state ? 'bg-primary text-white' : 'text-on-surface-variant'}`}>{state === 'available' ? 'Available' : 'Offline'}</button>
             ))}
           </div>
         </section>
@@ -147,24 +148,24 @@ export default function DriverPortal() {
                   <p className="text-[11px] font-bold uppercase text-primary">{job.serviceType}</p>
                   <h2 className="mt-1 font-mono text-lg font-black text-on-surface">{job.trackingId}</h2>
                 </div>
-                <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary">{job.status}</span>
+                <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary">{statusLabel(job.status)}</span>
               </div>
               <div className="space-y-4 p-5">
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div><p className="text-[11px] font-bold uppercase text-on-surface-variant">Pickup</p><p className="mt-1 text-sm font-bold text-on-surface">{job.pickup || 'To be confirmed'}</p></div>
-                  <div><p className="text-[11px] font-bold uppercase text-on-surface-variant">Destination</p><p className="mt-1 text-sm font-bold text-on-surface">{job.destination || 'To be confirmed'}</p></div>
+                  <div><p className="text-[11px] font-bold uppercase text-on-surface-variant">Pickup</p><p className="mt-1 text-sm font-bold text-on-surface">{job.pickup || 'Not set yet'}</p></div>
+                  <div><p className="text-[11px] font-bold uppercase text-on-surface-variant">Destination</p><p className="mt-1 text-sm font-bold text-on-surface">{job.destination || 'Not set yet'}</p></div>
                 </div>
-                <p className="text-xs font-semibold text-on-surface-variant">{[job.date, job.time].filter(Boolean).join(' at ') || 'Dispatch schedule pending'} | {job.customerName}</p>
+                <p className="text-xs font-semibold text-on-surface-variant">{[job.date, job.time].filter(Boolean).join(' at ') || 'Time not set yet'} | {job.customerName}</p>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {job.status === 'Paid' && <><button type="button" onClick={() => act(job, 'accept')} className="rounded-lg bg-primary px-3 py-3 text-xs font-bold text-white">Accept</button><button type="button" onClick={() => act(job, 'reject')} className="rounded-lg border border-error px-3 py-3 text-xs font-bold text-error">Reject</button></>}
-                  {job.status === 'Confirmed' && <button type="button" onClick={() => act(job, 'arrived')} className="rounded-lg bg-primary px-3 py-3 text-xs font-bold text-white">Arrived at pickup</button>}
+                  {job.status === 'Paid' && <><button type="button" onClick={() => act(job, 'accept')} className="rounded-lg bg-primary px-3 py-3 text-xs font-bold text-white">Accept</button><button type="button" onClick={() => act(job, 'reject')} className="rounded-lg border border-error px-3 py-3 text-xs font-bold text-error">Decline</button></>}
+                  {job.status === 'Confirmed' && <button type="button" onClick={() => act(job, 'arrived')} className="rounded-lg bg-primary px-3 py-3 text-xs font-bold text-white">I’ve arrived at pickup</button>}
                   {job.status === 'Dispatched' && <button type="button" onClick={() => act(job, 'in_transit')} className="rounded-lg bg-primary px-3 py-3 text-xs font-bold text-white">Start trip</button>}
-                  {job.status === 'InTransit' && <button type="button" onClick={() => act(job, 'completed')} className="rounded-lg bg-green-700 px-3 py-3 text-xs font-bold text-white">Complete trip</button>}
+                  {job.status === 'InTransit' && <button type="button" onClick={() => act(job, 'completed')} className="rounded-lg bg-green-700 px-3 py-3 text-xs font-bold text-white">Trip finished</button>}
                 </div>
               </div>
             </article>
           ))}
-          {data?.jobs.length === 0 && <div className="rounded-lg border border-outline bg-white p-10 text-center"><p className="font-bold text-on-surface">No active jobs</p><p className="mt-1 text-sm text-on-surface-variant">New assignments will appear here.</p></div>}
+          {data?.jobs.length === 0 && <div className="rounded-lg border border-outline bg-white p-10 text-center"><p className="font-bold text-on-surface">No trips right now</p><p className="mt-1 text-sm text-on-surface-variant">New trips will show up here.</p></div>}
         </div>
       </div>
     </div>

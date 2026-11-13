@@ -1,2765 +1,385 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, QueryDocumentSnapshot, startAfter } from 'firebase/firestore';
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import { db, storage } from '../lib/firebase';
+import { apiDelete, apiErrorMessage, apiGet, apiPost } from '../lib/api';
 import { useAuth } from '../hooks/useAuth';
-import { db, storage, handleFirestoreError, OperationType } from '../lib/firebase';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { 
-  collection, 
-  getDocs, 
-  getDoc,
-  doc, 
-  setDoc, 
-  updateDoc, 
-  addDoc, 
-  deleteDoc,
-  query,
-  orderBy,
-  limit,
-  startAfter
-} from 'firebase/firestore';
+import { invalidateCatalog, useCatalog } from '../hooks/useCatalog';
+import { useCurrency } from '../contexts/CurrencyContext';
+import type { BankAccountConfig, PaymentRecord } from '../lib/payments/types';
+import AdminSidebar from './admin/components/AdminSidebar';
+import AdminHeader from './admin/components/AdminHeader';
+import AdminSkeleton from './admin/components/AdminSkeleton';
+import { useAdminFeedback } from './admin/hooks/useAdminFeedback';
+import type { AdminRole, AdminTab } from './admin/types';
+import BookingsTab from './admin/tabs/BookingsTab';
+import PaymentsTab from './admin/tabs/PaymentsTab';
+import SupportTab from './admin/tabs/SupportTab';
+import DriversTab from './admin/tabs/DriversTab';
+import PricesTab from './admin/tabs/PricesTab';
+import HubsTab from './admin/tabs/HubsTab';
+import SchedulesTab from './admin/tabs/SchedulesTab';
+import SettingsTab from './admin/tabs/SettingsTab';
+import AdminsTab from './admin/tabs/AdminsTab';
+import AnalyticsTab from './admin/tabs/AnalyticsTab';
+import ReviewsTab from './admin/tabs/ReviewsTab';
+import MaintenanceTab from './admin/tabs/MaintenanceTab';
 
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell,
-  LineChart,
-  Line,
-  Legend
-} from 'recharts';
+const PAGE_SIZE = 25;
 
-import { useCurrency } from '../hooks/useCurrency';
-import { logAudit, AuditAction } from '../lib/audit';
-import { apiDelete, apiPost } from '../lib/api';
-import { company, defaultVehicles } from '../lib/company';
-import { paymentService } from '../lib/payments/paymentService';
-import { PaymentRecord, BankAccountConfig } from '../lib/payments/types';
-import { DEFAULT_BANK_CONFIG } from '../lib/payments/bankConfig';
+const EMPTY_BANK: BankAccountConfig = {
+  bankName: '',
+  accountName: '',
+  accountNumber: '',
+  branchName: '',
+  currency: 'NGN',
+  instructions: 'Transfer the exact amount and use your BLM payment reference as the narration.',
+  deadlineHours: 24,
+  contactPhone: '',
+  contactEmail: '',
+  referencePrefix: 'BLM',
+  requireProofUpload: true,
+};
 
-const defaultTrackingLocations = [
-  'Package in Badagry',
-  'Package on route to Cotonou',
-  'Package in Ikeja',
-  'Package on route to Togo',
-];
-
-const adminTabs = [
-  'bookings',
-  'payments',
-  'prices',
-  'settings',
-  'hubs',
-  'schedules',
-  'drivers',
-  'admins',
-  'analytics',
-  'reviews',
-  'maintenance',
-] as const;
-
-type AdminTab = (typeof adminTabs)[number];
+const rows = <T,>(snapshot: { docs: QueryDocumentSnapshot[] }) => snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as T);
+const byNewest = (a: any, b: any) => (b.createdAt?.toMillis?.() ?? Date.parse(b.createdAt) ?? 0) - (a.createdAt?.toMillis?.() ?? Date.parse(a.createdAt) ?? 0);
 
 export default function AdminDashboard() {
   const { user } = useAuth();
-  const { formatPrice, convertPrice, rates, isLiveRates, lastRateUpdate, refreshRates } = useCurrency();
-  const [activeTab, setActiveTab] = useState<AdminTab>('bookings');
+  const { formatPrice } = useCurrency();
+  const { catalog } = useCatalog();
+  const { notify, confirmAction, requestForm, feedbackLayer } = useAdminFeedback();
+
+  const role = (user?.role || 'customer_support_agent') as AdminRole;
+  const isSuper = role === 'super_admin' || role === 'admin';
+  const canDispatch = isSuper || role === 'dispatcher';
+  const canFinance = isSuper || role === 'finance_admin';
+  const canSupport = isSuper || role === 'customer_support_agent';
+
+  const [activeTab, setActiveTab] = useState<AdminTab>(() => {
+    const saved = sessionStorage.getItem('blm-admin-tab') as AdminTab | null;
+    return saved || 'bookings';
+  });
+  const [navOpen, setNavOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [testNairaAmount, setTestNairaAmount] = useState<number>(50000);
-  const [refreshingLiveRates, setRefreshingLiveRates] = useState<boolean>(false);
-  const [rateFeedback, setRateFeedback] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
-  const handleSyncInternetRates = async () => {
-    setRefreshingLiveRates(true);
-    setRateFeedback(null);
-    try {
-      const ok = await refreshRates();
-      if (ok) {
-        setRateFeedback('Live exchange rates updated successfully from real-time internet feed.');
-      } else {
-        setRateFeedback('Unable to reach internet rate feed. Fallback rates in use.');
-      }
-    } catch (err) {
-      setRateFeedback('Error synchronizing rates.');
-    } finally {
-      setRefreshingLiveRates(false);
-      setTimeout(() => setRateFeedback(null), 6000);
-    }
-  };
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('All');
-  const isSuperAdmin = user?.role === 'super_admin' || user?.role === 'admin';
-  
-  // Data States
   const [bookings, setBookings] = useState<any[]>([]);
+  const [cursor, setCursor] = useState<QueryDocumentSnapshot | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [analyticsBookings, setAnalyticsBookings] = useState<any[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
-  const [paymentFilter, setPaymentFilter] = useState<string>('All');
-  const [selectedPaymentProof, setSelectedPaymentProof] = useState<PaymentRecord | null>(null);
-  const [rejectModalPayment, setRejectModalPayment] = useState<PaymentRecord | null>(null);
-  const [rejectionReasonInput, setRejectionReasonInput] = useState('');
-  const [selectedAuditPayment, setSelectedAuditPayment] = useState<PaymentRecord | null>(null);
-  const [trackingUpdateBooking, setTrackingUpdateBooking] = useState<any | null>(null);
-  const [newTrackingCheckpoint, setNewTrackingCheckpoint] = useState('');
-  const [newTrackingStatus, setNewTrackingStatus] = useState('InTransit');
-  const [bankConfigSettings, setBankConfigSettings] = useState<BankAccountConfig>(DEFAULT_BANK_CONFIG);
-
+  const [tickets, setTickets] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
-  const [prices, setPrices] = useState<any[]>([]);
-  const [touringStates, setTouringStates] = useState<any[]>([]);
-  const [internationalTours, setInternationalTours] = useState<any[]>([]);
-  const [carHireOptions, setCarHireOptions] = useState<any[]>([]);
-  const [pricingRulesSettings, setPricingRulesSettings] = useState(company.pricingRules);
-  const [trackingLocationsSettings, setTrackingLocationsSettings] = useState<string[]>([]);
   const [blockedDays, setBlockedDays] = useState<any[]>([]);
   const [admins, setAdmins] = useState<any[]>([]);
-  const [drivers, setDrivers] = useState<any[]>([]);
   const [reviews, setReviews] = useState<any[]>([]);
-  const [analyticsData, setAnalyticsData] = useState<any>(null);
-  const [lastVisible, setLastVisible] = useState<any>(null);
-  const [hasMore, setHasMore] = useState(true);
+  const [bankConfig, setBankConfig] = useState<BankAccountConfig>(EMPTY_BANK);
 
   useEffect(() => {
-    fetchData();
+    sessionStorage.setItem('blm-admin-tab', activeTab);
   }, [activeTab]);
 
-  const fetchData = async (loadMore = false) => {
-    if (!loadMore) {
-      setLoading(true);
-      setBookings([]);
-      setLastVisible(null);
-      setHasMore(true);
-    }
-    
-    setError(null);
+  const loadBookings = useCallback(async (more = false) => {
+    const base = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
+    const snapshot = await getDocs(more && cursor ? query(collection(db, 'bookings'), orderBy('createdAt', 'desc'), startAfter(cursor), limit(PAGE_SIZE)) : base);
+    const next = rows<any>(snapshot);
+    setBookings((current) => (more ? [...current, ...next] : next));
+    setCursor(snapshot.docs[snapshot.docs.length - 1] || null);
+    setHasMore(snapshot.docs.length === PAGE_SIZE);
+  }, [cursor]);
+
+  const loadTab = useCallback(async (tab: AdminTab) => {
+    setLoading(true);
+    setLoadError(null);
     try {
-      if (activeTab === 'bookings') {
-        let q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'), limit(15));
-        
-        if (loadMore && lastVisible) {
-          q = query(collection(db, 'bookings'), orderBy('createdAt', 'desc'), startAfter(lastVisible), limit(15));
+      switch (tab) {
+        case 'bookings':
+          await Promise.all([loadBookings(false), getDocs(collection(db, 'drivers')).then((snap) => setDrivers(rows(snap)))]);
+          break;
+        case 'payments':
+          setPayments(rows<PaymentRecord>(await getDocs(query(collection(db, 'payments'), orderBy('createdAt', 'desc'), limit(300)))));
+          break;
+        case 'support':
+          setTickets((await apiGet<{ tickets: any[] }>('/api/support/tickets')).data.tickets);
+          break;
+        case 'drivers':
+          setDrivers(rows<any>(await getDocs(collection(db, 'drivers'))).sort(byNewest));
+          break;
+        case 'hubs':
+          setHubs(rows<any>(await getDocs(collection(db, 'hubs'))));
+          break;
+        case 'schedules':
+          setBlockedDays(rows<any>(await getDocs(collection(db, 'blocked_dates'))).sort((a, b) => String(a.date).localeCompare(String(b.date))));
+          break;
+        case 'admins':
+          setAdmins(rows<any>(await getDocs(collection(db, 'admins'))));
+          break;
+        case 'analytics':
+          setAnalyticsBookings(rows<any>(await getDocs(query(collection(db, 'bookings'), orderBy('createdAt', 'desc'), limit(2000)))));
+          break;
+        case 'reviews':
+          setReviews(rows<any>(await getDocs(collection(db, 'reviews'))).sort(byNewest));
+          break;
+        case 'settings': {
+          const bank = await getDoc(doc(db, 'settings', 'bank_accounts'));
+          setBankConfig({ ...EMPTY_BANK, ...(bank.data()?.value || {}) });
+          await invalidateCatalog();
+          break;
         }
-
-        const snap = await getDocs(q);
-        const newBookings = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        
-        setLastVisible(snap.docs[snap.docs.length - 1]);
-        setHasMore(snap.docs.length === 15);
-        
-        if (loadMore) {
-          setBookings(prev => [...prev, ...newBookings]);
-        } else {
-          setBookings(newBookings);
-        }
-      } else if (activeTab === 'payments') {
-        const allPayments = await paymentService.getAllPayments();
-        setPayments(allPayments);
-      } else if (activeTab === 'hubs') {
-        const snap = await getDocs(collection(db, 'hubs'));
-        setHubs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } else if (activeTab === 'prices') {
-        const snap = await getDocs(collection(db, 'settings'));
-        const p = snap.docs.find(d => d.id === 'vehicle_types')?.data()?.value || [];
-        if (p.length === 0) {
-           const defaults = [
-             ...defaultVehicles,
-           ];
-           setPrices(defaults);
-        } else {
-           setPrices(p);
-        }
-      } else if (activeTab === 'settings') {
-        const snap = await getDocs(collection(db, 'settings'));
-        const touringSettings = snap.docs.find(d => d.id === 'touring_states')?.data()?.value || company.touringStates;
-        const internationalSettings = snap.docs.find(d => d.id === 'international_tours')?.data()?.value || company.internationalTours;
-        const carHireSettings = snap.docs.find(d => d.id === 'car_hire_options')?.data()?.value || company.carHireOptions;
-        const pricingRules = snap.docs.find(d => d.id === 'pricing_rules')?.data()?.value || company.pricingRules;
-        const trackingSettings = snap.docs.find(d => d.id === 'tracking_locations')?.data()?.value || defaultTrackingLocations;
-        const bankSettings = snap.docs.find(d => d.id === 'bank_accounts')?.data()?.value || DEFAULT_BANK_CONFIG;
-        setTouringStates(Array.isArray(touringSettings) ? touringSettings : company.touringStates);
-        setInternationalTours(Array.isArray(internationalSettings) ? internationalSettings : company.internationalTours);
-        setCarHireOptions(Array.isArray(carHireSettings) ? carHireSettings : company.carHireOptions);
-        setPricingRulesSettings({ ...company.pricingRules, ...(pricingRules || {}) });
-        setTrackingLocationsSettings(Array.isArray(trackingSettings) ? trackingSettings : defaultTrackingLocations);
-        setBankConfigSettings({ ...DEFAULT_BANK_CONFIG, ...(bankSettings || {}) });
-      } else if (activeTab === 'schedules') {
-        const snap = await getDocs(collection(db, 'blocked_dates'));
-        setBlockedDays(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } else if (activeTab === 'admins') {
-        const snap = await getDocs(collection(db, 'admins'));
-        setAdmins(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } else if (activeTab === 'drivers') {
-        const snap = await getDocs(collection(db, 'drivers'));
-        setDrivers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } else if (activeTab === 'reviews') {
-        const snap = await getDocs(collection(db, 'reviews'));
-        setReviews(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } else if (activeTab === 'analytics') {
-        // Fetch ALL bookings for deep analysis
-        const snap = await getDocs(collection(db, 'bookings'));
-        const allBookings = snap.docs.map(d => d.data());
-        
-        // Calculate Analytics
-        const revenueByVehicle = allBookings.reduce((acc: any, b: any) => {
-          if (b.status === 'Booked' || b.status === 'Completed' || b.status === 'Paid') {
-            acc[b.vehicleClass] = (acc[b.vehicleClass] || 0) + (b.totalAmount || 0);
-          }
-          return acc;
-        }, {});
-
-        const statusCounts = allBookings.reduce((acc: any, b: any) => {
-          acc[b.status] = (acc[b.status] || 0) + 1;
-          return acc;
-        }, {});
-
-        const dailyRevenue = allBookings.reduce((acc: any, b: any) => {
-          if (b.status === 'Booked' || b.status === 'Completed' || b.status === 'Paid') {
-            acc[b.date] = (acc[b.date] || 0) + (b.totalAmount || 0);
-          }
-          return acc;
-        }, {});
-
-          setAnalyticsData({
-            revenueByVehicle: Object.entries(revenueByVehicle).map(([name, value]) => ({ name, value })),
-            statusCounts: Object.entries(statusCounts).map(([name, value]) => ({ name, value })),
-            dailyRevenue: Object.entries(dailyRevenue).map(([date, amount]) => ({ date, amount })).sort((a, b) => a.date.localeCompare(b.date)),
-            totalRevenue: allBookings.filter((b: any) => ['Booked', 'Completed', 'Paid', 'Confirmed', 'Dispatched'].includes(b.status)).reduce((sum: number, b: any) => sum + (b.totalAmount || 0), 0),
-            activeVectors: allBookings.filter((b: any) => ['Paid', 'Confirmed', 'Dispatched'].includes(b.status)).length,
-            completedManifests: allBookings.filter((b: any) => b.status === 'Completed').length,
-            cancelledVectors: allBookings.filter((b: any) => b.status === 'Cancelled').length,
-            recurringPercentage: (allBookings.filter((b: any) => b.isRecurring).length / (allBookings.length || 1) * 100).toFixed(1)
-          });
+        case 'prices':
+          await invalidateCatalog();
+          break;
+        default:
+          break;
       }
-    } catch (err: any) {
-      console.error(err);
-      if (err.message.includes('the client is offline')) {
-        setError("Network connection issue. System is currently offline.");
-      } else {
-        setError("Failed to fetch administrative data.");
-      }
+    } catch (error: any) {
+      setLoadError(error?.code === 'permission-denied'
+        ? 'You don’t have access to this yet. Try signing out and back in. If it still doesn’t work, ask your site administrator to check your staff access.'
+        : apiErrorMessage(error, 'We couldn’t load this section. Please try again.'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [loadBookings]);
 
-  const handleUpdatePrice = async (index: number, newPrice: number) => {
+  useEffect(() => { void loadTab(activeTab); }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Run an API action with toast feedback; reloads the active tab on success. */
+  const act = async (action: () => Promise<unknown>, success: string, reload = true) => {
     try {
-      const updated = [...prices];
-      const oldPrice = updated[index].price;
-      updated[index].price = newPrice;
-      setPrices(updated);
-      await setDoc(doc(db, 'settings', 'vehicle_types'), { key: 'vehicle_types', value: updated });
-      
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        vehicle: updated[index].title,
-        oldPrice,
-        newPrice
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/vehicle_types');
+      await action();
+      notify(success, 'success');
+      if (reload) await loadTab(activeTab);
+    } catch (error) {
+      notify(apiErrorMessage(error), 'error');
+      throw error;
     }
   };
+  /** Errors are already shown as a toast by `act`; swallow them for fire-and-forget handlers. */
+  const quiet = (promise: Promise<unknown>): Promise<void> => promise.then(() => undefined, () => undefined);
 
-  const handleApprovePayment = async (payment: PaymentRecord) => {
-    if (!window.confirm(`Approve payment of ${formatPrice(payment.amount)} for booking #${payment.bookingId}?`)) return;
-    try {
-      setLoading(true);
-      await paymentService.verifyPayment(payment.id, user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', 'Payment approved in admin verification panel');
-      await logAudit(user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', AuditAction.UPDATE_BOOKING_STATUS, {
-        action: 'PAYMENT_APPROVED',
-        paymentId: payment.id,
-        bookingId: payment.bookingId,
-        amount: payment.amount,
-      });
-      const updated = await paymentService.getAllPayments();
-      setPayments(updated);
-    } catch (err: any) {
-      alert(err.message || 'Failed to approve payment');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const saveSetting = (key: string, value: unknown) =>
+    quiet(act(async () => {
+      await apiPost(`/api/admin/settings/${key}`, { value });
+      await invalidateCatalog();
+    }, 'Saved. Customers will see the change straight away.', false));
 
-  const handleConfirmRejectPayment = async () => {
-    if (!rejectModalPayment) return;
-    if (!rejectionReasonInput.trim()) {
-      alert('Please provide a mandatory reason for rejection.');
-      return;
-    }
-    try {
-      setLoading(true);
-      await paymentService.rejectPayment(rejectModalPayment.id, user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', rejectionReasonInput.trim());
-      await logAudit(user?.uid || 'admin', user?.email || 'admin@blmmotors.ng', AuditAction.UPDATE_BOOKING_STATUS, {
-        action: 'PAYMENT_REJECTED',
-        paymentId: rejectModalPayment.id,
-        reason: rejectionReasonInput.trim(),
-      });
-      setRejectModalPayment(null);
-      setRejectionReasonInput('');
-      const updated = await paymentService.getAllPayments();
-      setPayments(updated);
-    } catch (err: any) {
-      alert(err.message || 'Failed to reject payment');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const visibleBookings = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return bookings;
+    return bookings.filter((booking) => `${booking.trackingId} ${booking.id} ${booking.customerName} ${booking.customerEmail} ${booking.pickup} ${booking.destination}`.toLowerCase().includes(term));
+  }, [bookings, search]);
 
-  const handleToggleReconciliation = async (payment: PaymentRecord) => {
-    try {
-      const newReconState = !payment.isReconciled;
-      const paymentRef = doc(db, 'payments', payment.id);
-      await updateDoc(paymentRef, {
-        isReconciled: newReconState,
-        reconciledAt: newReconState ? new Date().toISOString() : null,
-        reconciledBy: newReconState ? user?.email : null,
-        updatedAt: new Date().toISOString(),
-      });
-      const updated = await paymentService.getAllPayments();
-      setPayments(updated);
-    } catch (err: any) {
-      alert(err.message || 'Failed to update reconciliation status');
-    }
-  };
-
-  const handleSaveBankConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      await setDoc(doc(db, 'settings', 'bank_accounts'), { key: 'bank_accounts', value: bankConfigSettings });
-      await logAudit(user?.uid || 'admin', user?.email || 'admin', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_BANK_CONFIG',
-        bankName: bankConfigSettings.bankName,
-      });
-      alert('Bank account configuration saved successfully!');
-    } catch (err) {
-      alert('Failed to save bank configuration');
-    }
-  };
-
-  const handleSaveTrackingUpdate = async () => {
-    if (!trackingUpdateBooking || !newTrackingCheckpoint.trim()) return;
-    try {
-      setLoading(true);
-      const bRef = doc(db, 'bookings', trackingUpdateBooking.id);
-      const newEvent = {
-        id: `evt-${Date.now()}`,
-        type: newTrackingStatus,
-        createdAt: new Date().toISOString(),
-        location: newTrackingCheckpoint.trim(),
-        notes: `Checkpoint updated: ${newTrackingCheckpoint.trim()}`,
-      };
-      const existingEvents = Array.isArray(trackingUpdateBooking.events) ? trackingUpdateBooking.events : [];
-      await updateDoc(bRef, {
-        currentCheckpoint: newTrackingCheckpoint.trim(),
-        status: newTrackingStatus,
-        events: [...existingEvents, newEvent],
-        updatedAt: new Date().toISOString(),
-      });
-      setTrackingUpdateBooking(null);
-      setNewTrackingCheckpoint('');
-      fetchData();
-    } catch (err: any) {
-      alert(err.message || 'Failed to update tracking');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleUpdateVehicleTypes = async (updated: any[]) => {
-    try {
-      setPrices(updated);
-      await setDoc(doc(db, 'settings', 'vehicle_types'), { key: 'vehicle_types', value: updated });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_VEHICLE_TYPES',
-        count: updated.length
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/vehicle_types');
-    }
-  };
-
-  const handleAddVehicleType = async () => {
-    const title = window.prompt('New service or vehicle class name?');
-    if (!title?.trim()) return;
-    const price = parseInt(window.prompt('Base price in NGN?') || '0');
-    const desc = window.prompt('Short description?') || '';
-    const icon = window.prompt('Material icon name?') || 'directions_car';
-    await handleUpdateVehicleTypes([...prices, {
-      title: title.trim(),
-      desc,
-      price: Number.isFinite(price) && price > 0 ? price : 10000,
-      icon,
-    }]);
-  };
-
-  const handleUpdatePricingRules = async (updated: typeof company.pricingRules) => {
-    try {
-      setPricingRulesSettings(updated);
-      await setDoc(doc(db, 'settings', 'pricing_rules'), { key: 'pricing_rules', value: updated });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_PRICING_RULES'
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/pricing_rules');
-    }
-  };
-
-  const handleUpdateTouringStates = async (updated: any[]) => {
-    try {
-      setTouringStates(updated);
-      await setDoc(doc(db, 'settings', 'touring_states'), { key: 'touring_states', value: updated });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_TOURING_STATES',
-        count: updated.length
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/touring_states');
-    }
-  };
-
-  const handleUpdateInternationalTours = async (updated: any[]) => {
-    try {
-      setInternationalTours(updated);
-      await setDoc(doc(db, 'settings', 'international_tours'), { key: 'international_tours', value: updated });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_INTERNATIONAL_TOURS',
-        count: updated.length
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/international_tours');
-    }
-  };
-
-  const handleUpdateCarHireOptions = async (updated: any[]) => {
-    try {
-      setCarHireOptions(updated);
-      await setDoc(doc(db, 'settings', 'car_hire_options'), { key: 'car_hire_options', value: updated });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_CAR_HIRE_OPTIONS',
-        count: updated.length
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/car_hire_options');
-    }
-  };
-
-  const handleUpdateTrackingLocations = async (updated: string[]) => {
-    try {
-      setTrackingLocationsSettings(updated);
-      await setDoc(doc(db, 'settings', 'tracking_locations'), { key: 'tracking_locations', value: updated });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UPDATE_TRACKING_LOCATIONS',
-        count: updated.length
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'settings/tracking_locations');
-    }
-  };
-
-  const handleAddTouringState = async () => {
-    const name = window.prompt('New touring state name?');
-    if (!name?.trim()) return;
-    const factor = parseFloat(window.prompt('Price multiplier for this state? (e.g. 1.15)') || '1');
-    if (Number.isNaN(factor)) return;
-    await handleUpdateTouringStates([...touringStates, { name: name.trim(), factor }]);
-  };
-
-  const handleAddInternationalTour = async () => {
-    const name = window.prompt('New international tour name?');
-    if (!name?.trim()) return;
-    const factor = parseFloat(window.prompt('Price multiplier for this route? (e.g. 1.2)') || '1');
-    if (Number.isNaN(factor)) return;
-    await handleUpdateInternationalTours([...internationalTours, { name: name.trim(), factor }]);
-  };
-
-  const handleAddCarHireOption = async () => {
-    const name = window.prompt('New car hire option name?');
-    if (!name?.trim()) return;
-    const seats = parseInt(window.prompt('Number of seats?') || '4');
-    const pricePerDay = parseInt(window.prompt('Daily hire rate in NGN?') || '70000');
-    const desc = window.prompt('Short description for this car option?') || '';
-    const image = window.prompt('Optional image URL for this car option?') || '';
-    await handleUpdateCarHireOptions([...carHireOptions, {
-      id: name.trim().toLowerCase().replace(/\s+/g, '-'),
-      name: name.trim(),
-      seats: isNaN(seats) ? 4 : seats,
-      pricePerDay: isNaN(pricePerDay) ? 70000 : pricePerDay,
-      available: true,
-      desc,
-      image,
-    }]);
-  };
-
-  const handleAddTrackingLocation = async () => {
-    const location = window.prompt('New tracking location label?');
-    if (!location?.trim()) return;
-    await handleUpdateTrackingLocations([...trackingLocationsSettings, location.trim()]);
-  };
-
-  const handleAddHub = async (e: any) => {
-    e.preventDefault();
-    try {
-      const name = e.target.hubName.value;
-      const address = e.target.hubAddress.value;
-      const docRef = await addDoc(collection(db, 'hubs'), { name, address, active: true });
-      
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'ADD_HUB',
-        hubId: docRef.id,
-        name
-      });
-
-      e.target.reset();
-      fetchData();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'hubs');
-    }
-  };
-
-  const handleDeleteHub = async (id: string, name: string) => {
-    if (!window.confirm(`Are you absolutely sure you want to remove ${name}? This could affect scheduled routes.`)) return;
-    try {
-      await deleteDoc(doc(db, 'hubs', id));
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'DELETE_HUB',
-        hubId: id,
-        name
-      });
-      fetchData();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `hubs/${id}`);
-    }
-  };
-
-  const unblockDate = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'blocked_dates', id));
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'UNBLOCK_DATE',
-        id
-      });
-      fetchData();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `blocked_dates/${id}`);
-    }
-  };
-
-  const updateBookingStatus = async (id: string, status: string, oldStatus: string, bookingData: any) => {
-    try {
-      setLoading(true);
-      
-      // If cancelling a paid booking, trigger refund
-      const wasPaid = (oldStatus === 'Booked' || oldStatus === 'Paid') && bookingData.paymentIntentId && bookingData.paymentProvider === 'stripe';
-      if (status === 'Cancelled' && wasPaid) {
-        if (window.confirm("This booking was paid for. Should we initialize an automatic refund via Stripe?")) {
-          const refundRes = await apiPost('/api/payment/stripe/refund', {
-            paymentIntentId: bookingData.paymentIntentId,
-            bookingId: id,
-            reason: 'admin_cancellation'
-          });
-          if (!refundRes.data?.success) throw new Error('Refund failed');
-          alert("Refund processed by Stripe.");
+  const updateStatus = async (booking: any, status: string) => {
+    let cancellationReason: string | undefined;
+    if (status === 'Cancelled') {
+      const reason = await confirmAction({ title: 'Cancel this booking?', message: 'We’ll let the customer know. If they’ve paid, they may need a refund.', confirmLabel: 'Cancel booking', requireReason: true, tone: 'danger' });
+      if (reason === null) return;
+      cancellationReason = reason;
+      if (booking.paymentProvider === 'stripe' && booking.paymentStatus === 'succeeded' && canFinance) {
+        const refund = await confirmAction({ title: 'Refund their card?', message: `Send ${formatPrice(booking.totalAmount || 0)} back to the customer’s card.`, confirmLabel: 'Refund now' });
+        if (refund !== null) {
+          await quiet(act(() => apiPost('/api/payment/stripe/refund', { bookingId: booking.id, reason: cancellationReason }), 'Refund sent and booking cancelled.'));
+          return;
         }
       }
+    }
+    await quiet(act(() => apiPost('/api/bookings/update-status', { bookingId: booking.id, status, cancellationReason }), `Booking updated.`));
+  };
 
-      // If assigning a driver or dispatching, trigger driver SMS
-      if ((status === 'Confirmed' || status === 'Dispatched') && bookingData.driverId) {
-        const driver = drivers.find(d => d.id === bookingData.driverId);
-        if (driver) {
-          await apiPost('/api/drivers/notify', {
-            driverId: driver.id,
-            driverPhone: driver.phone || '000-000-0000',
-            driverName: driver.name,
-            bookingId: id,
-            pickup: bookingData.pickup,
-            destination: bookingData.destination
-          });
-        }
-      }
-
-      await apiPost('/api/bookings/update-status', {
-        bookingId: id,
-        status,
-        assignedDriverId: bookingData.driverId || undefined,
-        cancellationReason: status === 'Cancelled' ? 'admin_status_update' : undefined
-      });
-
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_BOOKING, {
-        bookingId: id,
-        oldStatus,
-        newStatus: status,
-        refundTriggered: !!(status === 'Cancelled' && wasPaid)
-      });
-
-      fetchData();
-    } catch (err: any) {
-      console.error(err);
-      alert(`Update error: ${err.message}`);
-    } finally {
-      setLoading(false);
+  const content = () => {
+    if (loading) return <AdminSkeleton />;
+    if (loadError) {
+      return (
+        <div className="alert-error">
+          <span className="material-symbols-outlined">error</span>
+          <span className="flex-1">{loadError}</span>
+          <button type="button" onClick={() => loadTab(activeTab)} className="font-bold underline">Retry</button>
+        </div>
+      );
+    }
+    switch (activeTab) {
+      case 'bookings':
+        return (
+          <BookingsTab
+            bookings={visibleBookings}
+            drivers={drivers.filter((driver) => driver.onboarding?.state === 'approved')}
+            formatPrice={formatPrice}
+            canUpdateStatus={canDispatch || canSupport}
+            canAssign={canDispatch}
+            onStatus={updateStatus}
+            onAssign={(bookingId, driverId) => quiet(act(() => apiPost('/api/dispatch/assign', { bookingId, driverId }), 'Driver assigned. We’ve sent them a text.'))}
+            onAutoAssign={(bookingId) => quiet(act(() => apiPost('/api/dispatch/auto-assign', { bookingId }), 'An available driver has been assigned.'))}
+            onCheckpoint={(bookingId, location, status) => quiet(act(() => apiPost('/api/bookings/checkpoint', { bookingId, location, status }), 'Update posted. The customer can see it on their tracking page.'))}
+            onLoadMore={() => quiet(loadBookings(true))}
+            hasMore={hasMore && !search}
+            checkpointSuggestions={catalog?.trackingLocations || []}
+          />
+        );
+      case 'payments':
+        return (
+          <PaymentsTab
+            payments={payments}
+            formatPrice={formatPrice}
+            canManage={canFinance}
+            onApprove={(payment) => act(() => apiPost('/api/payment/manual/review', { paymentId: payment.id, decision: 'approve' }), 'Payment confirmed. The booking is now paid.')}
+            onReject={(payment, reason) => act(() => apiPost('/api/payment/manual/review', { paymentId: payment.id, decision: 'reject', reason }), 'Payment declined. The customer can upload a new receipt.')}
+            onReconcile={(payment) => act(() => apiPost('/api/admin/payments/reconcile', { paymentId: payment.id, reconciled: !payment.isReconciled }), payment.isReconciled ? 'Marked as not matched.' : 'Marked as matched to bank statement.')}
+          />
+        );
+      case 'support':
+        return <SupportTab tickets={tickets} onRefresh={() => loadTab('support')} />;
+      case 'drivers':
+        return (
+          <DriversTab
+            drivers={drivers}
+            canManage={canDispatch}
+            onOnboard={(input) => act(() => apiPost('/api/drivers/onboard', input), 'Driver added. Press Approve so they can start taking trips.')}
+            onStatus={async (driver, state) => {
+              const reason = state === 'approved' ? '' : await confirmAction({ title: `${state === 'suspended' ? 'Suspend' : 'Reject'} ${driver.name}?`, message: 'They’ll go offline and won’t get any trips.', confirmLabel: state === 'suspended' ? 'Suspend' : 'Reject', requireReason: true, tone: 'danger' });
+              if (reason === null) return;
+              await quiet(act(() => apiPost(`/api/admin/drivers/${driver.id}/status`, { state, reason: reason || undefined }), state === 'approved' ? 'Driver approved.' : 'Driver updated.'));
+            }}
+          />
+        );
+      case 'prices':
+        return catalog ? (
+          <PricesTab
+            prices={catalog.vehicles}
+            formatPrice={formatPrice}
+            onSave={(index, item) => saveSetting('vehicle_types', catalog.vehicles.map((vehicle, i) => (i === index ? { ...item, price: Number(item.price) || 0, kmRate: Number(item.kmRate) || undefined } : vehicle)))}
+            onAdd={async () => {
+              const values = await requestForm({
+                title: 'Add a car type',
+                fields: [
+                  { name: 'title', label: 'Name', required: true },
+                  { name: 'price', label: 'Starting price (₦)', type: 'number', required: true },
+                  { name: 'kmRate', label: 'Price per km (₦)', type: 'number' },
+                  { name: 'desc', label: 'Description' },
+                ],
+              });
+              if (!values) return;
+              await saveSetting('vehicle_types', [...catalog.vehicles, { title: values.title.trim(), price: Number(values.price) || 0, kmRate: Number(values.kmRate) || undefined, desc: values.desc || '', icon: 'directions_car' }]);
+            }}
+            onRemove={async (index, title) => {
+              if (catalog.vehicles.length <= 1) return notify('You need at least one car type.', 'error');
+              const ok = await confirmAction({ title: `Remove ${title}?`, message: 'Customers won’t be able to choose it any more. Existing bookings keep their price.', confirmLabel: 'Remove', tone: 'danger' });
+              if (ok === null) return;
+              await saveSetting('vehicle_types', catalog.vehicles.filter((_, i) => i !== index));
+            }}
+          />
+        ) : <AdminSkeleton />;
+      case 'hubs':
+        return (
+          <HubsTab
+            hubs={hubs}
+            onAdd={(name, address) => quiet(act(() => apiPost('/api/admin/hubs', { name, address }).then(invalidateCatalog), 'Pickup point added.'))}
+            onDelete={async (id, name) => {
+              const reason = await confirmAction({ title: `Remove ${name}?`, message: 'Customers won’t be able to choose this pickup point any more.', confirmLabel: 'Remove', requireReason: true, tone: 'danger' });
+              if (reason === null) return;
+              await quiet(act(() => apiDelete(`/api/admin/hubs/${id}`, { reason }).then(invalidateCatalog), 'Pickup point removed.'));
+            }}
+          />
+        );
+      case 'schedules':
+        return (
+          <SchedulesTab
+            blockedDays={blockedDays}
+            onBlock={(date, reason) => quiet(act(() => apiPost('/api/admin/blocked-dates', { date, reason }).then(invalidateCatalog), `${date} is now closed for bookings.`))}
+            onUnblock={async (id) => {
+              const reason = await confirmAction({ title: 'Open this day again?', message: 'Customers will be able to book this day again.', confirmLabel: 'Open', requireReason: true });
+              if (reason === null) return;
+              await quiet(act(() => apiDelete(`/api/admin/blocked-dates/${id}`, { reason }).then(invalidateCatalog), 'Day opened for bookings.'));
+            }}
+          />
+        );
+      case 'settings':
+        return catalog ? (
+          <SettingsTab
+            canFinance={canFinance}
+            canOperations={canDispatch || canFinance}
+            pricingRules={catalog.rules as unknown as Record<string, number>}
+            touringPackages={catalog.touringPackages}
+            touringStates={catalog.touringStates}
+            internationalTours={catalog.internationalTours}
+            carHireOptions={catalog.carHireOptions}
+            trackingLocations={catalog.trackingLocations}
+            routes={catalog.routes}
+            bankConfig={bankConfig}
+            featureFlags={catalog.features}
+            currencyRates={catalog.currencyRates}
+            onSave={saveSetting}
+            onUploadCarImage={async (file) => {
+              const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const fileRef = storageRef(storage, `car_hire/${Date.now()}-${safeName}`);
+              await uploadBytes(fileRef, file, { contentType: file.type });
+              return getDownloadURL(fileRef);
+            }}
+          />
+        ) : <AdminSkeleton />;
+      case 'admins':
+        return (
+          <AdminsTab
+            admins={admins}
+            currentUid={user?.uid}
+            onPromote={(account, nextRole) => quiet(act(() => apiPost('/api/admin/users/role', { account, role: nextRole }), `${account} now has access.`))}
+            onRevoke={async (uid, label) => {
+              const ok = await confirmAction({ title: `Remove ${label}?`, message: 'They’ll lose admin access straight away and be signed out.', confirmLabel: 'Remove access', tone: 'danger' });
+              if (ok === null) return;
+              await quiet(act(() => apiDelete(`/api/admin/users/role/${uid}`), 'Access removed.'));
+            }}
+          />
+        );
+      case 'analytics':
+        return <AnalyticsTab bookings={analyticsBookings} formatPrice={formatPrice} />;
+      case 'reviews':
+        return (
+          <ReviewsTab
+            reviews={reviews}
+            canModerate={canSupport || canDispatch}
+            onStatus={(review, status) => quiet(act(() => apiPost(`/api/admin/reviews/${review.id}/status`, { status }), status === 'hidden' ? 'Review hidden from the website.' : 'Review is now visible.'))}
+          />
+        );
+      case 'maintenance':
+        return (
+          <MaintenanceTab
+            onDiagnostics={async () => (await apiGet('/api/admin/maintenance/diagnostics')).data}
+            onArchive={async (reason) => (await apiPost<{ archived: number }>('/api/admin/maintenance/archive-bookings', { olderThanDays: 90, reason })).data.archived}
+          />
+        );
+      default:
+        return null;
     }
   };
-
-  const handlePromoteAdmin = async (e: any) => {
-    e.preventDefault();
-    const uid = e.target.userUid.value.trim();
-    if (!uid) return;
-    try {
-      await apiPost('/api/admin/users/role', { uid, role: 'dispatcher' });
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'PROMOTE_ADMIN',
-        targetUid: uid
-      });
-      e.target.reset();
-      fetchData();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `admins/${uid}`);
-    }
-  };
-
-  const handleRevokeAdmin = async (id: string) => {
-    if (!window.confirm("Are you sure you want to revoke these privileges?")) return;
-    try {
-      await apiDelete(`/api/admin/users/role/${id}`);
-      await logAudit(user?.uid || 'sys', user?.email || 'sys', AuditAction.UPDATE_SETTING, {
-        action: 'REVOKE_ADMIN',
-        targetUid: id
-      });
-      fetchData();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `admins/${id}`);
-    }
-  };
-
-  const exportBookingsCSV = () => {
-    const headers = ['Booking ID', 'Customer', 'Email', 'Pickup', 'Destination', 'Date', 'Amount', 'Status'];
-    const rows = bookings.map(b => [
-      b.id,
-      b.customerName,
-      b.customerEmail,
-      b.pickup,
-      b.destination,
-      b.date,
-      b.totalAmount,
-      b.status
-    ]);
-
-    const csvContent = "data:text/csv;charset=utf-8," 
-      + headers.join(",") + "\n" 
-      + rows.map(e => e.join(",")).join("\n");
-
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `blm_bookings_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const filteredBookings = bookings.filter(b => {
-    const matchesSearch = b.customerName?.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                         b.pickup?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         b.destination?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         b.id?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'All' || b.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
 
   return (
-    <div className="mx-auto min-h-screen w-full min-w-0 max-w-[1500px] bg-background px-3 py-4 sm:px-5 md:px-6 md:py-8 2xl:px-8">
-      <header className="flex flex-col gap-6 md:gap-8">
-        <div>
-          <div className="mb-2 flex flex-wrap items-center gap-2 sm:gap-3">
-            <span className="rounded-md bg-primary px-3 py-1 text-[10px] font-bold text-on-primary sm:text-xs">Admin access</span>
-            <span className="text-[10px] font-bold text-on-surface-variant sm:text-xs">Operations management</span>
-          </div>
-          <h1 className="text-2xl font-sans font-bold leading-none text-on-surface sm:text-3xl md:text-5xl">Admin panel.</h1>
-          <p className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-on-surface-variant sm:gap-4 sm:text-sm">
-            <span className="flex items-center gap-1.5 font-bold text-on-surface"><span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" /> Service: stable</span>
-            <span className="hidden opacity-20 text-on-surface sm:inline">|</span>
-            <span className="font-bold opacity-70">User: {user?.fullName || 'Admin'}</span>
-          </p>
-        </div>
-
-        <nav className="flex min-w-0 flex-col gap-3 rounded-lg border border-outline bg-white p-2 shadow-sm 2xl:flex-row 2xl:items-center 2xl:justify-between">
-          <div className="min-w-0 flex-1">
-            <label className="sr-only" htmlFor="admin-section">Admin section</label>
-            <select
-              id="admin-section"
-              value={activeTab}
-              onChange={(event) => setActiveTab(event.target.value as AdminTab)}
-              className="w-full rounded-md border border-outline bg-surface-container px-3 py-3 text-sm font-bold capitalize text-on-surface sm:hidden"
-            >
-              {adminTabs.map((tab) => (
-                <option key={tab} value={tab}>
-                  {tab === 'payments' ? 'Payment verifications' : tab}
-                </option>
-              ))}
-            </select>
-
-            <div className="hidden flex-wrap justify-center gap-1 sm:flex 2xl:justify-start">
-              {adminTabs.map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`rounded-md px-3 py-2.5 text-xs font-bold capitalize transition-all whitespace-nowrap 2xl:px-4 2xl:text-sm ${
-                    activeTab === tab 
-                      ? 'bg-primary text-white' 
-                      : 'text-on-surface-variant hover:bg-surface-container'
-                  }`}
-                >
-                  {tab === 'payments' ? 'Payment verifications' : tab}
-                </button>
-              ))}
-            </div>
-          </div>
-
+    <div className="min-h-[calc(100vh-5rem)] bg-background">
+      <AdminSidebar activeTab={activeTab} role={role} mobileOpen={navOpen} onChange={setActiveTab} onClose={() => setNavOpen(false)} />
+      <div className="lg:pl-64">
+        <AdminHeader activeTab={activeTab} role={role} onOpenNavigation={() => setNavOpen(true)}>
           {activeTab === 'bookings' && (
-            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end 2xl:pr-2">
-               <div className="relative w-full sm:w-48">
-                 <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-sm text-on-surface-variant">search</span>
-                 <input 
-                   type="text" 
-                   placeholder="Search..." 
-                   className="w-full rounded-md border border-outline bg-surface-container py-2 pl-9 pr-3 text-sm font-semibold"
-                   value={searchQuery}
-                   onChange={(e) => setSearchQuery(e.target.value)}
-                 />
-               </div>
-               <select 
-                 className="w-full rounded-md border border-outline bg-surface-container p-2 text-sm font-semibold sm:w-auto"
-                 value={statusFilter}
-                 onChange={(e) => setStatusFilter(e.target.value)}
-               >
-                 <option value="All">All Status</option>
-                 <option value="Quoted">Quoted</option>
-                 <option value="Paid">Paid</option>
-                 <option value="Confirmed">Confirmed</option>
-                 <option value="Dispatched">Dispatched</option>
-                 <option value="InTransit">InTransit</option>
-                 <option value="Completed">Completed</option>
-                 <option value="Cancelled">Cancelled</option>
-               </select>
-               <button 
-                 onClick={exportBookingsCSV}
-                 className="flex items-center justify-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-sm font-bold text-primary transition-all hover:bg-primary hover:text-white"
-               >
-                 <span className="material-symbols-outlined text-sm">download</span>
-                 CSV
-               </button>
-            </div>
+            <label className="relative">
+              <span className="sr-only">Search bookings</span>
+              <span className="material-symbols-outlined pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-lg text-on-surface-variant">search</span>
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search bookings" className="field h-9 w-64 py-0 pl-10 text-xs" />
+            </label>
           )}
-        </nav>
-      </header>
-
-      <main className="mt-6 min-w-0 flex-1">
-        <AnimatePresence mode="wait">
-          {activeTab === 'bookings' && (
-            <motion.div 
-              key="bookings"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden"
-            >
-              <div className="border-b border-outline bg-surface-container/30 p-4 sm:p-6">
-                <h3 className="font-bold flex items-center gap-2">
-                  <span className="material-symbols-outlined text-primary">analytics</span> 
-                  All Bookings & Real-Time Tracking
-                </h3>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[960px] border-collapse text-left">
-                  <thead>
-                    <tr className="bg-surface-container/20 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">
-                      <th className="p-6 border-b border-outline">Booking & Tracking ID</th>
-                      <th className="p-6 border-b border-outline">Customer</th>
-                      <th className="p-6 border-b border-outline">Route</th>
-                      <th className="p-6 border-b border-outline">Vehicle</th>
-                      <th className="p-6 border-b border-outline">Status</th>
-                      <th className="p-6 border-b border-outline">Amount</th>
-                      <th className="p-6 border-b border-outline">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-sm">
-                    {filteredBookings.map((b) => (
-                      <tr key={b.id} className="hover:bg-surface-container/10 transition-colors">
-                        <td className="p-6 border-b border-outline">
-                          <p className="font-mono text-xs font-bold text-primary">{b.trackingId || b.id?.slice(-8)}</p>
-                          <p className="font-mono text-[10px] text-on-surface-variant">ID: {b.id?.slice(-6)}</p>
-                          {b.currentCheckpoint && (
-                            <p className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-green-700">
-                              <span className="material-symbols-outlined text-xs" aria-hidden="true">location_on</span>
-                              {b.currentCheckpoint}
-                            </p>
-                          )}
-                        </td>
-                        <td className="p-6 border-b border-outline font-medium">
-                          <p className="font-bold text-on-surface text-xs">{b.customerName || b.customerId?.slice(-6)}</p>
-                          <p className="text-[10px] text-on-surface-variant">{b.customerEmail}</p>
-                        </td>
-                        <td className="p-6 border-b border-outline">
-                          <div className="flex flex-col">
-                            <span className="font-bold text-xs">{b.pickup}</span>
-                            <span className="text-[10px] text-on-surface-variant">to {b.destination}</span>
-                          </div>
-                        </td>
-                        <td className="p-6 border-b border-outline text-xs font-semibold">{b.vehicleClass}</td>
-                        <td className="p-6 border-b border-outline">
-                           <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${
-                             b.status === 'Paid' || b.status === 'Confirmed' ? 'bg-green-100 text-green-700' : 'bg-primary/10 text-primary'
-                           }`}>
-                             {b.status}
-                           </span>
-                        </td>
-                        <td className="p-6 border-b border-outline font-bold">{formatPrice(b.totalAmount)}</td>
-                        <td className="p-6 border-b border-outline">
-                           <div className="flex flex-col gap-2">
-                             <button
-                               type="button"
-                               onClick={() => {
-                                 setTrackingUpdateBooking(b);
-                                 setNewTrackingCheckpoint(b.currentCheckpoint || b.pickup || '');
-                                 setNewTrackingStatus(b.status || 'InTransit');
-                               }}
-                               className="px-2.5 py-1.5 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-md text-[10px] font-bold flex items-center justify-center gap-1 transition-colors"
-                             >
-                               <span className="material-symbols-outlined text-xs">radar</span>
-                               <span>Update Tracking</span>
-                             </button>
-                             <select 
-                               className="bg-surface-container border border-outline rounded-lg p-2 text-xs font-bold"
-                               value={b.status}
-                               onChange={(e) => updateBookingStatus(b.id, e.target.value, b.status, b)}
-                             >
-                               <option value="Quoted">Quoted</option>
-                               <option value="Paid">Paid</option>
-                               <option value="Confirmed">Confirmed</option>
-                               <option value="Dispatched">Dispatched</option>
-                               <option value="InTransit">InTransit</option>
-                               <option value="Completed">Completed</option>
-                               <option value="Cancelled">Cancelled</option>
-                             </select>
-                             {(b.status === 'Paid' || b.status === 'Confirmed' || b.status === 'Dispatched' || b.status === 'InTransit') && (
-                               <select 
-                                 className="bg-surface-container border border-outline rounded-lg p-2 text-[9px] font-bold uppercase tracking-widest"
-                                 value={b.driverId || ''}
-                                 onChange={async (e) => {
-                                   try {
-                                     await updateDoc(doc(db, 'bookings', b.id), { driverId: e.target.value });
-                                     fetchData();
-                                   } catch (err) {
-                                     handleFirestoreError(err, OperationType.UPDATE, `bookings/${b.id}`);
-                                   }
-                                 }}
-                               >
-                                 <option value="">Assign Driver</option>
-                                 {drivers.map(d => (
-                                   <option key={d.id} value={d.id}>{d.name}</option>
-                                 ))}
-                               </select>
-                             )}
-                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {hasMore && (
-                <div className="p-8 text-center border-t border-outline">
-                  <button 
-                    onClick={() => fetchData(true)}
-                    className="px-8 py-3 border-2 border-primary text-primary font-bold text-sm rounded-md hover:bg-primary hover:text-white transition-colors"
-                  >
-                    Load more bookings
-                  </button>
-                </div>
-              )}
+          <button type="button" onClick={() => loadTab(activeTab)} className="flex h-9 w-9 items-center justify-center rounded-md border border-outline bg-white hover:border-primary" aria-label="Refresh">
+            <span className={`material-symbols-outlined text-lg ${loading ? 'animate-spin' : ''}`}>refresh</span>
+          </button>
+        </AdminHeader>
+        <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8">
+          <AnimatePresence mode="wait">
+            <motion.div key={activeTab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.25 }}>
+              {content()}
             </motion.div>
-          )}
-
-          {activeTab === 'payments' && (
-            <motion.div 
-              key="payments"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="space-y-8"
-            >
-              {/* Payment Summary Header */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-4">
-                <div className="bg-white p-6 rounded-2xl border border-outline shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Total Submissions</p>
-                  <p className="text-3xl font-black text-on-surface mt-1">{payments.length}</p>
-                </div>
-                <div className="bg-white p-6 rounded-2xl border border-amber-200 bg-amber-50/50 shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Awaiting Verification</p>
-                  <p className="text-3xl font-black text-amber-800 mt-1">
-                    {payments.filter(p => p.status === 'UNDER_REVIEW').length}
-                  </p>
-                </div>
-                <div className="bg-white p-6 rounded-2xl border border-green-200 bg-green-50/50 shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-green-700">Verified Revenue</p>
-                  <p className="text-3xl font-black text-green-800 mt-1">
-                    {formatPrice(payments.filter(p => p.status === 'PAID').reduce((sum, p) => sum + (p.amount || 0), 0))}
-                  </p>
-                </div>
-                <div className="bg-white p-6 rounded-2xl border border-outline shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">Reconciled Count</p>
-                  <p className="text-3xl font-black text-primary mt-1">
-                    {payments.filter(p => p.isReconciled).length} / {payments.filter(p => p.status === 'PAID').length}
-                  </p>
-                </div>
-              </div>
-
-              {/* Payments List Table Container */}
-              <div className="bg-white rounded-2xl border border-outline shadow-sm overflow-hidden">
-                <div className="flex flex-col justify-between gap-4 border-b border-outline bg-surface-container/20 p-4 sm:p-6 xl:flex-row xl:items-center">
-                  <div>
-                    <h3 className="font-bold text-lg text-on-surface flex items-center gap-2">
-                      <span className="material-symbols-outlined text-primary">verified_user</span>
-                      Bank Transfer Verification & Payment Records
-                    </h3>
-                    <p className="text-xs text-on-surface-variant mt-0.5">
-                      Verify customer uploaded transfer receipts, approve transactions, or log structured rejection reasons.
-                    </p>
-                  </div>
-
-                  {/* Status Filters */}
-                  <div className="flex flex-wrap gap-2">
-                    {['All', 'UNDER_REVIEW', 'PAID', 'PAYMENT_REJECTED', 'AWAITING_PAYMENT'].map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        onClick={() => setPaymentFilter(st)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                          paymentFilter === st
-                            ? 'bg-primary text-white shadow-sm'
-                            : 'bg-white border border-outline text-on-surface-variant hover:border-primary'
-                        }`}
-                      >
-                        {st === 'UNDER_REVIEW' ? 'Under Review' : st === 'PAID' ? 'Paid / Approved' : st === 'PAYMENT_REJECTED' ? 'Rejected' : st === 'AWAITING_PAYMENT' ? 'Awaiting Transfer' : 'All'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1080px] border-collapse text-left">
-                    <thead>
-                      <tr className="bg-surface-container/30 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">
-                        <th className="p-5 border-b border-outline">Payment Ref & Tracking</th>
-                        <th className="p-5 border-b border-outline">Customer</th>
-                        <th className="p-5 border-b border-outline">Amount Due</th>
-                        <th className="p-5 border-b border-outline">Status</th>
-                        <th className="p-5 border-b border-outline">Payment Receipt Proof</th>
-                        <th className="p-5 border-b border-outline">Reconciled</th>
-                        <th className="p-5 border-b border-outline text-right">Verification Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-xs">
-                      {payments
-                        .filter(p => paymentFilter === 'All' || p.status === paymentFilter)
-                        .map((p) => (
-                          <tr key={p.id} className="hover:bg-surface-container/10 transition-colors border-b border-outline/60">
-                            <td className="p-5">
-                              <p className="font-mono text-xs font-black text-primary">{p.paymentReference || 'N/A'}</p>
-                              <p className="font-mono text-[10px] text-on-surface-variant">Booking ID: {p.bookingId?.slice(-8)}</p>
-                              {p.trackingId && (
-                                <span className="inline-block mt-1 font-mono text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">
-                                  {p.trackingId}
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-5">
-                              <p className="font-bold text-on-surface text-xs">{p.customerName || 'Customer'}</p>
-                              <p className="text-[10px] text-on-surface-variant">{p.customerEmail}</p>
-                              {p.customerNote && (
-                                <p className="text-[10px] text-on-surface-variant italic mt-1 max-w-xs">"{p.customerNote}"</p>
-                              )}
-                            </td>
-                            <td className="p-5">
-                              <p className="font-bold text-sm text-on-surface">{formatPrice(p.amount)}</p>
-                              <span className="text-[10px] text-on-surface-variant">{p.currency || 'NGN'} via {p.method}</span>
-                            </td>
-                            <td className="p-5">
-                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                p.status === 'PAID'
-                                  ? 'bg-green-100 text-green-800'
-                                  : p.status === 'UNDER_REVIEW'
-                                  ? 'bg-amber-100 text-amber-800 animate-pulse'
-                                  : p.status === 'PAYMENT_REJECTED'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-surface-container text-on-surface-variant'
-                              }`}>
-                                {p.status === 'UNDER_REVIEW' ? 'Under Review' : p.status === 'PAID' ? 'Verified (PAID)' : p.status === 'PAYMENT_REJECTED' ? 'Rejected' : p.status}
-                              </span>
-                              {p.rejectionReason && (
-                                <p className="text-[10px] text-red-600 font-medium mt-1 max-w-xs">
-                                  Reason: {p.rejectionReason}
-                                </p>
-                              )}
-                            </td>
-                            <td className="p-5">
-                              {p.proofOfPaymentUrl ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedPaymentProof(p)}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 text-primary hover:bg-primary hover:text-white font-bold text-[11px] transition-colors"
-                                >
-                                  <span className="material-symbols-outlined text-sm">receipt</span>
-                                  <span>View Receipt</span>
-                                </button>
-                              ) : (
-                                <span className="text-[11px] text-on-surface-variant italic">No proof uploaded</span>
-                              )}
-                            </td>
-                            <td className="p-5">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleReconciliation(p)}
-                                className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition-colors ${
-                                  p.isReconciled
-                                    ? 'bg-green-600 text-white'
-                                    : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'
-                                }`}
-                              >
-                                {p.isReconciled ? '✓ Reconciled' : 'Unreconciled'}
-                              </button>
-                            </td>
-                            <td className="p-5 text-right">
-                              <div className="flex items-center justify-end gap-2 flex-wrap">
-                                {p.status !== 'PAID' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleApprovePayment(p)}
-                                    className="px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1"
-                                  >
-                                    <span className="material-symbols-outlined text-sm">check</span>
-                                    <span>Approve</span>
-                                  </button>
-                                )}
-                                {p.status !== 'PAYMENT_REJECTED' && p.status !== 'PAID' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setRejectModalPayment(p);
-                                      setRejectionReasonInput('');
-                                    }}
-                                    className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1"
-                                  >
-                                    <span className="material-symbols-outlined text-sm">close</span>
-                                    <span>Reject</span>
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedAuditPayment(p)}
-                                  className="p-1.5 rounded-lg border border-outline hover:bg-surface-container text-on-surface-variant"
-                                  title="View Payment Audit Trail"
-                                >
-                                  <span className="material-symbols-outlined text-sm">history</span>
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      {payments.length === 0 && (
-                        <tr>
-                          <td colSpan={7} className="p-12 text-center text-on-surface-variant italic">
-                            No payment records recorded yet. Payments created by checkout will appear here.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'analytics' && analyticsData && (
-            <motion.div 
-              key="analytics"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="space-y-8"
-            >
-              {/* Top Stats */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-4">
-                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
-                    <div className="flex items-center justify-between mb-4">
-                       <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Global Revenue</span>
-                       <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">payments</span>
-                    </div>
-                    <p className="text-4xl font-bold">{formatPrice(analyticsData.totalRevenue)}</p>
-                    <p className="text-xs font-semibold text-on-surface-variant mt-2">Gross revenue</p>
-                 </div>
-                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
-                    <div className="flex items-center justify-between mb-4">
-                       <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Fleet Efficiency</span>
-                       <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">network_check</span>
-                    </div>
-                    <p className="text-4xl font-bold">98.4%</p>
-                    <p className="text-xs font-semibold text-on-surface-variant mt-2">Operational uptime</p>
-                 </div>
-                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
-                    <div className="flex items-center justify-between mb-4">
-                       <span className="text-xs font-bold text-on-surface-variant">Total bookings</span>
-                       <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">hub</span>
-                    </div>
-                    <p className="text-4xl font-bold">{bookings.length + (lastVisible ? '+' : '')}</p>
-                    <p className="text-xs font-semibold text-on-surface-variant mt-2">Registered routes</p>
-                 </div>
-                 <div className="group rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
-                    <div className="flex items-center justify-between mb-4">
-                       <span className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Recurring Ratio</span>
-                       <span className="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">sync</span>
-                    </div>
-                    <p className="text-4xl font-bold">{analyticsData.recurringPercentage}%</p>
-                    <p className="text-xs font-semibold text-on-surface-variant mt-2">Recurring bookings</p>
-                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                 {/* Daily Revenue Chart */}
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm overflow-hidden h-[400px] flex flex-col">
-                    <h3 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2">
-                       <span className="w-1.5 h-1.5 rounded-full bg-primary" /> Daily Inflow Stream
-                    </h3>
-                    <div className="flex-1 w-full">
-                       <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={analyticsData.dailyRevenue}>
-                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                             <XAxis dataKey="date" fontSize={10} axisLine={false} tickLine={false} />
-                             <YAxis fontSize={10} axisLine={false} tickLine={false} tickFormatter={(val) => formatPrice(Number(val))} />
-                             <Tooltip 
-                                contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold' }}
-                                labelStyle={{ color: '#D40000' }}
-                             />
-                             <Line type="monotone" dataKey="amount" stroke="#D40000" strokeWidth={3} dot={{ r: 4, fill: '#D40000' }} activeDot={{ r: 6 }} />
-                          </LineChart>
-                       </ResponsiveContainer>
-                    </div>
-                 </div>
-
-                 {/* Revenue by Vehicle */}
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm overflow-hidden h-[400px] flex flex-col">
-                    <h3 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2">
-                       <span className="w-1.5 h-1.5 rounded-full bg-primary" /> Booking performance
-                    </h3>
-                    <div className="flex-1 w-full">
-                       <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={analyticsData.revenueByVehicle} layout="vertical">
-                             <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
-                             <XAxis type="number" hide />
-                             <YAxis dataKey="name" type="category" fontSize={10} axisLine={false} tickLine={false} width={80} />
-                             <Tooltip 
-                                cursor={{ fill: 'rgba(212,0,0,0.05)' }}
-                                contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold' }}
-                             />
-                             <Bar dataKey="value" fill="#D40000" radius={[0, 4, 4, 0]} barSize={20} />
-                          </BarChart>
-                       </ResponsiveContainer>
-                    </div>
-                 </div>
-                 
-                 {/* Status Distribution */}
-                 <div className="bg-white p-8 rounded-lg border border-outline shadow-sm lg:col-span-2">
-                    <h3 className="text-xs font-bold uppercase tracking-widest mb-8 flex items-center gap-2">
-                       <span className="w-1.5 h-1.5 rounded-full bg-primary" /> Booking status breakdown
-                    </h3>
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                       {analyticsData.statusCounts.map((s: any, i: number) => (
-                         <div key={i} className="p-6 bg-surface-container/50 rounded-2xl border border-outline text-center">
-                            <p className="text-[8px] font-bold text-on-surface-variant uppercase tracking-widest mb-1 underline">{s.name}</p>
-                            <p className="text-2xl font-bold">{s.value}</p>
-                         </div>
-                       ))}
-                    </div>
-                 </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'reviews' && (
-            <motion.div 
-              key="reviews"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden"
-            >
-              <div className="p-8 border-b border-outline bg-surface-container/30">
-                <h3 className="font-bold flex items-center gap-2">
-                  <span className="material-symbols-outlined text-primary">reviews</span> 
-                  Customer feedback
-                </h3>
-              </div>
-              <div className="divide-y divide-outline">
-                {reviews.map((rev) => (
-                  <div key={rev.id} className="p-8 hover:bg-surface-container/10 transition-colors">
-                     <div className="flex justify-between items-start mb-4">
-                        <div className="flex items-center gap-4">
-                           <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold">
-                              {rev.rating}
-                           </div>
-                           <div>
-                              <p className="text-xs font-bold">Booking #{rev.bookingId.slice(-6)}</p>
-                              <p className="text-[10px] text-on-surface-variant font-medium">Customer: {rev.customerId.slice(-6)}</p>
-                           </div>
-                        </div>
-                        <span className="text-[9px] font-bold text-on-surface-variant uppercase">{rev.createdAt}</span>
-                     </div>
-                     <p className="text-sm italic text-on-surface">{rev.comment}</p>
-                  </div>
-                ))}
-                {reviews.length === 0 && <div className="p-20 text-center text-on-surface-variant font-semibold text-sm">No feedback has been recorded yet.</div>}
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'prices' && (
-            <motion.div 
-              key="prices"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="space-y-8"
-            >
-              {/* Live Internet Currency Sync & Base Price Converter Simulator */}
-              <div className="rounded-2xl border border-outline bg-gradient-to-br from-white via-surface-container-lowest to-surface-container/30 p-6 md:p-8 shadow-sm space-y-6">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-outline pb-6">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="flex h-2.5 w-2.5 relative">
-                        <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${isLiveRates ? 'bg-green-400 opacity-75' : 'bg-amber-400 opacity-75'}`} />
-                        <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isLiveRates ? 'bg-green-500' : 'bg-amber-500'}`} />
-                      </span>
-                      <span className="text-xs font-bold uppercase tracking-wider text-on-surface">
-                        {isLiveRates ? 'Live Internet Exchange Rates Active' : 'Cached Exchange Rates Active'}
-                      </span>
-                      {lastRateUpdate && (
-                        <span className="text-[11px] text-on-surface-variant font-medium">
-                          (Synced: {new Date(lastRateUpdate).toLocaleTimeString()})
-                        </span>
-                      )}
-                    </div>
-                    <h3 className="text-xl md:text-2xl font-bold text-on-surface">
-                      Currency Auto-Conversion & Real-Time Rates
-                    </h3>
-                    <p className="text-xs md:text-sm text-on-surface-variant mt-1 font-medium">
-                      All service prices are set in Naira (NGN) and auto-converted for international customers using live exchange rates.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      disabled={refreshingLiveRates}
-                      onClick={handleSyncInternetRates}
-                      className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-xs font-bold text-white shadow-md shadow-primary/20 hover:bg-primary-container transition-all disabled:opacity-50"
-                    >
-                      <span className={`material-symbols-outlined text-sm ${refreshingLiveRates ? 'animate-spin' : ''}`}>sync</span>
-                      {refreshingLiveRates ? 'Fetching live rates...' : 'Refresh live rates from internet'}
-                    </button>
-                  </div>
-                </div>
-
-                {rateFeedback && (
-                  <div className="p-4 rounded-xl bg-primary/10 border border-primary/20 text-xs font-bold text-primary flex items-center gap-2">
-                    <span className="material-symbols-outlined text-sm">info</span>
-                    {rateFeedback}
-                  </div>
-                )}
-
-                {/* Active Multiplier Rates Grid */}
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-3">
-                    Current Live Multipliers (Base: 1 NGN)
-                  </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-                    {[
-                      { code: 'USD' as const, name: 'US Dollar', symbol: '$', rate: rates.USD },
-                      { code: 'EUR' as const, name: 'Euro', symbol: '€', rate: rates.EUR },
-                      { code: 'GBP' as const, name: 'British Pound', symbol: '£', rate: rates.GBP },
-                      { code: 'XOF' as const, name: 'CFA Franc', symbol: 'CFA', rate: rates.XOF },
-                      { code: 'GHS' as const, name: 'Ghana Cedi', symbol: 'GH₵', rate: rates.GHS },
-                    ].map((curr) => (
-                      <div key={curr.code} className="p-3.5 rounded-xl border border-outline bg-white shadow-sm">
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-xs font-bold text-on-surface">{curr.code}</span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">{curr.symbol}</span>
-                        </div>
-                        <p className="text-xs font-mono font-bold text-primary">1 NGN = {curr.rate}</p>
-                        <p className="text-[10px] text-on-surface-variant mt-1 font-medium">{curr.name}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Interactive Naira Base Price Currency Tester */}
-                <div className="pt-4 border-t border-outline">
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
-                    <div>
-                      <h4 className="text-sm font-bold text-on-surface flex items-center gap-2">
-                        <span className="material-symbols-outlined text-primary text-base">calculate</span>
-                        Naira Base Price Live Converter Tester
-                      </h4>
-                      <p className="text-xs text-on-surface-variant mt-0.5">
-                        Enter any base price in Naira to instantly test and verify how it converts across all currencies.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <label className="text-xs font-bold text-on-surface-variant">Test NGN Amount:</label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-on-surface-variant">₦</span>
-                        <input
-                          type="number"
-                          value={testNairaAmount || ''}
-                          onChange={(e) => setTestNairaAmount(Math.max(0, parseInt(e.target.value) || 0))}
-                          className="pl-8 pr-3 py-2 bg-white border border-outline rounded-xl text-sm font-bold w-40 text-on-surface focus:ring-2 focus:ring-primary/20"
-                          placeholder="50000"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                    <div className="p-4 rounded-xl border-2 border-primary/40 bg-primary/5">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-primary block mb-1">Base Price (NGN)</span>
-                      <p className="text-base md:text-lg font-black text-on-surface">{formatPrice(testNairaAmount, 'NGN')}</p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">US Dollar (USD)</span>
-                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'USD')}</p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">Euro (EUR)</span>
-                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'EUR')}</p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">British Pound (GBP)</span>
-                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'GBP')}</p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">CFA Franc (XOF)</span>
-                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'XOF')}</p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-outline bg-white shadow-sm">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant block mb-1">Ghana Cedi (GHS)</span>
-                      <p className="text-base md:text-lg font-bold text-primary">{formatPrice(testNairaAmount, 'GHS')}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex flex-col justify-between gap-4 rounded-lg border border-outline bg-white p-6 shadow-sm sm:flex-row sm:items-center">
-                <div>
-                  <h3 className="text-xl font-bold">Booking service classes</h3>
-                  <p className="mt-1 text-xs text-on-surface-variant">These services, labels, icons, descriptions, and NGN base prices load directly on the booking page.</p>
-                </div>
-                <button type="button" onClick={handleAddVehicleType} className="rounded-md bg-primary px-5 py-3 text-sm font-bold text-white">
-                  Add service
-                </button>
-              </div>
-              <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
-                {prices.map((p, i) => (
-                  <div key={i} className="flex flex-col gap-5 rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-6">
-                    <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-                      <span className="material-symbols-outlined text-3xl">{p.icon}</span>
-                    </div>
-                    <div className="space-y-4">
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Service name</label>
-                        <input
-                          type="text"
-                          className="w-full rounded-xl border border-outline bg-surface-container p-3 text-sm font-bold"
-                          value={p.title}
-                          onChange={(e) => handleUpdateVehicleTypes(prices.map((item, idx) => idx === i ? { ...item, title: e.target.value } : item))}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Icon</label>
-                        <input
-                          type="text"
-                          className="w-full rounded-xl border border-outline bg-surface-container p-3 text-sm font-bold"
-                          value={p.icon}
-                          onChange={(e) => handleUpdateVehicleTypes(prices.map((item, idx) => idx === i ? { ...item, icon: e.target.value } : item))}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Description</label>
-                        <textarea
-                          rows={3}
-                          className="w-full rounded-xl border border-outline bg-surface-container p-3 text-sm font-medium"
-                          value={p.desc}
-                          onChange={(e) => handleUpdateVehicleTypes(prices.map((item, idx) => idx === i ? { ...item, desc: e.target.value } : item))}
-                        />
-                      </div>
-                    </div>
-                    <div className="mt-auto space-y-3">
-                      <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Base price (NGN)</label>
-                      <div className="flex flex-col gap-2">
-                         <input 
-                           type="number" 
-                           className="w-full bg-surface-container border border-outline p-4 rounded-xl font-bold text-2xl text-on-surface"
-                           value={p.price}
-                           onChange={(e) => handleUpdatePrice(i, parseInt(e.target.value))}
-                         />
-                         <div className="rounded-xl bg-surface-container/60 p-3.5 border border-outline space-y-2">
-                            <p className="text-[9px] font-bold uppercase tracking-wider text-on-surface-variant">Live Auto-Converted Previews:</p>
-                            <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
-                              <span className="text-on-surface">USD: <strong className="text-primary">{formatPrice(p.price, 'USD')}</strong></span>
-                              <span className="text-on-surface">EUR: <strong className="text-primary">{formatPrice(p.price, 'EUR')}</strong></span>
-                              <span className="text-on-surface">GBP: <strong className="text-primary">{formatPrice(p.price, 'GBP')}</strong></span>
-                              <span className="text-on-surface">CFA: <strong className="text-primary">{formatPrice(p.price, 'XOF')}</strong></span>
-                              <span className="text-on-surface col-span-2">GHS: <strong className="text-primary">{formatPrice(p.price, 'GHS')}</strong></span>
-                            </div>
-                         </div>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleUpdateVehicleTypes(prices.filter((_, idx) => idx !== i))}
-                      className="rounded-md border border-error/20 bg-error/10 px-4 py-3 text-xs font-bold text-error"
-                    >
-                      Remove service
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'settings' && (
-            <motion.div
-              key="settings"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="space-y-8"
-            >
-              <div className="grid gap-6 2xl:grid-cols-2">
-                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <div className="flex items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h3 className="text-xl font-bold">Touring states</h3>
-                      <p className="text-xs text-on-surface-variant">Editable state-based touring multipliers.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleAddTouringState}
-                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
-                    >
-                      Add state
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    {touringStates.map((state, index) => (
-                      <div key={state.name + index} className="grid gap-3 md:grid-cols-[1fr_0.9fr_0.6fr] items-end">
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
-                          <input
-                            type="text"
-                            value={state.name}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateTouringStates(touringStates.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Multiplier</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={state.factor}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateTouringStates(touringStates.map((item, idx) => idx === index ? { ...item, factor: parseFloat(e.target.value) || 1 } : item))}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
-                          onClick={() => handleUpdateTouringStates(touringStates.filter((_, idx) => idx !== index))}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <div className="flex items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h3 className="text-xl font-bold">International tours</h3>
-                      <p className="text-xs text-on-surface-variant">Editable international tour routes and multipliers.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleAddInternationalTour}
-                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
-                    >
-                      Add route
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    {internationalTours.map((tour, index) => (
-                      <div key={tour.name + index} className="grid gap-3 md:grid-cols-[1fr_0.9fr_0.6fr] items-end">
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
-                          <input
-                            type="text"
-                            value={tour.name}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateInternationalTours(internationalTours.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Multiplier</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={tour.factor}
-                            className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                            onChange={(e) => handleUpdateInternationalTours(internationalTours.map((item, idx) => idx === index ? { ...item, factor: parseFloat(e.target.value) || 1 } : item))}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
-                          onClick={() => handleUpdateInternationalTours(internationalTours.filter((_, idx) => idx !== index))}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              </div>
-
-              <div className="grid gap-6 2xl:grid-cols-2">
-                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <div className="flex items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h3 className="text-xl font-bold">Car hire fleet</h3>
-                      <p className="text-xs text-on-surface-variant">Manage available cars, seats, descriptions, image URL, or upload image files.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleAddCarHireOption}
-                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
-                    >
-                      Add car
-                    </button>
-                  </div>
-                  <div className="space-y-6">
-                    {carHireOptions.map((car, index) => (
-                      <div key={car.id + index} className="p-4 rounded-xl border border-outline bg-surface-container/30 space-y-4">
-                        <div className="grid items-end gap-3 sm:grid-cols-2">
-                          <div>
-                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Name</label>
-                            <input
-                              type="text"
-                              value={car.name}
-                              className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
-                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, name: e.target.value } : item))}
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Seats</label>
-                            <input
-                              type="number"
-                              value={car.seats}
-                              className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
-                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, seats: parseInt(e.target.value) || 1 } : item))}
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Daily rate (NGN)</label>
-                            <input
-                              type="number"
-                              min={0}
-                              value={car.pricePerDay || 0}
-                              className="w-full rounded-xl border border-outline bg-white p-3 text-sm font-medium"
-                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, pricePerDay: parseInt(e.target.value) || 0 } : item))}
-                            />
-                          </div>
-                          <label className="flex min-h-12 items-center gap-3 rounded-xl border border-outline bg-white px-3 text-xs font-bold text-on-surface">
-                            <input
-                              type="checkbox"
-                              checked={car.available !== false}
-                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, available: e.target.checked } : item))}
-                              className="h-4 w-4"
-                            />
-                            Available for booking
-                          </label>
-                        </div>
-                        <button
-                          type="button"
-                          className="rounded-md bg-error/10 px-4 py-3 text-xs font-bold text-error"
-                          onClick={() => handleUpdateCarHireOptions(carHireOptions.filter((_, idx) => idx !== index))}
-                        >
-                          Remove car
-                        </button>
-
-                        <div>
-                          <label className="text-[10px] uppercase tracking-widest text-on-surface-variant">Description</label>
-                          <input
-                            type="text"
-                            value={car.desc}
-                            className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
-                            onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, desc: e.target.value } : item))}
-                          />
-                        </div>
-
-                        <div className="grid gap-4 md:grid-cols-[1fr_auto_auto] items-center pt-2 border-t border-outline/50">
-                          <div>
-                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant block mb-1">Image URL (External or Local)</label>
-                            <input
-                              type="text"
-                              placeholder="https://... or /brand/car-01.webp"
-                              value={car.image || ''}
-                              className="w-full bg-white border border-outline rounded-xl p-3 text-sm font-medium"
-                              onChange={(e) => handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: e.target.value } : item))}
-                            />
-                          </div>
-
-                          <div>
-                            <label className="text-[10px] uppercase tracking-widest text-on-surface-variant block mb-1">Upload File (Firebase Storage)</label>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              className="text-xs file:mr-3 file:py-2.5 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
-                              onChange={async (e) => {
-                                const file = e.target.files?.[0];
-                                if (!file) return;
-                                try {
-                                  setLoading(true);
-                                  const sRef = storageRef(storage, `car_hire/${Date.now()}_${file.name}`);
-                                  await uploadBytes(sRef, file);
-                                  const url = await getDownloadURL(sRef);
-                                  await handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: url } : item));
-                                } catch (err) {
-                                  console.warn('Storage upload failed, converting to data URL', err);
-                                  const reader = new FileReader();
-                                  reader.onload = async (evt) => {
-                                    const dataUrl = evt.target?.result as string;
-                                    if (dataUrl) {
-                                      await handleUpdateCarHireOptions(carHireOptions.map((item, idx) => idx === index ? { ...item, image: dataUrl } : item));
-                                    }
-                                  };
-                                  reader.readAsDataURL(file);
-                                } finally {
-                                  setLoading(false);
-                                }
-                              }}
-                            />
-                          </div>
-
-                          {car.image && (
-                            <div className="shrink-0">
-                              <img src={car.image} alt={car.name} className="h-14 w-20 rounded-lg object-cover border border-outline" />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <div className="flex items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h3 className="text-xl font-bold">Tracking locations</h3>
-                      <p className="text-xs text-on-surface-variant">Editable tracking labels for the booking tracker.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleAddTrackingLocation}
-                      className="px-4 py-2 rounded-full bg-primary text-white text-xs font-bold"
-                    >
-                      Add label
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    {trackingLocationsSettings.map((label, index) => (
-                      <div key={label + index} className="flex items-center gap-3">
-                        <input
-                          type="text"
-                          value={label}
-                          className="flex-1 bg-surface-container border border-outline rounded-xl p-3 text-sm"
-                          onChange={(e) => handleUpdateTrackingLocations(trackingLocationsSettings.map((item, idx) => idx === index ? e.target.value : item))}
-                        />
-                        <button
-                          type="button"
-                          className="rounded-full bg-error/10 text-error px-4 py-3 text-xs font-bold"
-                          onClick={() => handleUpdateTrackingLocations(trackingLocationsSettings.filter((_, idx) => idx !== index))}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              </div>
-
-              {/* Currency Rates & Global Pricing Rules */}
-              <div className="grid gap-6 2xl:grid-cols-2">
-                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                    <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={`w-2 h-2 rounded-full ${isLiveRates ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
-                          {isLiveRates ? 'Internet Auto-Sync Connected' : 'Cached Rates Active'}
-                        </span>
-                      </div>
-                      <h3 className="text-xl font-bold">Exchange Rates Control</h3>
-                      <p className="text-xs text-on-surface-variant">Live internet multipliers against 1 NGN. You can also manually override any rate.</p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={refreshingLiveRates}
-                      onClick={handleSyncInternetRates}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold shadow-sm hover:bg-primary-container disabled:opacity-50"
-                    >
-                      <span className={`material-symbols-outlined text-xs ${refreshingLiveRates ? 'animate-spin' : ''}`}>sync</span>
-                      Sync Live
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {[
-                      { code: 'USD' as const, name: 'US Dollar (USD)', symbol: '$' },
-                      { code: 'EUR' as const, name: 'Euro (EUR)', symbol: '€' },
-                      { code: 'GBP' as const, name: 'British Pound (GBP)', symbol: '£' },
-                      { code: 'XOF' as const, name: 'West African CFA (XOF)', symbol: 'CFA' },
-                      { code: 'GHS' as const, name: 'Ghana Cedi (GHS)', symbol: 'GH₵' },
-                    ].map((curr) => (
-                      <div key={curr.code} className="p-4 bg-surface-container/40 rounded-xl border border-outline space-y-2">
-                        <div className="flex justify-between items-center">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">
-                            {curr.name}
-                          </label>
-                          <span className="text-[10px] font-bold text-primary">
-                            1 NGN = {rates[curr.code]}
-                          </span>
-                        </div>
-                        <input
-                          type="number"
-                          step="0.000001"
-                          placeholder={rates[curr.code]?.toString()}
-                          className="w-full bg-white border border-outline rounded-lg p-2.5 text-sm font-bold"
-                          onBlur={async (e) => {
-                            const val = parseFloat(e.target.value);
-                            if (!isNaN(val) && val > 0) {
-                              try {
-                                const snap = await getDoc(doc(db, 'settings', 'currency_rates'));
-                                const curRates = snap.exists() ? snap.data().value || {} : {};
-                                curRates[curr.code] = val;
-                                await setDoc(doc(db, 'settings', 'currency_rates'), { key: 'currency_rates', value: curRates }, { merge: true });
-                                alert(`${curr.code} exchange rate updated to ${val}`);
-                              } catch (err) {
-                                console.error('Failed to update currency rate', err);
-                              }
-                            }
-                          }}
-                        />
-                        <p className="text-[9px] text-on-surface-variant">₦100,000 = {formatPrice(100000, curr.code)}</p>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <div className="flex items-center justify-between gap-4 mb-6">
-                    <div>
-                      <h3 className="text-xl font-bold">Extra Fees & Caution Rules</h3>
-                      <p className="text-xs text-on-surface-variant">Manage global service fees and refundable deposit rules.</p>
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Distance Trips Price Per KM (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.pricePerKm || 350}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, pricePerKm: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Pickup & Logistics Distance Price Per KM (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.logisticsPricePerKm || 250}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, logisticsPricePerKm: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Cross-Border Base Ticket Price Per Passenger (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.crossBorderBasePerPassenger || 90000}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, crossBorderBasePerPassenger: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Standard Service Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.standardServiceFee}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, standardServiceFee: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Pickup & Logistics Handling Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.pickupLogisticsFee}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, pickupLogisticsFee: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Logistics Price Per KG (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.pricePerKg}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, pricePerKg: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Car Hire Caution Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.carHireCautionFee}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, carHireCautionFee: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Car Hire Chauffeur Fee Per Day (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.carHireDriverDailyFee}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, carHireDriverDailyFee: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Certified Tour Guide Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.tourGuideFee}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, tourGuideFee: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Cross-Border Processing Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.crossBorderProcessingFee}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, crossBorderProcessingFee: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        Touring Per Location Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.touringPerLocation}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, touringPerLocation: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                        International Tour Per Location Fee (NGN)
-                      </label>
-                      <input
-                        type="number"
-                        value={pricingRulesSettings.internationalTourPerLocation}
-                        className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                        onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, internationalTourPerLocation: parseInt(e.target.value) || 0 })}
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div>
-                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                          Return Trip Multiplier
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={pricingRulesSettings.returnMultiplier}
-                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, returnMultiplier: parseFloat(e.target.value) || 1 })}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                          Max Touring Locations
-                        </label>
-                        <input
-                          type="number"
-                          value={pricingRulesSettings.maxTouringLocations}
-                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, maxTouringLocations: parseInt(e.target.value) || 1 })}
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div>
-                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                          Weekend Surcharge (%)
-                        </label>
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.1"
-                          value={pricingRulesSettings.weekendSurchargePercent}
-                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, weekendSurchargePercent: parseFloat(e.target.value) || 0 })}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">
-                          Night Surcharge (%)
-                        </label>
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.1"
-                          value={pricingRulesSettings.nightSurchargePercent}
-                          className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                          onChange={(e) => handleUpdatePricingRules({ ...pricingRulesSettings, nightSurchargePercent: parseFloat(e.target.value) || 0 })}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-
-              {/* Official Bank Account Details Configuration */}
-              <section className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                <div className="flex items-center justify-between gap-4 mb-6">
-                  <div>
-                    <h3 className="text-xl font-bold text-on-surface flex items-center gap-2">
-                      <span className="material-symbols-outlined text-primary">account_balance</span>
-                      Official Bank Account & Manual Transfer Details
-                    </h3>
-                    <p className="text-xs text-on-surface-variant mt-1">
-                      Configure the authoritative bank details, account number, and narration instructions presented to customers during checkout.
-                    </p>
-                  </div>
-                </div>
-                <form onSubmit={handleSaveBankConfig} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Bank Name</label>
-                    <input
-                      type="text"
-                      required
-                      value={bankConfigSettings.bankName}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, bankName: e.target.value })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                      placeholder="e.g. Guaranty Trust Bank"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Account Name</label>
-                    <input
-                      type="text"
-                      required
-                      value={bankConfigSettings.accountName}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, accountName: e.target.value })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                      placeholder="e.g. BLM Motors & Logistics Ltd"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Account Number</label>
-                    <input
-                      type="text"
-                      required
-                      value={bankConfigSettings.accountNumber}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, accountNumber: e.target.value })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-mono font-black text-primary tracking-wider"
-                      placeholder="0123456789"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Branch Name</label>
-                    <input
-                      type="text"
-                      value={bankConfigSettings.branchName || ''}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, branchName: e.target.value })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-semibold"
-                      placeholder="e.g. Ikeja Central Branch"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Support Contact Phone</label>
-                    <input
-                      type="text"
-                      value={bankConfigSettings.contactPhone || ''}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, contactPhone: e.target.value })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-semibold"
-                      placeholder="+234..."
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Payment Deadline (Hours)</label>
-                    <input
-                      type="number"
-                      value={bankConfigSettings.deadlineHours || 24}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, deadlineHours: parseInt(e.target.value) || 24 })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-sm font-bold"
-                    />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-on-surface-variant block mb-1">Customer Payment Instructions & Remark Notice</label>
-                    <textarea
-                      rows={2}
-                      value={bankConfigSettings.instructions}
-                      onChange={(e) => setBankConfigSettings({ ...bankConfigSettings, instructions: e.target.value })}
-                      className="w-full bg-surface-container border border-outline rounded-xl p-3 text-xs font-medium resize-none"
-                    />
-                  </div>
-                  <div className="md:col-span-2 flex justify-end">
-                    <button type="submit" className="px-8 py-3.5 bg-primary text-white font-bold rounded-xl text-xs hover:bg-primary-container shadow-md transition-all">
-                      Save Official Bank Account Configuration
-                    </button>
-                  </div>
-                </form>
-              </section>
-            </motion.div>
-          )}
-
-          {activeTab === 'hubs' && (
-            <motion.div 
-              key="hubs"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 gap-6 2xl:grid-cols-2"
-            >
-              <div className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                <h3 className="font-bold text-xl mb-8">Add new hub</h3>
-                <form onSubmit={handleAddHub} className="space-y-6">
-                  <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Hub Name</label>
-                    <input name="hubName" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="e.g. Lagos Operations Hub" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Physical Address</label>
-                    <input name="hubAddress" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="Full street address" />
-                  </div>
-                  <button type="submit" className="w-full py-4 bg-primary text-white font-bold rounded-md text-sm">
-                    Add hub
-                  </button>
-                </form>
-              </div>
-
-              <div className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden flex flex-col">
-                <div className="border-b border-outline bg-surface-container/30 p-4 sm:p-6">
-                  <h3 className="font-bold">Active Hub Network</h3>
-                </div>
-                <div className="divide-y divide-outline">
-                  {hubs.map((hub) => (
-                    <div key={hub.id} className="group flex flex-col items-start justify-between gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
-                      <div className="min-w-0">
-                        <p className="font-bold text-lg">{hub.name}</p>
-                        <p className="text-xs text-on-surface-variant">{hub.address}</p>
-                      </div>
-                      <button 
-                        onClick={() => handleDeleteHub(hub.id, hub.name)}
-                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary transition-all sm:opacity-0 sm:group-hover:opacity-100"
-                      >
-                        <span className="material-symbols-outlined">delete</span>
-                      </button>
-                    </div>
-                  ))}
-                  {hubs.length === 0 && <div className="p-6 text-center text-on-surface-variant italic sm:p-10">No hubs defined. Use form to add.</div>}
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'schedules' && (
-             <motion.div 
-               key="schedules"
-               initial={{ opacity: 0, y: 20 }}
-               animate={{ opacity: 1, y: 0 }}
-               className="rounded-lg border border-outline bg-white p-5 text-center shadow-sm sm:p-8"
-             >
-                <span className="material-symbols-outlined text-6xl text-primary mb-6">event_busy</span>
-                <h3 className="text-2xl font-bold mb-4">Availability control</h3>
-                <p className="text-on-surface-variant max-w-md mx-auto mb-10">
-                  Mark out entire days or specific time windows as unavailable for service.
-                </p>
-                
-                <div className="max-w-xl mx-auto space-y-8">
-                   <div className="rounded-lg border border-outline bg-surface-container/30 p-4 text-left sm:p-6">
-                      <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">Select Date to Block</label>
-                      <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
-                        <input type="date" className="flex-1 bg-white border border-outline p-4 rounded-xl" id="blockDate" />
-                        <button 
-                          onClick={async () => {
-                             const dateInput = document.getElementById('blockDate') as HTMLInputElement;
-                             if (!dateInput.value) return;
-                             await addDoc(collection(db, 'blocked_dates'), { date: dateInput.value, reason: 'Maintenance' });
-                             dateInput.value = '';
-                             alert('Date blocked.');
-                          }}
-                          className="min-h-12 rounded-md bg-primary px-6 py-3 text-sm font-bold text-white"
-                        >
-                          Block date
-                        </button>
-                      </div>
-                   </div>
-                   
-                   <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Active Disruptions</p>
-                   <div className="grid grid-cols-1 gap-4">
-                      {blockedDays.map((block) => (
-                        <div key={block.id} className="flex items-center justify-between gap-3 rounded-md border border-outline bg-white p-4">
-                           <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-                              <span className="material-symbols-outlined text-primary text-xl">block</span>
-                              <div>
-                                 <p className="font-bold text-sm">{block.date}</p>
-                                 <p className="text-[10px] text-on-surface-variant uppercase font-medium">{block.reason}</p>
-                              </div>
-                           </div>
-                           <button 
-                             onClick={() => unblockDate(block.id)}
-                             className="text-primary hover:text-primary-container p-2"
-                           >
-                              <span className="material-symbols-outlined text-lg">close</span>
-                           </button>
-                        </div>
-                      ))}
-                      {blockedDays.length === 0 && <p className="text-xs italic text-on-surface-variant">No active schedule constraints.</p>}
-                   </div>
-                </div>
-             </motion.div>
-          )}
-
-          {activeTab === 'drivers' && (
-            <motion.div 
-              key="drivers"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 gap-6 2xl:grid-cols-2"
-            >
-              <div className="rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                  <h3 className="font-bold text-xl mb-8">Register new driver</h3>
-                  <form onSubmit={async (e: any) => {
-                    e.preventDefault();
-                    const name = e.target.driverName.value;
-                    const license = e.target.license.value;
-                    const phone = e.target.driverPhone.value;
-                    await apiPost('/api/drivers/onboard', { name, license, phone });
-                    e.target.reset();
-                    fetchData();
-                  }} className="space-y-6">
-                     <div>
-                       <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Full Legal Name</label>
-                       <input name="driverName" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="e.g. Samuel Okafor" />
-                     </div>
-                     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                        <div>
-                          <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">License Reference</label>
-                          <input name="license" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="A-XXXXX-XXXX" />
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">Phone</label>
-                          <input name="driverPhone" required className="w-full bg-surface-container border border-outline p-4 rounded-xl" placeholder="+234 906 409 0276" />
-                        </div>
-                     </div>
-                     <button type="submit" className="w-full py-4 bg-primary text-white font-bold rounded-xl uppercase tracking-widest text-xs">
-                       Onboard Driver
-                     </button>
-                  </form>
-              </div>
-
-              <div className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden flex flex-col">
-                <div className="flex flex-col items-start justify-between gap-2 border-b border-outline bg-surface-container/30 p-4 sm:flex-row sm:items-center sm:p-6">
-                  <h3 className="font-bold flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary">badge</span>
-                    Fleet Personnel
-                  </h3>
-                   <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">{drivers.length} Active</span>
-                </div>
-                <div className="divide-y divide-outline">
-                  {drivers.map((driver) => (
-                    <div key={driver.id} className="group flex flex-col items-start justify-between gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
-                       <div className="flex min-w-0 items-center gap-4">
-                          <div className="w-12 h-12 rounded-2xl bg-surface-container flex items-center justify-center text-on-surface-variant font-bold">
-                             {driver.name?.[0]}
-                          </div>
-                          <div>
-                             <p className="font-bold">{driver.name}</p>
-                             <p className="text-[10px] text-on-surface-variant uppercase font-medium">License: {driver.license}</p>
-                          </div>
-                       </div>
-                       <div className="flex items-center gap-4">
-                          <span className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest ${
-                            driver.status === 'Available' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
-                          }`}>
-                            {driver.status}
-                          </span>
-                       </div>
-                    </div>
-                  ))}
-                  {drivers.length === 0 && <div className="p-12 text-center text-on-surface-variant italic">No drivers registered in fleet.</div>}
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'admins' && (
-            <motion.div 
-              key="admins"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 gap-6 2xl:grid-cols-2"
-            >
-              <div className="h-fit rounded-lg border border-outline bg-white p-5 shadow-sm sm:p-8">
-                <h3 className="font-bold text-xl mb-2">Promote admin</h3>
-                <p className="text-xs text-on-surface-variant mb-8 font-medium">Elevate a user to operational control by searching their system UID.</p>
-                
-                {isSuperAdmin ? (
-                  <form onSubmit={handlePromoteAdmin} className="space-y-6">
-                    <div>
-                      <label className="block text-[10px] font-bold uppercase tracking-widest text-on-surface-variant mb-2">User UID</label>
-                      <input name="userUid" required className="w-full bg-surface-container border border-outline p-4 rounded-xl font-mono text-xs" placeholder="Paste full User UID here..." />
-                    </div>
-                    <button type="submit" className="w-full py-4 bg-primary text-white font-bold rounded-md text-sm flex items-center justify-center gap-3">
-                      <span className="material-symbols-outlined">shield_person</span>
-                      Promote user
-                    </button>
-                    <p className="text-[9px] text-center text-on-surface-variant uppercase font-bold italic">Critical Operation: Super-Admin Clearance Required</p>
-                  </form>
-                ) : (
-                  <div className="p-8 border-2 border-dashed border-outline rounded-lg text-center">
-                    <span className="material-symbols-outlined text-4xl text-on-surface-variant mb-4">lock</span>
-                    <p className="text-xs font-bold text-on-surface-variant uppercase">Access Denied</p>
-                    <p className="text-[10px] text-on-surface-variant/60 mt-2">Only Super-Admins can authorize new staff promotions.</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="bg-white rounded-lg border border-outline shadow-sm overflow-hidden flex flex-col">
-                <div className="flex flex-col items-start justify-between gap-2 border-b border-outline bg-surface-container/30 p-4 sm:flex-row sm:items-center sm:p-6">
-                  <h3 className="font-bold flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary">security</span>
-                    Operational Staff
-                  </h3>
-                   <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">{admins.length + 1} Active</span>
-                </div>
-                <div className="divide-y divide-outline">
-                  {/* Super Admin Always First */}
-                  <div className="flex flex-col items-start justify-between gap-4 bg-primary/5 p-4 sm:flex-row sm:items-center sm:p-6">
-                     <div className="flex min-w-0 items-center gap-4">
-                        <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white">
-                           <span className="material-symbols-outlined">stars</span>
-                        </div>
-                        <div>
-                           <p className="font-bold text-sm">{user?.email}</p>
-                           <p className="text-xs text-primary font-bold">Active admin session</p>
-                        </div>
-                     </div>
-                  </div>
-
-                  {admins.map((admin) => (
-                    <div key={admin.id} className="group flex flex-col items-start justify-between gap-4 p-4 sm:flex-row sm:items-center sm:p-6">
-                      <div className="flex min-w-0 items-center gap-4">
-                        <div className="w-10 h-10 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
-                           <span className="material-symbols-outlined">person</span>
-                        </div>
-                        <div>
-                           <p className="font-mono text-xs">{admin.id}</p>
-                           <p className="text-[9px] text-on-surface-variant uppercase font-bold tracking-widest mt-0.5">Role: Operations Specialist</p>
-                        </div>
-                      </div>
-                      {isSuperAdmin && (
-                        <button 
-                          onClick={() => handleRevokeAdmin(admin.id)}
-                          className="w-10 h-10 rounded-xl bg-red-50 text-red-600 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all hover:bg-red-600 hover:text-white"
-                        >
-                          <span className="material-symbols-outlined text-lg">no_accounts</span>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {admins.length === 0 && (
-                    <div className="p-12 text-center">
-                      <p className="text-xs text-on-surface-variant italic">No additional staff members promoted.</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          )}
-          {activeTab === 'maintenance' && (
-            <motion.div 
-              key="maintenance"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="bg-white p-12 rounded-lg border border-outline shadow-sm"
-            >
-              <h3 className="text-2xl font-bold mb-4">Maintenance</h3>
-              <p className="text-on-surface-variant max-w-md mb-10">
-                Perform administrative database cleanup and optimization tasks.
-              </p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                 <div className="p-8 border border-outline rounded-lg bg-surface-container/30">
-                    <h4 className="font-bold mb-2 text-sm">Archive old bookings</h4>
-                    <p className="text-xs text-on-surface-variant mb-6">Move completed bookings older than 90 days to archive.</p>
-                    <button 
-                      onClick={async () => {
-                        if (!window.confirm("Commence global archival process? This will move indices to secondary storage.")) return;
-                        setLoading(true);
-                        try {
-                          const ninetyDaysAgo = new Date();
-                          ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-                          
-                          const q = query(collection(db, 'bookings'), orderBy('date'));
-                          const snap = await getDocs(q);
-                          const oldBookings = snap.docs.filter(d => {
-                            const b = d.data();
-                            return new Date(b.date) < ninetyDaysAgo && (b.status === 'Completed' || b.status === 'Cancelled');
-                          });
-
-                          if (oldBookings.length === 0) {
-                            alert("No qualifying bookings found for archival.");
-                            return;
-                          }
-
-                          for (const docSnap of oldBookings) {
-                            await setDoc(doc(db, 'archived_bookings', docSnap.id), docSnap.data());
-                            await deleteDoc(doc(db, 'bookings', docSnap.id));
-                          }
-
-                          alert(`Successfully archived ${oldBookings.length} bookings.`);
-                          fetchData();
-                        } catch (err) {
-                          console.error(err);
-                          alert("Archival process failed.");
-                        } finally {
-                          setLoading(false);
-                        }
-                      }}
-                      className="w-full py-4 bg-on-surface text-white font-bold rounded-md text-sm hover:bg-black transition-colors"
-                    >
-                      Archive old bookings
-                    </button>
-                 </div>
-
-                 <div className="p-8 border border-outline rounded-lg bg-surface-container/30">
-                    <h4 className="font-bold mb-2 text-sm">Data check</h4>
-                    <p className="text-xs text-on-surface-variant mb-6">Re-validate operational records against the current data rules.</p>
-                    <button
-                      onClick={() => {
-                        const missingCustomer = bookings.filter((booking) => !booking.customerId || !booking.customerEmail).length;
-                        const missingRoute = bookings.filter((booking) => !booking.pickup || !booking.destination).length;
-                        const missingAmount = bookings.filter((booking) => !booking.totalAmount).length;
-                        alert(`Diagnostic complete.\nBookings checked: ${bookings.length}\nMissing customer data: ${missingCustomer}\nMissing route data: ${missingRoute}\nMissing amount: ${missingAmount}`);
-                      }}
-                      className="w-full py-4 border-2 border-outline text-on-surface-variant font-bold rounded-md text-sm hover:bg-surface-container transition-colors"
-                    >
-                      Run Diagnostic Scan
-                    </button>
-                 </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </main>
-
-      {/* Global Supply Chain Metrics Overlay */}
-      <footer className="grid grid-cols-2 md:grid-cols-4 gap-8 pt-12 border-t border-outline">
-         {[
-           { label: 'Bookings loaded', val: bookings.length.toString(), icon: 'receipt_long' },
-           { label: 'Drivers loaded', val: drivers.length.toString(), icon: 'badge' },
-           { label: 'Reviews loaded', val: reviews.length.toString(), icon: 'reviews' },
-           { label: 'Support', val: company.phoneDisplay, icon: 'call' },
-         ].map((stat) => (
-           <div key={stat.label} className="flex items-center gap-5">
-              <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-on-surface-variant border border-outline">
-                <span className="material-symbols-outlined">{stat.icon}</span>
-              </div>
-              <div>
-                 <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant leading-tight mb-1">{stat.label}</p>
-                 <p className="text-lg font-bold">{stat.val}</p>
-              </div>
-           </div>
-         ))}
-      </footer>
-
-      {/* MODAL 1: Payment Proof Viewer Modal */}
-      {selectedPaymentProof && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-outline bg-white p-7 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Payment Receipt Verification</span>
-                <h4 className="text-lg font-bold text-on-surface">Ref: {selectedPaymentProof.paymentReference}</h4>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedPaymentProof(null)}
-                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
-              >
-                <span className="material-symbols-outlined text-lg">close</span>
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 rounded-md bg-surface-container/30 p-4 text-xs sm:grid-cols-2">
-                <div>
-                  <p className="text-on-surface-variant font-medium">Customer</p>
-                  <p className="font-bold text-on-surface">{selectedPaymentProof.customerName}</p>
-                </div>
-                <div>
-                  <p className="text-on-surface-variant font-medium">Amount Due</p>
-                  <p className="font-bold text-primary text-sm">{formatPrice(selectedPaymentProof.amount)}</p>
-                </div>
-                <div>
-                  <p className="text-on-surface-variant font-medium">Booking ID</p>
-                  <p className="font-mono font-bold">{selectedPaymentProof.bookingId}</p>
-                </div>
-                <div>
-                  <p className="text-on-surface-variant font-medium">Submitted Date</p>
-                  <p className="font-bold">{selectedPaymentProof.submittedAt ? new Date(selectedPaymentProof.submittedAt).toLocaleString() : 'N/A'}</p>
-                </div>
-              </div>
-
-              {selectedPaymentProof.customerNote && (
-                <div className="rounded-xl border border-outline/60 p-3.5 bg-surface-container/20 text-xs">
-                  <p className="font-bold text-on-surface mb-1">Customer Note:</p>
-                  <p className="text-on-surface-variant italic">{selectedPaymentProof.customerNote}</p>
-                </div>
-              )}
-
-              {/* Receipt Image / PDF view */}
-              <div className="rounded-2xl border border-outline overflow-hidden bg-black/5 flex items-center justify-center p-2 min-h-[260px]">
-                {selectedPaymentProof.proofOfPaymentUrl?.startsWith('data:application/pdf') || selectedPaymentProof.proofFileName?.endsWith('.pdf') ? (
-                  <div className="text-center py-10 space-y-3">
-                    <span className="material-symbols-outlined text-6xl text-primary">picture_as_pdf</span>
-                    <p className="text-xs font-bold text-on-surface">{selectedPaymentProof.proofFileName || 'PDF Document'}</p>
-                    <a
-                      href={selectedPaymentProof.proofOfPaymentUrl}
-                      download={selectedPaymentProof.proofFileName || 'receipt.pdf'}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-white font-bold text-xs"
-                    >
-                      <span className="material-symbols-outlined text-sm">download</span>
-                      Download PDF Receipt
-                    </a>
-                  </div>
-                ) : (
-                  <img
-                    src={selectedPaymentProof.proofOfPaymentUrl}
-                    alt="Proof of Payment"
-                    className="max-h-[60vh] max-w-full rounded-lg object-contain"
-                  />
-                )}
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-outline">
-                {selectedPaymentProof.status !== 'PAID' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const p = selectedPaymentProof;
-                      setSelectedPaymentProof(null);
-                      handleApprovePayment(p);
-                    }}
-                    className="px-5 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1.5"
-                  >
-                    <span className="material-symbols-outlined text-sm">check</span>
-                    <span>Approve Payment</span>
-                  </button>
-                )}
-                {selectedPaymentProof.status !== 'PAYMENT_REJECTED' && selectedPaymentProof.status !== 'PAID' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const p = selectedPaymentProof;
-                      setSelectedPaymentProof(null);
-                      setRejectModalPayment(p);
-                      setRejectionReasonInput('');
-                    }}
-                    className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-sm transition-colors flex items-center gap-1.5"
-                  >
-                    <span className="material-symbols-outlined text-sm">close</span>
-                    <span>Reject Payment</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 2: Payment Rejection Modal (Mandatory Reason) */}
-      {rejectModalPayment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="relative w-full max-w-md rounded-3xl border border-outline bg-white p-7 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
-              <h4 className="text-lg font-bold text-on-surface">Reject Payment Submission</h4>
-              <button
-                type="button"
-                onClick={() => setRejectModalPayment(null)}
-                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
-              >
-                <span className="material-symbols-outlined text-lg">close</span>
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <p className="text-xs text-on-surface-variant">
-                Please select or type a mandatory reason explaining why this payment proof was rejected.
-              </p>
-
-              {/* Quick Reason Pills */}
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  'Transfer not received in bank',
-                  'Incorrect transfer amount',
-                  'Invalid / forged payment slip',
-                  'Wrong beneficiary account',
-                  'Unreadable / corrupted document',
-                  'Duplicate payment submission',
-                ].map((reason) => (
-                  <button
-                    key={reason}
-                    type="button"
-                    onClick={() => setRejectionReasonInput(reason)}
-                    className="px-2.5 py-1 rounded-lg bg-surface-container hover:bg-primary/10 hover:text-primary text-[10px] font-semibold transition-colors"
-                  >
-                    {reason}
-                  </button>
-                ))}
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">
-                  Rejection Reason *
-                </label>
-                <textarea
-                  required
-                  rows={3}
-                  value={rejectionReasonInput}
-                  onChange={(e) => setRejectionReasonInput(e.target.value)}
-                  placeholder="Enter detailed reason for rejection..."
-                  className="w-full rounded-xl border border-outline bg-surface-container px-3.5 py-2.5 text-xs font-medium text-on-surface focus:border-primary focus:outline-none resize-none"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-outline">
-                <button
-                  type="button"
-                  onClick={() => setRejectModalPayment(null)}
-                  className="px-4 py-2.5 rounded-xl border border-outline hover:bg-surface-container text-xs font-bold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmRejectPayment}
-                  disabled={!rejectionReasonInput.trim()}
-                  className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors"
-                >
-                  Confirm Rejection
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 3: Payment Audit Trail Modal */}
-      {selectedAuditPayment && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="relative max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-outline bg-white p-7 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Immutable Audit History</span>
-                <h4 className="text-lg font-bold text-on-surface">Payment #{selectedAuditPayment.paymentReference}</h4>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedAuditPayment(null)}
-                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
-              >
-                <span className="material-symbols-outlined text-lg">close</span>
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {selectedAuditPayment.events && selectedAuditPayment.events.length > 0 ? (
-                <ol className="relative border-l-2 border-primary/30 pl-5 ml-2 space-y-5">
-                  {selectedAuditPayment.events.map((evt, idx) => (
-                    <li key={evt.id || idx} className="relative text-xs">
-                      <span className="absolute -left-[27px] top-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-primary shadow-sm" />
-                      <p className="font-mono text-[10px] font-bold text-primary">
-                        {evt.timestamp ? new Date(evt.timestamp).toLocaleString() : 'Timestamp Recorded'}
-                      </p>
-                      <p className="font-bold text-on-surface text-xs mt-0.5">{evt.eventType}</p>
-                      <p className="text-[11px] text-on-surface-variant">
-                        Actor: <span className="font-semibold">{evt.actorEmail || evt.actorId}</span> ({evt.actorRole})
-                      </p>
-                      {evt.notes && <p className="mt-1 text-[11px] text-on-surface-variant/80 italic">{evt.notes}</p>}
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="text-xs text-on-surface-variant italic">No previous events recorded.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 4: Live Tracking Checkpoint & Status Update Modal */}
-      {trackingUpdateBooking && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="relative w-full max-w-md rounded-3xl border border-outline bg-white p-7 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-outline pb-4 mb-4">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-primary">Live Operations Dispatch</span>
-                <h4 className="text-lg font-bold text-on-surface">Update Tracking Milestone</h4>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTrackingUpdateBooking(null)}
-                className="rounded-full p-2 hover:bg-surface-container text-on-surface-variant"
-              >
-                <span className="material-symbols-outlined text-lg">close</span>
-              </button>
-            </div>
-
-            <div className="space-y-4 text-xs">
-              <div className="rounded-xl bg-surface-container/30 p-3 space-y-1">
-                <p><span className="text-on-surface-variant font-medium">Tracking ID:</span> <strong className="font-mono text-primary">{trackingUpdateBooking.trackingId || trackingUpdateBooking.id}</strong></p>
-                <p><span className="text-on-surface-variant font-medium">Customer:</span> <strong>{trackingUpdateBooking.customerName || 'Customer'}</strong></p>
-                <p><span className="text-on-surface-variant font-medium">Route:</span> <strong>{trackingUpdateBooking.pickup} → {trackingUpdateBooking.destination}</strong></p>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">
-                  Current Checkpoint Location *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newTrackingCheckpoint}
-                  onChange={(e) => setNewTrackingCheckpoint(e.target.value)}
-                  placeholder="e.g. Ikeja Depot - Departed, Seme Border - Cleared"
-                  className="w-full rounded-xl border border-outline bg-surface-container px-3.5 py-2.5 text-xs font-bold text-on-surface focus:border-primary focus:outline-none"
-                />
-              </div>
-
-              {/* Quick Checkpoint Presets */}
-              <div className="flex flex-wrap gap-1">
-                {[
-                  'Ikeja Central Depot - Dispatched',
-                  'In Transit on Expressway',
-                  'Seme Border Station - Clearance Done',
-                  'Cotonou Station - Arrived',
-                  'Out for Final Doorstep Delivery',
-                  'Package Delivered Successfully',
-                ].map((cp) => (
-                  <button
-                    key={cp}
-                    type="button"
-                    onClick={() => setNewTrackingCheckpoint(cp)}
-                    className="px-2 py-0.5 rounded bg-surface-container text-[10px] hover:bg-primary/10 hover:text-primary font-medium"
-                  >
-                    {cp}
-                  </button>
-                ))}
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-on-surface-variant mb-1">
-                  Transit Status
-                </label>
-                <select
-                  value={newTrackingStatus}
-                  onChange={(e) => setNewTrackingStatus(e.target.value)}
-                  className="w-full rounded-xl border border-outline bg-surface-container px-3.5 py-2.5 text-xs font-bold text-on-surface focus:border-primary focus:outline-none"
-                >
-                  <option value="Paid">Paid</option>
-                  <option value="Confirmed">Confirmed</option>
-                  <option value="Dispatched">Dispatched</option>
-                  <option value="InTransit">InTransit</option>
-                  <option value="Completed">Completed / Delivered</option>
-                  <option value="Cancelled">Cancelled</option>
-                </select>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-outline">
-                <button
-                  type="button"
-                  onClick={() => setTrackingUpdateBooking(null)}
-                  className="px-4 py-2.5 rounded-xl border border-outline hover:bg-surface-container text-xs font-bold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveTrackingUpdate}
-                  disabled={!newTrackingCheckpoint.trim()}
-                  className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary-container disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors"
-                >
-                  Save Live Update
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(212, 0, 0, 0.2); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(212, 0, 0, 0.5); }
-      `}</style>
+          </AnimatePresence>
+        </main>
+      </div>
+      {feedbackLayer}
     </div>
   );
 }

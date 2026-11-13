@@ -11,22 +11,23 @@ export default function HubsTab({ hubs, onAdd, onDelete }: HubsTabProps) {
     <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
       <section className="h-fit rounded-lg border border-outline bg-white p-5 shadow-sm">
         <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-          Add operating hub
+          Add a pickup point
         </h2>
         <form
           className="mt-5 space-y-4"
           onSubmit={async (event) => {
             event.preventDefault();
-            const form = new FormData(event.currentTarget);
+            const formElement = event.currentTarget;
+    const form = new FormData(formElement);
             await onAdd(
               String(form.get("name") || ""),
               String(form.get("address") || ""),
             );
-            event.currentTarget.reset();
+            formElement.reset();
           }}
         >
           <label className="block text-sm font-semibold">
-            Hub name
+            Name
             <input
               name="name"
               required
@@ -35,23 +36,23 @@ export default function HubsTab({ hubs, onAdd, onDelete }: HubsTabProps) {
             />
           </label>
           <label className="block text-sm font-semibold">
-            Physical address
+            Address
             <input
               name="address"
               required
               className="mt-1.5 h-11 w-full rounded-md border border-outline bg-surface-container px-3 text-sm"
-              placeholder="Full operating address"
+              placeholder="Full street address"
             />
           </label>
           <button className="h-10 w-full rounded-md bg-primary px-4 text-sm font-bold text-white hover:bg-primary-container">
-            Add hub
+            Add pickup point
           </button>
         </form>
       </section>
       <section className="overflow-hidden rounded-lg border border-outline bg-white shadow-sm">
         <div className="border-b border-outline px-5 py-4">
           <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-            Active hub network
+            Pickup points
           </h2>
         </div>
         <div className="divide-y divide-outline">
@@ -81,8 +82,8 @@ export default function HubsTab({ hubs, onAdd, onDelete }: HubsTabProps) {
           {hubs.length === 0 && (
             <EmptyState
               icon="hub"
-              title="No hubs configured"
-              description="Add the first customer-selectable pickup hub using this form."
+              title="No pickup points yet"
+              description="Add the first one using the form."
             />
           )}
         </div>

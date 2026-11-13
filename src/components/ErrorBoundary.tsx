@@ -39,13 +39,13 @@ export class ErrorBoundary extends React.Component<Props, State> {
           </div>
           <h1 className="text-4xl font-bold text-on-surface mb-4">Something went wrong.</h1>
           <p className="text-on-surface-variant max-w-md font-medium text-sm leading-relaxed mb-8">
-            The page ran into an unexpected error. Please return home and try again.
+            Sorry, this page didn’t load properly. Please go back to the home page and try again.
           </p>
           <button
             className="px-8 py-3 bg-primary text-white font-bold rounded-md text-sm hover:bg-primary-container transition-colors"
             onClick={() => window.location.href = '/'}
           >
-            Return home
+            Go to home page
           </button>
         </div>
       );

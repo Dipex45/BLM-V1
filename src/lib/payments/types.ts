@@ -11,7 +11,14 @@ export type PaymentStatusType =
   | 'PAYMENT_EXPIRED'
   | 'PAYMENT_CANCELLED'
   | 'REFUND_REQUESTED'
-  | 'REFUNDED';
+  | 'REFUNDED'
+  // Card gateway states (Stripe / Paystack)
+  | 'initialized'
+  | 'requires_action'
+  | 'requires_payment_method'
+  | 'processing'
+  | 'succeeded'
+  | 'failed';
 
 export type PaymentEventType =
   | 'PAYMENT_CREATED'
@@ -78,7 +85,7 @@ export interface PaymentRecord {
   reconciledBy?: string;
   reconciliationNotes?: string;
   deadline?: string;
-  events: PaymentAuditEvent[];
+  events?: PaymentAuditEvent[];
   createdAt: string;
   updatedAt: string;
 }

@@ -1,397 +1,223 @@
-import { FormEvent, useEffect, useState } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { company } from '../lib/company';
-import { db } from '../lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
-import { apiGet } from '../lib/api';
+import { apiErrorMessage, apiGet } from '../lib/api';
 import LiveTrackingMap from '../components/LiveTrackingMap';
 import { useLocale } from '../contexts/LocaleContext';
+import { STATUS_FLOW, statusLabel } from '../hooks/useMyBookings';
+import { easeOutExpo, Spinner } from '../components/ui/motion';
+
+type TrackingEvent = { id: string; type: string; location: string | null; notes: string | null; status: string | null; createdAt: string | null };
 
 type TrackingRecord = {
   id: string;
-  trackingId?: string;
-  paymentReference?: string;
+  trackingId: string;
   pickup: string | null;
   destination: string | null;
   status: string;
-  assignedDriverId: string | null;
-  driverName?: string;
-  driverPhone?: string;
-  driver?: {
-    name: string;
-    photoUrl?: string | null;
-    vehiclePhotoUrl?: string | null;
-    rating?: number | null;
-    ratingCount?: number;
-    verificationStatus?: string;
-    insuranceStatus?: string;
-  } | null;
-  liveLocation?: { latitude: number; longitude: number; heading?: number | null; heartbeatAt?: string | null } | null;
-  liveTrackingEnabled?: boolean;
+  serviceType: string | null;
   vehicleClass: string | null;
-  serviceType?: string;
-  currentCheckpoint?: string;
+  currentCheckpoint: string | null;
   date: string | null;
   time: string | null;
   updatedAt: string | null;
-  events: Array<{ id: string; type: string; createdAt: string | null; location?: string; notes?: string }>;
+  driver: { name: string; photoUrl?: string | null; rating?: number | null; ratingCount?: number; verificationStatus?: string } | null;
+  liveLocation: { latitude: number; longitude: number; heading?: number | null; heartbeatAt?: string | null } | null;
+  liveTrackingEnabled: boolean;
+  routeMetadata: { distanceText?: string; durationText?: string } | null;
+  events: TrackingEvent[];
 };
 
-const progressByStatus: Record<string, number> = {
-  Quoted: 15,
-  Booked: 30,
-  Paid: 45,
-  Confirmed: 60,
-  Dispatched: 75,
-  InTransit: 85,
-  Completed: 100,
-  Delivered: 100,
-  Cancelled: 100,
+const EVENT_LABELS: Record<string, string> = {
+  'booking.booked': 'Booking received',
+  'payment.succeeded': 'Payment received',
+  'booking.paid': 'Payment received',
+  'booking.confirmed': 'Driver assigned',
+  'dispatch.assigned': 'Driver assigned',
+  'dispatch.manually_assigned': 'Driver assigned',
+  'driver.accept': 'Driver accepted the trip',
+  'driver.arrived': 'Driver arrived at pickup',
+  'driver.in_transit': 'Trip started',
+  'driver.completed': 'Trip completed',
+  'booking.dispatched': 'Driver on the way to pickup',
+  'booking.intransit': 'Trip started',
+  'booking.completed': 'Completed',
+  'booking.cancelled': 'Booking cancelled',
+  'booking.checkpoint_updated': 'Location update',
 };
 
-const defaultTrackingLocations = [
-  'Lagos Central Logistics Depot',
-  'Ikeja Transit Hub',
-  'Lagos-Ibadan Expressway Checkpoint',
-  'Seme Border Clearance Station',
-  'Cotonou International Transit Office',
-  'Port Harcourt Aba Road Hub',
-  'Abuja Central Distribution Terminal',
-];
-
-function labelEvent(type: string) {
-  return type.replace(/[._]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
+const labelEvent = (type: string) => EVENT_LABELS[type] || type.replace(/[._]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 
 export default function Tracking() {
   const { t } = useLocale();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [trackingInput, setTrackingInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const reference = searchParams.get('booking') || searchParams.get('track') || '';
+  const [input, setInput] = useState(reference);
   const [record, setRecord] = useState<TrackingRecord | null>(null);
-  const [trackingLocations, setTrackingLocations] = useState<string[]>(defaultTrackingLocations);
-  const [activeLocationIndex, setActiveLocationIndex] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const loadTracking = async (reference: string, silent = false) => {
-    if (!reference) return;
-
-    if (!silent) setLoading(true);
-    setError('');
-    if (!silent) setRecord(null);
-
+  const load = useCallback(async (value: string, silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     try {
-      const cleanRef = reference.trim();
-      const response = await apiGet<TrackingRecord>(`/api/tracking/${encodeURIComponent(cleanRef)}`);
-      const foundData = response.data;
-      const eventsList = Array.isArray(foundData.events) && foundData.events.length > 0
-        ? foundData.events
-        : [{ id: 'evt-init', type: `Order ${foundData.status || 'Received'}`, createdAt: foundData.updatedAt, notes: `Booking recorded with tracking ID ${foundData.trackingId || foundData.id}` }];
-      setRecord({ ...foundData, events: eventsList });
+      const { data } = await apiGet<TrackingRecord>(`/api/tracking/${encodeURIComponent(value)}`);
+      setRecord(data);
+      setError('');
     } catch (err: any) {
-      if (!silent) setError(err.response?.status === 404 ? 'No tracking record was found. Check the reference and try again.' : 'Unable to load tracking details. Check your connection and try again.');
+      if (!silent) {
+        setRecord(null);
+        setError(err?.response?.status === 404 ? 'We couldn’t find that booking. Please check the tracking number on your confirmation.' : apiErrorMessage(err, 'Tracking isn’t working right now. Please try again shortly.'));
+      }
     } finally {
       if (!silent) setLoading(false);
     }
-  };
-
-  const loadTrackingLocations = async () => {
-    try {
-      const snap = await getDoc(doc(db, 'settings', 'tracking_locations'));
-      if (snap.exists() && Array.isArray(snap.data()?.value) && snap.data()?.value.length > 0) {
-        setTrackingLocations(snap.data()?.value);
-        return;
-      }
-    } catch (err) {
-      console.warn('Could not load tracking locations', err);
-    }
-    setTrackingLocations(defaultTrackingLocations);
-  };
+  }, []);
 
   useEffect(() => {
-    const reference = searchParams.get('booking') || searchParams.get('track');
     if (reference) {
-      setTrackingInput(reference);
-      loadTracking(reference);
+      setInput(reference);
+      void load(reference);
     }
-    loadTrackingLocations();
-  }, [searchParams]);
+  }, [load, reference]);
 
+  // Refresh active trips every 20 seconds while the page is open.
   useEffect(() => {
-    if (trackingLocations.length === 0) return;
-    const interval = window.setInterval(() => {
-      setActiveLocationIndex((prev) => (prev + 1) % trackingLocations.length);
-    }, 3500);
-    return () => window.clearInterval(interval);
-  }, [trackingLocations.length]);
+    if (!record || ['Completed', 'Cancelled'].includes(record.status)) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load(record.trackingId || record.id, true);
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [load, record]);
 
-  useEffect(() => {
-    if (!record?.liveTrackingEnabled) return;
-    const reference = record.trackingId || record.id;
-    const interval = window.setInterval(() => loadTracking(reference, true), 15000);
-    return () => window.clearInterval(interval);
-  }, [record?.id, record?.liveTrackingEnabled, record?.trackingId]);
-
-  const handleTrack = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!trackingInput.trim()) return;
-    setSearchParams({ booking: trackingInput.trim() });
-    await loadTracking(trackingInput.trim());
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const value = input.trim();
+    if (value) setSearchParams({ booking: value });
   };
 
-  const progress = record ? progressByStatus[record.status] || 40 : 0;
+  const stepIndex = record ? STATUS_FLOW.indexOf(record.status) : -1;
 
   return (
-    <div className="min-h-screen bg-background px-4 py-10 md:px-8 md:py-14">
-      <div className="mx-auto flex max-w-7xl flex-col gap-10">
-        <header className="grid gap-8 lg:grid-cols-[1fr_auto] lg:items-end">
-          <div className="max-w-3xl">
-            <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3.5 py-1 text-xs font-bold text-primary mb-3">
-              <span className="material-symbols-outlined text-sm">location_searching</span>
-              <span>Live Tracking & Transit Status</span>
-            </div>
-            <h1 className="text-3xl font-black leading-tight text-on-surface sm:text-4xl md:text-5xl">
-              {t('trackingTitle')}
-            </h1>
-            <p className="mt-4 text-base leading-relaxed text-on-surface-variant">
-              {t('trackingBody')}
-            </p>
-          </div>
-          <a
-            href={`tel:${company.phone}`}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-outline bg-white px-5 py-3.5 text-sm font-bold text-on-surface shadow-sm transition-colors hover:border-primary hover:text-primary"
-          >
-            <span className="material-symbols-outlined text-base text-primary">call</span>
-            <span>24/7 Dispatch Hotline</span>
-          </a>
-        </header>
+    <div>
+      <section className="relative overflow-hidden bg-secondary text-white">
+        <div className="hero-grid absolute inset-0" />
+        <div className="absolute -right-32 top-0 h-96 w-96 rounded-full bg-primary/25 blur-3xl" />
+        <div className="container-page relative py-16 sm:py-20">
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7, ease: easeOutExpo }} className="max-w-3xl">
+            <p className="eyebrow">Live tracking</p>
+            <h1 className="mt-3 text-4xl font-extrabold sm:text-5xl">{t('trackingTitle')}</h1>
+            <p className="mt-4 text-white/70">{t('trackingBody')}</p>
+          </motion.div>
+          <motion.form onSubmit={submit} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.7, ease: easeOutExpo }} className="mt-8 flex max-w-2xl flex-col gap-2 rounded-2xl bg-white p-2 shadow-2xl sm:flex-row">
+            <label className="relative flex-1">
+              <span className="sr-only">Tracking number</span>
+              <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-primary">search</span>
+              <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="e.g. BLM-TRK-8F2A91C0" className="h-12 w-full rounded-xl pl-12 pr-4 font-mono text-sm font-semibold text-on-surface outline-none" />
+            </label>
+            <button type="submit" disabled={loading} className="btn-primary h-12">{loading ? <Spinner /> : t('trackingAction')}</button>
+          </motion.form>
+        </div>
+      </section>
 
-        {/* Tracking Search Form */}
-        <form onSubmit={handleTrack} className="flex w-full max-w-3xl flex-col gap-3 rounded-lg border border-outline bg-white p-3 shadow-md sm:flex-row">
-          <label className="relative flex-1">
-            <span className="sr-only">Tracking or Booking Reference</span>
-            <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-primary">search</span>
-            <input
-              type="text"
-              placeholder="Booking or tracking ID"
-              className="w-full rounded-xl border border-transparent bg-surface-container py-4 pl-12 pr-4 text-sm font-medium text-on-surface transition-colors focus:border-primary focus:bg-white focus:outline-none"
-              value={trackingInput}
-              onChange={(e) => setTrackingInput(e.target.value)}
-            />
-          </label>
-          <button
-            type="submit"
-            disabled={loading || !trackingInput.trim()}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-8 py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:bg-primary-container disabled:opacity-60"
-          >
-            {loading ? (
-              <span className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-            ) : (
-              <>
-                <span className="material-symbols-outlined text-base">radar</span>
-                <span>{t('trackingAction')}</span>
-              </>
-            )}
-          </button>
-        </form>
-
-        {error && (
-          <div className="max-w-3xl rounded-lg border border-error/20 bg-error-container p-5 text-sm font-bold text-on-error-container">
-            {error}
-          </div>
-        )}
-
-        {/* Real-time Tracking Result View */}
-        <AnimatePresence>
+      <div className="container-page py-12">
+        <AnimatePresence mode="wait">
+          {error && <motion.p key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="alert-error"><span className="material-symbols-outlined">search_off</span>{error}</motion.p>}
+          {loading && !record && <motion.div key="loading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]"><div className="skeleton h-80 rounded-2xl" /><div className="skeleton h-80 rounded-2xl" /></motion.div>}
           {record && (
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 gap-8 lg:grid-cols-[1.5fr_0.85fr]"
-            >
-              {/* Left Main Tracking Card */}
-              <section className="rounded-lg border border-outline bg-white shadow-sm overflow-hidden">
-                <div className="border-b border-outline p-6 md:p-8 bg-surface-container/20">
-                  <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-500 animate-pulse" />
-                        <p className="text-xs font-bold uppercase tracking-wider text-primary">{record.status}</p>
-                      </div>
-                      <h2 className="text-2xl font-bold text-on-surface sm:text-3xl">{record.serviceType || 'Transit Service'}</h2>
-                      <p className="mt-1.5 text-xs text-on-surface-variant">
-                        Last Checkpoint: <strong className="text-on-surface font-semibold">{record.currentCheckpoint}</strong>
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 text-left md:text-right">
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-primary">Live Tracking ID</p>
-                      <p className="mt-1 font-mono text-lg font-black text-on-surface">{record.trackingId}</p>
-                    </div>
+            <motion.div key={record.id} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: easeOutExpo }} className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
+              <section className="card p-6 sm:p-8">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="font-mono text-sm font-bold text-primary">{record.trackingId}</p>
+                    <h2 className="mt-1 text-2xl font-extrabold">{record.pickup} → {record.destination}</h2>
+                    <p className="mt-1 text-sm text-on-surface-variant">{record.serviceType} · {record.vehicleClass} · {record.date} {record.time}</p>
                   </div>
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${record.status === 'Cancelled' ? 'bg-red-100 text-red-800' : 'bg-primary-soft text-primary'}`}>{statusLabel(record.status)}</span>
                 </div>
 
-                <div className="p-6 md:p-8 space-y-8">
-                  {/* Route Overview */}
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_1fr] md:items-center">
-                    <div className="rounded-lg border border-outline bg-surface-container/40 p-5">
-                      <div className="flex items-center gap-2 text-xs font-bold text-primary mb-1">
-                        <span className="material-symbols-outlined text-base">trip_origin</span>
-                        <span>Pickup Location</span>
-                      </div>
-                      <p className="text-base font-bold text-on-surface break-words">{record.pickup || 'Designated Pickup Point'}</p>
-                    </div>
-                    <div className="hidden h-px w-16 bg-outline md:block" />
-                    <div className="rounded-lg border border-outline bg-surface-container/40 p-5">
-                      <div className="flex items-center gap-2 text-xs font-bold text-primary mb-1">
-                        <span className="material-symbols-outlined text-base">location_on</span>
-                        <span>Destination Point</span>
-                      </div>
-                      <p className="text-base font-bold text-on-surface break-words">{record.destination || 'Destination Hub'}</p>
-                    </div>
+                {record.status !== 'Cancelled' && (
+                  <ol className="mt-8 grid grid-cols-6 gap-1">
+                    {STATUS_FLOW.map((step, index) => (
+                      <li key={step} className="text-center">
+                        <motion.div className="h-1.5 rounded-full" initial={{ backgroundColor: '#e2e3df' }} animate={{ backgroundColor: index <= stepIndex ? '#c1121f' : '#e2e3df' }} transition={{ delay: index * 0.1 }} />
+                        <p className={`mt-2 text-[10px] font-bold uppercase tracking-wide sm:text-xs ${index <= stepIndex ? 'text-on-surface' : 'text-on-surface-variant/60'}`}>{statusLabel(step)}</p>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                {record.currentCheckpoint && (
+                  <div className="mt-8 flex items-center gap-3 rounded-2xl bg-surface-container p-4">
+                    <span className="relative flex h-3 w-3"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" /><span className="relative inline-flex h-3 w-3 rounded-full bg-primary" /></span>
+                    <div><p className="text-xs text-on-surface-variant">Last seen at</p><p className="font-bold">{record.currentCheckpoint}</p></div>
                   </div>
+                )}
 
-                  {/* Lifecycle Progress Bar */}
-                  <div className="space-y-3">
-                    <div className="flex items-end justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-bold text-on-surface">Transit & Fulfillment Progress</p>
-                        <p className="text-xs text-on-surface-variant">Updated in real-time by BLM operations dispatch.</p>
-                      </div>
-                      <p className="text-2xl font-black text-primary">{progress}%</p>
-                    </div>
-                    <div className="h-3 overflow-hidden rounded-full bg-surface-container">
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${progress}%` }}
-                        transition={{ duration: 0.8, ease: 'easeOut' }}
-                        className="h-full rounded-full bg-primary"
-                      />
-                    </div>
-                  </div>
+                {record.liveTrackingEnabled && record.liveLocation && (
+                  <div className="mt-6"><LiveTrackingMap location={record.liveLocation} /></div>
+                )}
 
-                  {record.liveTrackingEnabled && record.liveLocation && (
-                    <div>
-                      <div className="mb-3">
-                        <h3 className="text-sm font-bold text-on-surface">Live vehicle position</h3>
-                        <p className="text-xs text-on-surface-variant">Position refreshes automatically while the trip is active.</p>
-                      </div>
-                      <LiveTrackingMap location={record.liveLocation} />
-                    </div>
-                  )}
-
-                  {record.liveTrackingEnabled && !record.liveLocation && (
-                    <div className="rounded-lg border border-outline bg-surface-container p-4 text-xs font-semibold text-on-surface-variant">
-                      The driver has been dispatched. Waiting for the next verified location heartbeat.
-                    </div>
-                  )}
-
-                  {/* Drop Review CTA */}
-                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <div>
-                      <h4 className="text-sm font-bold text-on-surface">How was your service experience?</h4>
-                      <p className="text-xs text-on-surface-variant mt-0.5">Share your feedback to help us maintain elite transit quality.</p>
-                    </div>
-                    <Link
-                      to={`/reviews?service=${encodeURIComponent(record.serviceType || '')}&booking=${encodeURIComponent(record.id)}`}
-                      className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-5 py-3 text-xs font-bold text-white shadow-md transition-all hover:bg-primary-container"
-                    >
-                      <span className="material-symbols-outlined text-base">star</span>
-                      <span>Drop a Review</span>
-                    </Link>
-                  </div>
-                </div>
+                <h3 className="mt-8 text-sm font-bold uppercase tracking-wider text-on-surface-variant">Updates</h3>
+                {record.events.length === 0 ? (
+                  <p className="mt-3 text-sm text-on-surface-variant">No updates yet. They’ll show here as your booking moves along.</p>
+                ) : (
+                  <ol className="relative mt-4 space-y-5 border-l-2 border-outline pl-6">
+                    {record.events.map((event, index) => (
+                      <motion.li key={event.id} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }} className="relative">
+                        <span className={`absolute -left-[31px] top-1 h-3.5 w-3.5 rounded-full border-2 border-white ${index === 0 ? 'bg-primary' : 'bg-outline-variant'}`} />
+                        <p className="font-semibold">{labelEvent(event.type)}{event.location ? ` · ${event.location}` : ''}</p>
+                        {event.notes && <p className="text-sm text-on-surface-variant">{event.notes}</p>}
+                        {event.createdAt && <p className="text-xs text-on-surface-variant">{new Date(event.createdAt).toLocaleString()}</p>}
+                      </motion.li>
+                    ))}
+                  </ol>
+                )}
               </section>
 
-              {/* Right Side: Assignment & Event Milestones */}
               <aside className="space-y-6">
-                {/* Trip Specs */}
-                <div className="rounded-lg border border-outline bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-on-surface mb-4">Trip Information</h3>
-                  <dl className="space-y-4 text-xs">
-                    <div>
-                      <dt className="font-semibold text-on-surface-variant">Vehicle Class / Package</dt>
-                      <dd className="mt-1 font-bold text-on-surface text-sm">{record.vehicleClass}</dd>
+                <div className="card p-6">
+                  <h3 className="font-bold">Your driver</h3>
+                  {record.driver ? (
+                    <div className="mt-4 flex items-center gap-4">
+                      {record.driver.photoUrl ? <img src={record.driver.photoUrl} alt="" className="h-14 w-14 rounded-2xl object-cover" /> : <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-soft text-primary"><span className="material-symbols-outlined">person</span></span>}
+                      <div>
+                        <p className="font-bold">{record.driver.name}</p>
+                        <p className="text-sm text-on-surface-variant">{record.driver.rating ? `★ ${record.driver.rating.toFixed(1)} (${record.driver.ratingCount})` : 'Checked by BLM'}</p>
+                      </div>
                     </div>
-                    <div>
-                      <dt className="font-semibold text-on-surface-variant">Schedule Date & Time</dt>
-                      <dd className="mt-1 font-bold text-on-surface text-sm">
-                        {[record.date, record.time].filter(Boolean).join(' at ') || 'Scheduled Route'}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="font-semibold text-on-surface-variant">Assigned Chauffeur / Driver</dt>
-                      <dd className="mt-1 font-bold text-on-surface text-sm">
-                        {record.driver?.name || record.driverName || record.assignedDriverId || 'Assigned on Dispatch'}
-                      </dd>
-                    </div>
-                  </dl>
-                  {record.driver && (
-                    <div className="mt-5 grid grid-cols-2 gap-2 border-t border-outline pt-4 text-[11px]">
-                      <span className="font-semibold text-on-surface-variant">Identity</span>
-                      <span className="text-right font-bold capitalize text-on-surface">{record.driver.verificationStatus?.replace(/_/g, ' ')}</span>
-                      <span className="font-semibold text-on-surface-variant">Insurance</span>
-                      <span className="text-right font-bold capitalize text-on-surface">{record.driver.insuranceStatus?.replace(/_/g, ' ')}</span>
-                      <span className="font-semibold text-on-surface-variant">Rating</span>
-                      <span className="text-right font-bold text-on-surface">{record.driver.rating ? `${record.driver.rating.toFixed(1)} (${record.driver.ratingCount || 0})` : 'New driver'}</span>
-                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-on-surface-variant">We’ll assign a driver once your payment is confirmed.</p>
                   )}
                 </div>
-
-                {/* Tracking Milestones Timeline */}
-                <div className="rounded-lg border border-outline bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-on-surface mb-4">Transit Milestones</h3>
-                  {record.events && record.events.length > 0 ? (
-                    <ol className="relative space-y-6 border-l-2 border-primary/30 pl-5 ml-2">
-                      {record.events.map((event, idx) => (
-                        <li key={event.id || idx} className="relative">
-                          <span className="absolute -left-[27px] top-1 h-3.5 w-3.5 rounded-full border-2 border-white bg-primary shadow-sm" />
-                          <p className="text-[11px] font-bold text-primary">
-                            {event.createdAt ? new Date(event.createdAt).toLocaleString() : 'Recorded Milestone'}
-                          </p>
-                          <p className="mt-0.5 text-xs font-bold text-on-surface">{labelEvent(event.type)}</p>
-                          {event.notes && <p className="mt-1 text-xs text-on-surface-variant leading-relaxed">{event.notes}</p>}
-                        </li>
-                      ))}
-                    </ol>
-                  ) : (
-                    <p className="text-xs font-medium text-on-surface-variant">No tracking events recorded yet.</p>
-                  )}
+                {record.routeMetadata?.distanceText && (
+                  <div className="card p-6">
+                    <h3 className="font-bold">Journey</h3>
+                    <p className="mt-2 text-sm text-on-surface-variant">{record.routeMetadata.distanceText} · about {record.routeMetadata.durationText}</p>
+                  </div>
+                )}
+                <div className="card p-6">
+                  <h3 className="font-bold">Questions about this trip?</h3>
+                  <div className="mt-4 grid gap-2">
+                    <a href={`tel:${company.phone}`} className="btn-outline"><span className="material-symbols-outlined text-lg">call</span> {company.phoneDisplay}</a>
+                    <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(`Good day BLM, I have a question about booking ${record.trackingId}.`)}`} target="_blank" rel="noreferrer" className="btn bg-[#25D366] text-white">WhatsApp us</a>
+                  </div>
+                  {record.updatedAt && <p className="mt-4 text-xs text-on-surface-variant">Last updated {new Date(record.updatedAt).toLocaleString()}</p>}
                 </div>
               </aside>
             </motion.div>
           )}
+          {!record && !loading && !error && (
+            <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid gap-4 sm:grid-cols-3">
+              {[['receipt_long', 'Find your number', 'It’s in your confirmation email, your SMS and on the payment page.'], ['travel_explore', 'See each step', 'Payment, driver assigned, on the way and arrived.'], ['my_location', 'See it on a map', 'Watch the car on a map once it’s on the road.']].map(([icon, title, body]) => (
+                <div key={title} className="card p-6"><span className="material-symbols-outlined text-primary">{icon}</span><p className="mt-3 font-bold">{title}</p><p className="mt-1 text-sm text-on-surface-variant">{body}</p></div>
+              ))}
+            </motion.div>
+          )}
         </AnimatePresence>
-
-        {/* Animated Movement Hubs */}
-        <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
-          <h2 className="text-base font-bold text-on-surface mb-2">Operational Checkpoints & Transit Nodes</h2>
-          <p className="text-xs text-on-surface-variant mb-6">
-            Real-time movement milestones tracked across BLM inter-state and cross-border corridors.
-          </p>
-          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
-            {trackingLocations.map((location, index) => (
-              <motion.div
-                key={location}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: index === activeLocationIndex ? 1 : 0.5, y: 0 }}
-                transition={{ duration: 0.4 }}
-                className={`rounded-lg border p-4 text-xs font-medium transition-all ${
-                  index === activeLocationIndex
-                    ? 'border-primary bg-primary/5 text-primary shadow-sm ring-1 ring-primary/20'
-                    : 'border-outline bg-surface-container/30 text-on-surface-variant'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-base">
-                    {index === activeLocationIndex ? 'my_location' : 'pin_drop'}
-                  </span>
-                  <span className="font-bold">{location}</span>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );

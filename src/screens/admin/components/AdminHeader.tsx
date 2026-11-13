@@ -1,4 +1,4 @@
-import { AdminRole, AdminTab, adminSectionDetails } from "../types";
+import { AdminRole, AdminTab, adminSectionDetails, roleLabel } from "../types";
 
 interface AdminHeaderProps {
   activeTab: AdminTab;
@@ -28,7 +28,7 @@ export default function AdminHeader({
           </button>
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-              Admin / {section.title}
+              Admin · {section.title}
             </p>
             <h1 className="mt-1 text-xl font-bold leading-tight text-on-surface">
               {section.title}
@@ -41,7 +41,7 @@ export default function AdminHeader({
         <div className="flex flex-wrap items-center gap-3">
           {children}
           <span className="inline-flex h-9 items-center rounded-md border border-outline bg-white px-3 text-xs font-bold capitalize text-on-surface">
-            {role.replaceAll("_", " ")}
+            {roleLabel(role)}
           </span>
         </div>
       </div>

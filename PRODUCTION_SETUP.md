@@ -1,20 +1,56 @@
 # Production Setup
 
-## Recommended hosting
+## Go-live checklist (do these in order)
 
-Use Railway for the Express API, BullMQ workers, SSE endpoint, and optionally the built frontend. Use Vercel for the frontend only when `VITE_API_BASE_URL` points to the Railway HTTPS domain. Set `APP_URL` to the public frontend and `CORS_ORIGINS` to every exact allowed frontend origin, comma separated.
+### 1. Firebase console — project `gen-lang-client-0039054423`
+- [ ] **Authentication → Sign-in method:** turn on **Email/Password** (and Google/Apple if you want them).
+- [ ] **Authentication → Settings → Authorized domains:** add your live domain (e.g. `blmmotors.ng`) and your Railway domain.
+- [ ] **Project settings → Service accounts → Generate new private key.** Keep the downloaded JSON safe — you paste it into Railway in step 2.
+- [ ] **Deploy the security rules** from this folder (needs the Firebase CLI: `npm i -g firebase-tools`, then `firebase login`):
+  `firebase deploy --only firestore:rules,storage`
+  `firebase.json` already targets the app’s database (`ai-studio-fbcf9fac-…`).
+- [ ] **Create the first admin:** sign up on the live site, confirm your email, copy your UID from Authentication → Users, then in Firestore (database `ai-studio-fbcf9fac-…`) create `admins/{your UID}` with `role: "super_admin"` and `email: "you@…"`. Sign out and back in, then open `/admin`.
 
-Railway uses `railway.json`, builds with `npm ci && npm run build`, starts with `npm start`, and checks `/api/health`.
+### 2. Railway (hosts the website and the server together)
+- [ ] New project → **Deploy from GitHub repo** → choose this repository. Railway reads `railway.json` automatically.
+- [ ] **Variables** — add at least:
+  - `NODE_ENV` = `production`
+  - `APP_URL` = `https://your-domain.com` (no trailing slash)
+  - `CORS_ORIGINS` = `https://your-domain.com` (add the Railway URL too, comma-separated, if you use it)
+  - `FIREBASE_SERVICE_ACCOUNT_JSON` = the whole JSON from step 1, on one line
+  - Payment, email, SMS and Maps keys from `.env.example` for the features you want. Anything left out is hidden, not broken.
+- [ ] **Settings → Networking:** generate a domain, or add your custom domain and update your DNS.
+- [ ] After the deploy, open `https://your-domain.com/api/health`. You want `"ok": true` and `"firebaseAdmin": "configured"`.
+
+> **Do not host on Vercel alone.** Vercel only serves the pages, not the server, so prices, bookings and sign-in would fail. If a Vercel project is connected to this repo, disconnect it (or point the domain at Railway instead).
+
+### 3. Payments (use test keys first)
+- [ ] **Stripe:** add a webhook for `https://your-domain.com/api/webhooks/stripe` (events: `payment_intent.*`, `charge.dispute.created`) and copy its signing secret into `STRIPE_WEBHOOK_SECRET`.
+- [ ] **Paystack:** set the webhook URL to `https://your-domain.com/api/webhooks/paystack`.
+- [ ] Book a trip yourself and pay with each method in test mode. Check that the booking turns **Paid** in the admin panel. Then switch to live keys.
+- [ ] **Bank transfer:** enter the bank details in Admin → Settings → Bank account.
+
+### 4. Final checks
+- [ ] Register a new account, confirm the email, sign in and out.
+- [ ] Open a service, enter a route, and check that a price appears.
+- [ ] In Admin, change a price and confirm the public page shows it.
+- [ ] Look at Railway’s logs for warnings that say a feature “is not set” and decide whether you need it.
+
+## How hosting works
+
+Railway builds with `npm ci --include=dev && npm run build`, starts with `npm start`, and checks `/api/health`. In production the server serves the built website from `dist/`, `robots.txt` and `sitemap.xml` (both use `APP_URL`), and sets security headers that allow only Firebase, Stripe, Google Fonts/Maps and Sentry.
+
+Only `APP_URL`, `CORS_ORIGINS` and the Firebase service account are required. Every other key switches on one feature; missing or placeholder values turn that feature off and log a warning instead of stopping the server.
 
 ## Required credentials
 
 ### Firebase
 
 - Browser config: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`, `VITE_FIRESTORE_DATABASE_ID`
-- Server config: `FIREBASE_PROJECT_ID` and either `FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`
+- Server config: either `FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`. The service account **must belong to the same project as the browser config**; the server reads the project and Firestore database ID from the `VITE_FIREBASE_*` values (or `firebase-applet-config.json`) so ID tokens verify and both sides read the same database. The server refuses to start Firebase calls if the projects differ.
 - In Firebase Console > Authentication > Sign-in method, enable Email/Password, Google, and Apple.
 - Add the Vercel and Railway/custom domains to Authentication > Settings > Authorized domains.
-- Deploy rules with `firebase deploy --only firestore:rules,storage` from the production Firebase project.
+- Deploy rules with `firebase deploy --only firestore:rules,storage` from the production Firebase project, targeting the same Firestore database ID the app uses. All writes go through the API; the browser only reads.
 
 #### Apple sign-in configuration
 
@@ -63,15 +99,15 @@ Restrict the browser Maps key by website referrer and API. Restrict the server k
 
 1. Create and verify the administrator's Firebase Authentication account.
 2. Copy its UID from Firebase Console > Authentication > Users.
-3. In Firestore, create `admins/{UID}` with `role: "super_admin"` and an `email` field.
+3. In Firestore (same database ID as the app), create `admins/{UID}` with `role: "super_admin"` and an `email` field.
 4. Sign out and sign in again, then open `/admin`.
-5. Create later staff roles from Admin > Administrators. Use `dispatcher`, `finance_admin`, or `customer_support_agent` according to the person's work.
+5. Grant later staff roles from Admin > Roles by entering the person’s account email. Use `dispatcher`, `finance_admin`, or `customer_support_agent` according to the person's work.
 
 This one-time bootstrap must be done in the trusted Firebase Console. Browser rules intentionally prohibit creating the first administrator.
 
 ## Driver access
 
-Create the driver's Firebase Authentication account first. In Admin > Drivers, paste that account UID with the driver's legal name, phone, and licence reference. The API links the driver profile, assigns the `driver` role, and routes the next login to `/driver`.
+The driver registers on the website first. In Admin > Drivers, enter their account email with legal name, phone, and licence number, then press **Approve**. Only approved drivers can go online or be assigned trips; their next login lands on `/driver`.
 
 ## Before enabling payments
 

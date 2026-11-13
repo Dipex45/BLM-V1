@@ -1,12 +1,13 @@
 import { FormEvent, useState } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { apiPost } from '../../lib/api';
+import { apiErrorMessage, apiPost } from '../../lib/api';
+import { Spinner } from '../ui/motion';
 
 const publishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '';
 const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
 
-function StripeForm({ onPaid }: { onPaid: () => void }) {
+function StripeForm({ amountLabel, onPaid }: { amountLabel: string; onPaid: () => void }) {
   const stripe = useStripe();
   const elements = useElements();
   const [submitting, setSubmitting] = useState(false);
@@ -17,38 +18,38 @@ function StripeForm({ onPaid }: { onPaid: () => void }) {
     if (!stripe || !elements) return;
     setSubmitting(true);
     setError('');
-    const result = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: window.location.href },
-      redirect: 'if_required',
-    });
-    if (result.error) {
-      setError(result.error.message || 'Stripe could not complete the payment.');
-    } else if (result.paymentIntent) {
-      await apiPost('/api/payment/stripe/reconcile', { paymentIntentId: result.paymentIntent.id });
-      onPaid();
+    try {
+      const result = await stripe.confirmPayment({ elements, confirmParams: { return_url: window.location.href }, redirect: 'if_required' });
+      if (result.error) {
+        setError(result.error.message || 'Your card payment didn’t go through.');
+      } else if (result.paymentIntent) {
+        // The server re-reads the intent from Stripe; the browser result is never trusted.
+        await apiPost('/api/payment/stripe/reconcile', { paymentIntentId: result.paymentIntent.id });
+        onPaid();
+      }
+    } catch (err) {
+      setError(apiErrorMessage(err, 'We couldn’t confirm the payment yet. Please refresh in a moment.'));
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
 
   return (
     <form onSubmit={submit} className="space-y-5">
       <PaymentElement options={{ layout: 'tabs' }} />
-      {error && <p role="alert" className="rounded-md bg-error-container p-3 text-xs font-bold text-on-error-container">{error}</p>}
-      <button type="submit" disabled={!stripe || submitting} className="w-full rounded-md bg-primary px-5 py-4 text-sm font-bold text-white disabled:opacity-50">
-        {submitting ? 'Confirming payment...' : 'Pay securely with Stripe'}
+      {error && <p role="alert" className="alert-error text-xs">{error}</p>}
+      <button type="submit" disabled={!stripe || submitting} className="btn-primary btn-lg w-full">
+        {submitting ? <><Spinner /> Paying…</> : `Pay ${amountLabel}`}
       </button>
     </form>
   );
 }
 
-export default function StripePaymentForm({ clientSecret, onPaid }: { clientSecret: string; onPaid: () => void }) {
-  if (!stripePromise) {
-    return <p className="rounded-md bg-error-container p-3 text-xs font-bold text-on-error-container">Stripe publishable key is not configured.</p>;
-  }
+export default function StripePaymentForm({ clientSecret, amountLabel, onPaid }: { clientSecret: string; amountLabel: string; onPaid: () => void }) {
+  if (!stripePromise) return <p className="alert-error text-xs">Card payments aren’t available right now.</p>;
   return (
-    <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-      <StripeForm onPaid={onPaid} />
+    <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe', variables: { colorPrimary: '#c1121f', borderRadius: '12px' } } }}>
+      <StripeForm amountLabel={amountLabel} onPaid={onPaid} />
     </Elements>
   );
 }
