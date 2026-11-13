@@ -1,5 +1,5 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { company } from '../lib/company';
 import { distanceVehicles, effectiveKmRate, serviceSlug } from '../lib/catalog';
@@ -37,6 +37,7 @@ function Section({ step, title, icon, children }: { step: number; title: string;
 export default function ServiceOrder() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { catalog, error: catalogError, reload } = useCatalog();
   const { formatPrice, displayCurrency } = useCurrency();
@@ -90,7 +91,10 @@ export default function ServiceOrder() {
       pickupHub: current.pickupHub || catalog.hubs[0]?.name || '',
       touringPackage: current.touringPackage || catalog.touringPackages[0]?.id || '',
       touringState: current.touringState || catalog.touringStates[0]?.name || '',
-      internationalCountry: current.internationalCountry || catalog.internationalTours[0]?.name || '',
+      internationalCountry: current.internationalCountry
+        || catalog.internationalTours.find((country) => country.name === searchParams.get('country'))?.name
+        || catalog.internationalTours[0]?.name
+        || '',
     }));
   }, [catalog]);
 

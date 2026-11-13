@@ -3,6 +3,7 @@
         "git add": true,
         "git commit": true,
         "git push": true,
-        "git --no-pager push": true
+        "git --no-pager push": true,
+        "git remote": true
     }
 }

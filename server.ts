@@ -3119,17 +3119,6 @@ async function startServer() {
     res.status(404).json({ error: "Not found" });
   });
 
-  // Search-engine files built from APP_URL so they always point at the live address.
-  const siteUrl = () => (process.env.APP_URL || "").replace(/\/$/, "");
-  app.get("/robots.txt", (_req, res) => {
-    res.type("text/plain").send(`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /checkout\nDisallow: /driver\nSitemap: ${siteUrl()}/sitemap.xml\n`);
-  });
-  app.get("/sitemap.xml", (_req, res) => {
-    const slugs = company.services.map((service) => service.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""));
-    const pages = ["/", "/services", ...slugs.map((slug) => `/services/${slug}`), "/tracking", "/reviews", "/legal"];
-    const urls = pages.map((page) => `  <url><loc>${siteUrl()}${page}</loc></url>`).join("\n");
-    res.type("application/xml").send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`);
-  });
 
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const error = err instanceof HttpError ? err : new HttpError(500, "Something went wrong on our side. Please try again.");
@@ -3165,10 +3154,14 @@ async function startServer() {
     }
     // Hashed bundles never change, so browsers may cache them for a year; pages are always revalidated.
     app.use("/assets", express.static(path.join(distPath, "assets"), { immutable: true, maxAge: "1y" }));
-    app.use(express.static(distPath, { maxAge: "1h", index: false }));
-    app.get("*", (_req, res) => {
+    app.use(express.static(distPath, { maxAge: "1h", index: false, redirect: false }));
+    app.get("*", (req, res) => {
+      // Public pages have a pre-built copy (dist/<page>/index.html) with the right title and
+      // description for search engines; every other route gets the main app page.
+      const prebuilt = path.join(distPath, path.normalize(req.path).replace(/^([/\\])+/, ""), "index.html");
+      const page = prebuilt.startsWith(distPath) && fs.existsSync(prebuilt) ? prebuilt : path.join(distPath, "index.html");
       res.set("Cache-Control", "no-cache");
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile(page);
     });
   }
 

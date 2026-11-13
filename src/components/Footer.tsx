@@ -3,11 +3,18 @@ import { company } from '../lib/company';
 import { serviceSlug } from '../lib/catalog';
 import { useCatalog } from '../hooks/useCatalog';
 
+const popularRoutes = [
+  { label: 'Lagos to Cotonou', path: '/corridors/lagos-cotonou' },
+  { label: 'Cotonou to Lagos', path: '/corridors/cotonou-lagos' },
+  { label: 'Lagos to Lomé', path: '/corridors/lagos-lome' },
+  { label: 'Lagos to Accra', path: '/corridors/lagos-accra' },
+];
+
 export default function Footer() {
   const { catalog } = useCatalog();
   return (
     <footer className="mt-auto border-t border-outline bg-white">
-      <div className="container-page grid gap-10 py-14 md:grid-cols-[1.4fr_1fr_1fr]">
+      <div className="container-page grid gap-10 py-14 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
         <div>
           <img src={company.logo} alt="BLM Motors" className="h-14 w-36 object-contain" />
           <p className="mt-4 max-w-md text-sm leading-relaxed text-on-surface-variant">{company.summary}</p>
@@ -26,7 +33,15 @@ export default function Footer() {
           </ul>
         </div>
         <div>
-          <h2 className="text-sm font-bold">Routes</h2>
+          <h2 className="text-sm font-bold">Popular routes</h2>
+          <ul className="mt-4 space-y-2 text-sm text-on-surface-variant">
+            {popularRoutes.map((route) => (
+              <li key={route.path}><Link to={route.path} className="hover:text-primary">{route.label}</Link></li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h2 className="text-sm font-bold">Where we go</h2>
           <ul className="mt-4 space-y-2 text-sm text-on-surface-variant">
             {(catalog?.routes || company.routes).map((route) => <li key={route}>{route}</li>)}
           </ul>

@@ -36,9 +36,18 @@
 - [ ] In Admin, change a price and confirm the public page shows it.
 - [ ] Look at Railway’s logs for warnings that say a feature “is not set” and decide whether you need it.
 
+## Google Search setup
+
+1. Make sure `APP_URL` (or `VITE_SITE_URL`, if you want a different address in search results) is your final HTTPS domain **before building**. The build writes ready-made pages for every public page, plus `sitemap.xml` and `robots.txt`, using that address. Page titles and descriptions live in `src/lib/seo.ts`.
+2. Create a Google Search Console Domain property for the final domain and complete the DNS verification step.
+3. If Google asks for an HTML meta tag, set `VITE_GOOGLE_SITE_VERIFICATION` to its content value and redeploy.
+4. Submit `https://YOUR_DOMAIN/sitemap.xml` in Search Console.
+5. Use URL Inspection to request indexing for the home page, `/services/cross-border-trips`, and each page under `/corridors/`.
+6. Check again after Google has crawled the site. Search results and rankings take time and aren’t guaranteed.
+
 ## How hosting works
 
-Railway builds with `npm ci --include=dev && npm run build`, starts with `npm start`, and checks `/api/health`. In production the server serves the built website from `dist/`, `robots.txt` and `sitemap.xml` (both use `APP_URL`), and sets security headers that allow only Firebase, Stripe, Google Fonts/Maps and Sentry.
+Railway builds with `npm ci --include=dev && npm run build`, starts with `npm start`, and checks `/api/health`. In production the server serves the built website from `dist/` (including the pre-built public pages, `robots.txt` and `sitemap.xml`), and sets security headers that allow only Firebase, Stripe, Google Fonts/Maps and Sentry.
 
 Only `APP_URL`, `CORS_ORIGINS` and the Firebase service account are required. Every other key switches on one feature; missing or placeholder values turn that feature off and log a warning instead of stopping the server.
 

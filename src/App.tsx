@@ -8,6 +8,7 @@ import Footer from './components/Footer';
 import CookieNotice from './components/CookieNotice';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { easeOutExpo } from './components/ui/motion';
+import SEOManager from './components/SEOManager';
 import About from './screens/About';
 import Login from './screens/Login';
 import Register from './screens/Register';
@@ -24,6 +25,7 @@ const Support = lazy(() => import('./screens/Support'));
 const DriverPortal = lazy(() => import('./screens/DriverPortal'));
 const AdminDashboard = lazy(() => import('./screens/AdminDashboard'));
 const Legal = lazy(() => import('./screens/Legal'));
+const Corridor = lazy(() => import('./screens/Corridor'));
 
 function Splash() {
   return (
@@ -96,6 +98,7 @@ function AnimatedRoutes() {
             <Route path="/" element={<About />} />
             <Route path="/services" element={<Services />} />
             <Route path="/services/:slug" element={<ServiceOrder />} />
+            <Route path="/corridors/:slug" element={<Corridor />} />
             <Route path="/tracking" element={<Tracking />} />
             <Route path="/reviews" element={<Reviews />} />
             <Route path="/legal" element={<Legal />} />
@@ -128,6 +131,7 @@ function Shell() {
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden bg-background font-sans text-on-surface">
       <ScrollToTop />
+      <SEOManager />
       <Navbar />
       <main className="min-w-0 flex-1 pt-20">
         {user && sessionError && (

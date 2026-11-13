@@ -16,7 +16,7 @@ export default defineConfig(({mode}) => {
         // Point canonical and social-preview links at the live address (APP_URL) at build time.
         name: 'site-url',
         transformIndexHtml(html: string) {
-          const siteUrl = (env.APP_URL || '').replace(/\/$/, '');
+          const siteUrl = (env.VITE_SITE_URL || env.APP_URL || '').replace(/\/$/, '');
           return siteUrl ? html.replaceAll('https://blm-v1.vercel.app', siteUrl) : html;
         },
       },
@@ -35,6 +35,8 @@ export default defineConfig(({mode}) => {
       },
     },
     publicDir: 'public',
+    // Search/link-preview address used by src/lib/seo.ts; falls back to APP_URL.
+    define: (env.VITE_SITE_URL || env.APP_URL) ? { 'import.meta.env.VITE_SITE_URL': JSON.stringify((env.VITE_SITE_URL || env.APP_URL).replace(/\/$/, '')) } : {},
     build: {
       outDir: 'dist',
       sourcemap: mode === 'development',

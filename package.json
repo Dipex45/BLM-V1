@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && tsx scripts/generate-seo-pages.ts",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "jest"

@@ -26,6 +26,6 @@
     "incremental": true,
     "types": ["react", "react-dom", "node", "jest"]
   },
-  "include": ["src/**/*", "server.ts"],
+  "include": ["src/**/*", "server.ts", "scripts/**/*"],
   "exclude": ["node_modules", "dist"]
 }
