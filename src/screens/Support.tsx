@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { apiGet, apiPost } from "../lib/api";
+import { apiErrorMessage, apiGet, apiPost } from "../lib/api";
 import StatusBadge from "./admin/components/StatusBadge";
 import EmptyState from "./admin/components/EmptyState";
 import { useAdminFeedback } from "./admin/hooks/useAdminFeedback";
@@ -36,7 +36,7 @@ export default function Support() {
           .tickets,
       );
     } catch (error: any) {
-      notify(error.message || "Support tickets could not be loaded.", "error");
+      notify(apiErrorMessage(error, "We couldn’t load your messages."), "error");
     } finally {
       setLoading(false);
     }
@@ -53,7 +53,7 @@ export default function Support() {
         ).data.messages,
       );
     } catch (error: any) {
-      notify(error.message || "Conversation could not be loaded.", "error");
+      notify(apiErrorMessage(error, "We couldn’t load this conversation."), "error");
     }
   };
 
@@ -63,7 +63,8 @@ export default function Support() {
 
   const createTicket = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     try {
       await apiPost("/api/support/tickets", {
         subject: String(form.get("subject")),
@@ -73,31 +74,32 @@ export default function Support() {
         phone: String(form.get("phone") || "") || undefined,
         message: String(form.get("message")),
       });
-      event.currentTarget.reset();
+      formElement.reset();
       await loadTickets();
       notify(
-        "Support ticket opened. The operations team has been notified.",
+        "Message sent. We’ll get back to you soon.",
         "success",
       );
     } catch (error: any) {
-      notify(error.message || "The ticket could not be opened.", "error");
+      notify(apiErrorMessage(error, "We couldn’t send your message. Please try again."), "error");
     }
   };
 
   const reply = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selected) return;
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     try {
       await apiPost(`/api/support/tickets/${selected.id}/messages`, {
         message: String(form.get("message")),
       });
-      event.currentTarget.reset();
+      formElement.reset();
       await openTicket(selected);
       await loadTickets();
       notify("Reply sent.", "success");
     } catch (error: any) {
-      notify(error.message || "Reply could not be sent.", "error");
+      notify(apiErrorMessage(error, "We couldn’t send your reply. Please try again."), "error");
     }
   };
 
@@ -106,21 +108,21 @@ export default function Support() {
       <div className="mx-auto max-w-7xl">
         <header className="max-w-3xl">
           <p className="text-xs font-bold uppercase tracking-wider text-primary">
-            Customer care
+            Help
           </p>
           <h1 className="mt-2 text-3xl font-bold sm:text-4xl">
-            Support centre
+            How can we help?
           </h1>
           <p className="mt-3 text-base leading-7 text-on-surface-variant">
-            Open a traceable request for a booking, payment, driver, or
-            logistics concern. Every reply remains attached to the ticket.
+            Send us a message about a booking, payment, driver or delivery.
+            You’ll see all our replies here.
           </p>
         </header>
         <div className="mt-8 grid gap-6 xl:grid-cols-[380px_1fr]">
           <div className="space-y-6">
             <section className="rounded-lg border border-outline bg-white p-5 shadow-sm">
               <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-                Open a ticket
+                Send us a message
               </h2>
               <form onSubmit={createTicket} className="mt-5 space-y-4">
                 <Field name="subject" label="Subject" />
@@ -133,7 +135,7 @@ export default function Support() {
                     <option value="booking">Booking</option>
                     <option value="payment">Payment</option>
                     <option value="driver">Driver</option>
-                    <option value="logistics">Logistics</option>
+                    <option value="logistics">Delivery</option>
                     <option value="other">Other</option>
                   </select>
                 </label>
@@ -150,7 +152,7 @@ export default function Support() {
                   </label>
                   <Field
                     name="bookingId"
-                    label="Booking ID (optional)"
+                    label="Tracking number (optional)"
                     required={false}
                   />
                 </div>
@@ -170,7 +172,7 @@ export default function Support() {
                   />
                 </label>
                 <button className="h-11 w-full rounded-md bg-primary px-4 text-sm font-bold text-white hover:bg-primary-container">
-                  Open ticket
+                  Send message
                 </button>
               </form>
             </section>
@@ -178,7 +180,7 @@ export default function Support() {
           <section className="overflow-hidden rounded-lg border border-outline bg-white shadow-sm">
             <div className="border-b border-outline px-5 py-4">
               <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-                Your requests
+                Your messages
               </h2>
             </div>
             {loading ? (
@@ -261,8 +263,8 @@ export default function Support() {
                   ) : (
                     <EmptyState
                       icon="support_agent"
-                      title="Select a ticket"
-                      description="Choose a request to read its full conversation."
+                      title="Pick a message"
+                      description="Choose a message to see the full conversation."
                     />
                   )}
                 </div>
@@ -270,8 +272,8 @@ export default function Support() {
             ) : (
               <EmptyState
                 icon="support_agent"
-                title="No support tickets"
-                description="Open a request and the operations team will follow it through to resolution."
+                title="No messages yet"
+                description="Send us a message and our team will get back to you."
               />
             )}
           </section>

@@ -29,10 +29,10 @@ export default function PricesTab({
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-            Vehicle and service classes
+            Car types and prices
           </h2>
           <p className="mt-1 text-xs text-on-surface-variant">
-            Changes affect future server-calculated quotes only.
+            Changes apply to new bookings only. Existing bookings keep their price.
           </p>
         </div>
         <button
@@ -40,8 +40,7 @@ export default function PricesTab({
           onClick={onAdd}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-bold text-white hover:bg-primary-container"
         >
-          <span className="material-symbols-outlined text-lg">add</span>Add
-          class
+          <span className="material-symbols-outlined text-lg">add</span>Add car type
         </button>
       </div>
       {drafts.length ? (
@@ -72,7 +71,7 @@ export default function PricesTab({
                   </button>
                 </div>
                 <label className="mt-4 block text-sm font-semibold">
-                  Class name
+                  Name
                   <input
                     value={draft.title || ""}
                     onChange={(event) =>
@@ -88,7 +87,7 @@ export default function PricesTab({
                   />
                 </label>
                 <label className="mt-3 block text-sm font-semibold">
-                  Base price (NGN)
+                  Starting price (₦)
                   <input
                     type="number"
                     min="0"
@@ -106,7 +105,7 @@ export default function PricesTab({
                   />
                 </label>
                 <label className="mt-3 block text-sm font-semibold">
-                  Rate per kilometre (NGN)
+                  Price per km (₦)
                   <input
                     type="number"
                     min="0"
@@ -145,7 +144,7 @@ export default function PricesTab({
                     {ngn.format(draft.price || 0)}
                   </p>
                   <p className="mt-1 text-xs text-on-surface-variant">
-                    Selected display currency: {formatPrice(draft.price || 0)}
+                    In the currency you’re viewing: {formatPrice(draft.price || 0)}
                   </p>
                   {savedAt[index] && (
                     <p className="mt-1 text-xs text-green-700">
@@ -176,8 +175,8 @@ export default function PricesTab({
         <div className="rounded-lg border border-outline bg-white">
           <EmptyState
             icon="price_change"
-            title="No price classes"
-            description="Add the first service or vehicle class to start server-side quoting."
+            title="No car types yet"
+            description="Add the first car type so customers can book."
           />
         </div>
       )}

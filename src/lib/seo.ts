@@ -1,101 +1,163 @@
+/**
+ * Search-engine titles and descriptions for every public page.
+ * Used in the browser (SEOManager) and at build time (scripts/generate-seo-pages.ts),
+ * so the pre-built HTML and the live page always say the same thing.
+ */
 export type SeoEntry = {
   title: string;
   description: string;
   index?: boolean;
   serviceType?: string;
   areas?: string[];
+  /** Sitemap priority (0–1). Only pages with a priority are pre-built and listed. */
+  priority?: string;
 };
 
-export const siteUrl = (import.meta.env.VITE_SITE_URL || 'https://blm-v1.vercel.app').replace(/\/$/, '');
+const browserEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+export const siteUrl = (browserEnv?.VITE_SITE_URL || 'https://blm-v1.vercel.app').replace(/\/$/, '');
+
+const WEST_AFRICA = ['Nigeria', 'Benin Republic', 'Togo', 'Ghana'];
 
 export const seoEntries: Record<string, SeoEntry> = {
   '/': {
     title: 'West Africa Transport & Cotonou Trips | BLM Motors',
-    description: 'Book reliable transport from Lagos to Cotonou, Benin Republic, Togo and Ghana with BLM Motors. Cross-border trips, car hire, touring and logistics across West Africa.',
-    serviceType: 'Passenger transport, touring, car hire and logistics',
-    areas: ['Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    description: 'Book safe, reliable transport from Lagos to Cotonou, Benin Republic, Togo and Ghana. Cross-border trips, car hire, tours and deliveries across West Africa.',
+    serviceType: 'Passenger transport, tours, car hire and deliveries',
+    areas: WEST_AFRICA,
+    priority: '1.0',
   },
   '/services': {
     title: 'Transport Services in Nigeria & West Africa | BLM Motors',
-    description: 'Compare and book BLM Motors transport services: distance trips, Lagos-Cotonou travel, West Africa cross-border transit, touring, car hire and logistics.',
-    serviceType: 'Transport and logistics services',
-    areas: ['Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    description: 'Compare and book BLM Motors services: rides by the kilometre, Lagos–Cotonou trips, cross-border travel, tours, car hire and deliveries.',
+    serviceType: 'Transport and delivery services',
+    areas: WEST_AFRICA,
+    priority: '0.9',
   },
   '/services/long-and-short-distance-trips': {
-    title: 'Distance Transport in Nigeria | BLM Motors',
-    description: 'Book private long and short distance transport priced per kilometre for journeys within Lagos and across Nigeria.',
-    serviceType: 'Long and short distance passenger transport',
+    title: 'Rides Across Lagos & Nigeria | BLM Motors',
+    description: 'Book a private ride across town or between states, priced by the kilometre. See your price before you pay.',
+    serviceType: 'Private passenger rides',
     areas: ['Lagos', 'Nigeria'],
+    priority: '0.8',
   },
   '/services/cross-border-trips': {
-    title: 'West Africa Cross-Border Transport | BLM Motors',
-    description: 'Book cross-border transport from Nigeria to Cotonou, Benin Republic, Lome, Togo and Accra, Ghana with BLM Motors.',
-    serviceType: 'West Africa cross-border passenger transport',
-    areas: ['Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    title: 'Cross-Border Trips: Cotonou, Lomé & Accra | BLM Motors',
+    description: 'Book trips from Nigeria to Cotonou in Benin Republic, Lomé in Togo and Accra in Ghana, with help at the border.',
+    serviceType: 'Cross-border passenger transport',
+    areas: WEST_AFRICA,
+    priority: '0.9',
   },
   '/services/touring': {
-    title: 'Nigeria & West Africa Tour Packages | BLM Motors',
-    description: 'Choose guided touring packages in Nigeria, Benin Republic, Togo and Ghana, with transport and planned sightseeing stops.',
-    serviceType: 'Guided tours and destination transport',
-    areas: ['Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    title: 'Tour Packages in Nigeria & West Africa | BLM Motors',
+    description: 'Choose a ready-made tour with a driver and, if you like, a local guide — across Nigeria, Benin Republic, Togo and Ghana.',
+    serviceType: 'Guided tours',
+    areas: WEST_AFRICA,
+    priority: '0.8',
   },
   '/services/car-hire': {
     title: 'Car Hire in Lagos & Nigeria | BLM Motors',
-    description: 'Hire a car for airport transfers, business travel, events and private journeys from approved BLM Motors pickup locations.',
+    description: 'Hire a car by the day for airport runs, business trips and events. Drive yourself or have one of our drivers.',
     serviceType: 'Car hire',
     areas: ['Lagos', 'Nigeria'],
+    priority: '0.8',
   },
   '/services/pickup-and-logistics': {
-    title: 'Pickup & Logistics in Nigeria | BLM Motors',
-    description: 'Arrange traceable parcel and cargo pickup with distance and weight-based pricing for deliveries across Nigeria and regional routes.',
-    serviceType: 'Pickup and logistics',
-    areas: ['Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    title: 'Parcel Pickup & Delivery in Nigeria | BLM Motors',
+    description: 'We collect parcels and goods from your door and deliver them. Priced by weight and distance, with tracking at every step.',
+    serviceType: 'Parcel pickup and delivery',
+    areas: WEST_AFRICA,
+    priority: '0.8',
   },
   '/corridors/lagos-cotonou': {
     title: 'Lagos to Cotonou Transport | BLM Motors',
-    description: 'Book Lagos to Cotonou transport with planned pickup, border-ready dispatch support and clear travel requirements for Nigeria-Benin Republic journeys.',
+    description: 'Book a comfortable trip from Lagos to Cotonou with a confirmed pickup, help at the border and a clear list of documents you need.',
     serviceType: 'Lagos to Cotonou passenger transport',
     areas: ['Lagos', 'Cotonou', 'Nigeria', 'Benin Republic'],
+    priority: '0.9',
   },
   '/corridors/cotonou-lagos': {
     title: 'Cotonou to Lagos Transport | BLM Motors',
-    description: 'Book Cotonou to Lagos transport from BLM Motors Cotonou Station with coordinated cross-border travel into Nigeria.',
+    description: 'Book a trip from our Cotonou station to Lagos, with your pickup confirmed before you travel.',
     serviceType: 'Cotonou to Lagos passenger transport',
     areas: ['Cotonou', 'Lagos', 'Benin Republic', 'Nigeria'],
+    priority: '0.9',
   },
   '/corridors/lagos-lome': {
-    title: 'Lagos to Lome Transport | BLM Motors',
-    description: 'Book scheduled transport from Lagos through Benin Republic to Lome, Togo, with coordinated regional dispatch support.',
-    serviceType: 'Lagos to Lome passenger transport',
-    areas: ['Lagos', 'Cotonou', 'Lome', 'Nigeria', 'Benin Republic', 'Togo'],
+    title: 'Lagos to Lomé Transport | BLM Motors',
+    description: 'Book a planned trip from Lagos to Lomé, Togo, travelling through Benin Republic.',
+    serviceType: 'Lagos to Lomé passenger transport',
+    areas: ['Lagos', 'Cotonou', 'Lomé', 'Nigeria', 'Benin Republic', 'Togo'],
+    priority: '0.8',
   },
   '/corridors/lagos-accra': {
     title: 'Lagos to Accra Transport | BLM Motors',
-    description: 'Book Lagos to Accra road transport through Benin Republic and Togo, with scheduled stops and cross-border dispatch support.',
+    description: 'Book a road trip from Lagos to Accra through Benin Republic and Togo, with planned rest and border stops.',
     serviceType: 'Lagos to Accra passenger transport',
-    areas: ['Lagos', 'Cotonou', 'Lome', 'Accra', 'Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    areas: ['Lagos', 'Cotonou', 'Lomé', 'Accra', 'Nigeria', 'Benin Republic', 'Togo', 'Ghana'],
+    priority: '0.8',
   },
   '/legal': {
     title: 'Privacy & Terms | BLM Motors',
-    description: 'Read the privacy policy, booking terms and service conditions for BLM Motors transport and logistics services.',
+    description: 'How BLM Motors handles your information, and the terms for booking our services.',
+    priority: '0.3',
   },
 };
 
-const privatePrefixes = ['/admin', '/dashboard', '/reports', '/checkout', '/login', '/register', '/verify-email', '/tracking', '/reviews'];
+const privatePrefixes = ['/admin', '/dashboard', '/bookings', '/support', '/driver', '/reports', '/checkout', '/login', '/register', '/verify-email', '/tracking', '/reviews'];
 
 export function getSeoEntry(pathname: string): SeoEntry {
   const cleanPath = pathname !== '/' ? pathname.replace(/\/$/, '') : pathname;
   if (seoEntries[cleanPath]) return seoEntries[cleanPath];
   if (privatePrefixes.some((prefix) => cleanPath === prefix || cleanPath.startsWith(`${prefix}/`))) {
-    return {
-      title: 'BLM Motors',
-      description: 'Secure BLM Motors customer and operations portal.',
-      index: false,
-    };
+    return { title: 'BLM Motors', description: 'Your BLM Motors account.', index: false };
   }
-  return {
-    title: 'Page Not Found | BLM Motors',
-    description: 'The requested BLM Motors page could not be found.',
-    index: false,
-  };
+  return { title: 'Page Not Found | BLM Motors', description: 'Sorry, we couldn’t find that page.', index: false };
+}
+
+/** Organisation and service details for Google’s structured data. */
+export function structuredData(path: string, entry: SeoEntry, details: { name: string; legalName: string; logo: string; image: string; summary: string; email: string; phone: string }) {
+  const canonical = `${siteUrl}${path === '/' ? '/' : path}`;
+  const graph: Record<string, unknown>[] = [
+    {
+      '@type': 'Organization',
+      '@id': `${siteUrl}/#organization`,
+      name: details.name,
+      legalName: details.legalName,
+      url: siteUrl,
+      logo: `${siteUrl}${details.logo}`,
+      image: `${siteUrl}${details.image}`,
+      description: details.summary,
+      email: details.email,
+      telephone: details.phone,
+      areaServed: WEST_AFRICA,
+      contactPoint: {
+        '@type': 'ContactPoint',
+        telephone: details.phone,
+        contactType: 'reservations',
+        areaServed: ['NG', 'BJ', 'TG', 'GH'],
+        availableLanguage: ['English', 'French'],
+      },
+    },
+    {
+      '@type': 'WebSite',
+      '@id': `${siteUrl}/#website`,
+      url: siteUrl,
+      name: details.name,
+      publisher: { '@id': `${siteUrl}/#organization` },
+      inLanguage: ['en', 'fr'],
+    },
+  ];
+  if (entry.serviceType) {
+    graph.push({
+      '@type': 'Service',
+      '@id': `${canonical}#service`,
+      name: entry.serviceType,
+      description: entry.description,
+      url: canonical,
+      provider: { '@id': `${siteUrl}/#organization` },
+      areaServed: entry.areas,
+      serviceType: entry.serviceType,
+    });
+  }
+  return { '@context': 'https://schema.org', '@graph': graph };
 }

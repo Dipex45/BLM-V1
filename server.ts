@@ -1,7 +1,7 @@
 import "dotenv/config";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import express, { NextFunction, Request, Response } from "express";
-import { createServer as createViteServer } from "vite";
 import path from "node:path";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -15,8 +15,16 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import * as Sentry from "@sentry/node";
-import { company, defaultVehicles } from "./src/lib/company";
-import { calculateBookingQuote } from "./src/lib/bookingPricing";
+import { company } from "./src/lib/company.js";
+import { calculateBookingQuote, needsRouteDistance, serviceKind } from "./src/lib/bookingPricing.js";
+import {
+  DEFAULT_FEATURE_FLAGS,
+  DEFAULT_TRACKING_LOCATIONS,
+  convertFromNgn as convertWithRates,
+  resolveCurrencyRates,
+  resolvePricingCatalog,
+  type PublicCatalog,
+} from "./src/lib/catalog.js";
 
 type Role =
   | "super_admin"
@@ -34,15 +42,6 @@ type AuthenticatedUser = {
   token: DecodedIdToken;
 };
 
-type RealtimeEvent = {
-  id: string;
-  type: string;
-  audience?: "admin" | "all";
-  userIds?: string[];
-  payload: Record<string, unknown>;
-  createdAt: string;
-};
-
 declare global {
   namespace Express {
     interface Request {
@@ -53,43 +52,84 @@ declare global {
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === "production";
+/** True when running as a Vercel function rather than a long-running server (Railway, local). */
+const isVercel = Boolean(process.env.VERCEL);
 const DEFAULT_EMAIL_FROM = process.env.NOTIFICATION_EMAIL_FROM || "BLM Motors <bookings@blmmotors.ng>";
 
-const productionEnvironmentKeys = [
-  "APP_URL",
-  "CORS_ORIGINS",
-  "FIREBASE_PROJECT_ID",
-  "VITE_FIREBASE_API_KEY",
-  "VITE_FIREBASE_AUTH_DOMAIN",
-  "VITE_FIREBASE_PROJECT_ID",
-  "VITE_FIREBASE_STORAGE_BUCKET",
-  "VITE_FIREBASE_MESSAGING_SENDER_ID",
-  "VITE_FIREBASE_APP_ID",
-  "REDIS_URL",
-  "VITE_STRIPE_PUBLISHABLE_KEY",
-  "PAYSTACK_SECRET_KEY",
-  "STRIPE_SECRET_KEY",
-  "STRIPE_WEBHOOK_SECRET",
-  "RESEND_API_KEY",
-  "NOTIFICATION_EMAIL_FROM",
-  "SUPPORT_ALERT_EMAIL",
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
-  "TWILIO_FROM_NUMBER",
-  "TWILIO_WHATSAPP_FROM",
-  "GOOGLE_MAPS_PLATFORM_KEY",
-  "SENTRY_DSN",
-];
+/** Without these the live site cannot work, so the server refuses to start. */
+const requiredProductionKeys = ["APP_URL", "CORS_ORIGINS"];
+
+/** Each of these switches on one feature. When missing, that feature is simply turned off. */
+const optionalEnvironmentKeys: Record<string, string> = {
+  REDIS_URL: "background jobs run inline instead of on a queue",
+  PAYSTACK_SECRET_KEY: "Paystack payments are hidden",
+  STRIPE_SECRET_KEY: "card payments are hidden",
+  VITE_STRIPE_PUBLISHABLE_KEY: "card payments are hidden",
+  STRIPE_WEBHOOK_SECRET: "card payments are only confirmed when the customer returns to the site",
+  RESEND_API_KEY: "emails are not sent",
+  NOTIFICATION_EMAIL_FROM: "emails use the default sender",
+  SUPPORT_ALERT_EMAIL: "support alerts go to bookings@blmmotors.ng",
+  TWILIO_ACCOUNT_SID: "SMS and WhatsApp messages are not sent",
+  TWILIO_AUTH_TOKEN: "SMS and WhatsApp messages are not sent",
+  TWILIO_FROM_NUMBER: "SMS messages are not sent",
+  TWILIO_WHATSAPP_FROM: "WhatsApp messages are not sent",
+  GOOGLE_MAPS_PLATFORM_KEY: "customers type an estimated distance instead of a road distance",
+  SENTRY_DSN: "errors are only written to the server log",
+};
+
+/** Treat obvious placeholder values ("placeholder", "changeme", "xxx") as not set. */
+function envValue(key: string) {
+  const value = process.env[key]?.trim() || "";
+  return /^(placeholder|changeme|change-me|your[-_]|xxx|todo)/i.test(value) ? "" : value;
+}
+
+/**
+ * The browser and the server MUST talk to the same Firebase project and Firestore
+ * database, otherwise ID tokens fail verification and each side reads different data.
+ * Both resolve from VITE_FIREBASE_* env vars first, then firebase-applet-config.json.
+ */
+type FirebaseWebConfig = { projectId: string; firestoreDatabaseId: string };
+
+function loadFirebaseWebConfig(): FirebaseWebConfig {
+  let fileConfig: Record<string, string> = {};
+  try {
+    fileConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8"));
+  } catch {
+    fileConfig = {};
+  }
+  return {
+    projectId: process.env.VITE_FIREBASE_PROJECT_ID?.trim() || fileConfig.projectId || "",
+    firestoreDatabaseId:
+      process.env.VITE_FIRESTORE_DATABASE_ID?.trim() || fileConfig.firestoreDatabaseId || "(default)",
+  };
+}
+
+const firebaseWebConfig = loadFirebaseWebConfig();
+
+function readServiceAccount(): Record<string, string> | null {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && parsed.client_email && parsed.private_key ? parsed : null;
+  } catch {
+    log("error", "FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON");
+    return null;
+  }
+}
 
 function validateEnvironment() {
-  const missing = productionEnvironmentKeys.filter((key) => !process.env[key]?.trim());
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim() && !process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
-    missing.push("FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS");
+  const required = requiredProductionKeys.filter((key) => !envValue(key));
+  if (!firebaseWebConfig.projectId) required.push("VITE_FIREBASE_PROJECT_ID (or firebase-applet-config.json projectId)");
+  if (!readServiceAccount() && !process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    required.push("FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS");
   }
-  if (isProduction && missing.length > 0) {
-    throw new Error(`Missing required production environment variables: ${missing.join(", ")}`);
+  const optional = Object.keys(optionalEnvironmentKeys).filter((key) => !envValue(key));
+  for (const key of optional) log("warn", `${key} is not set: ${optionalEnvironmentKeys[key]}`);
+  if (isProduction && required.length > 0) {
+    throw new Error(`Missing required production settings: ${required.join(", ")}`);
   }
-  return missing;
+  return [...required, ...optional];
 }
 
 if (process.env.SENTRY_DSN) {
@@ -145,14 +185,37 @@ const BookingCreateSchema = BookingValidationSchema.extend({
 }).omit({ totalAmount: true });
 
 const SupportedCurrencySchema = z.enum(["NGN", "XOF", "GHS", "USD", "EUR", "GBP"]);
-const CURRENCY_RATES_FROM_NGN: Record<z.infer<typeof SupportedCurrencySchema>, number> = {
-  NGN: 1,
-  XOF: 0.41,
-  GHS: 0.0097,
-  USD: 0.00067,
-  EUR: 0.00062,
-  GBP: 0.00053,
-};
+
+const QuoteSchema = z.object({
+  serviceType: z.string().trim().min(2).max(120),
+  vehicleClass: z.string().trim().max(80).default(""),
+  pickup: z.string().trim().max(200).default(""),
+  destination: z.string().trim().max(200).default(""),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  time: z.string().regex(/^\d{2}:\d{2}$/),
+  isReturn: z.boolean().default(false),
+  touringPackage: z.string().trim().max(120).optional(),
+  touringState: z.string().trim().max(80).optional(),
+  tourGuideNeeded: z.boolean().optional(),
+  internationalCountry: z.string().trim().max(80).optional(),
+  passengerCount: z.number().int().min(1).max(50).optional(),
+  borderClearanceHelp: z.boolean().optional(),
+  packageWeightKg: z.number().positive().max(100_000).optional(),
+  carHireVehicle: z.string().trim().max(120).optional(),
+  carHireDurationDays: z.number().int().min(1).max(365).optional(),
+  carHireWithDriver: z.boolean().optional(),
+  pickupHub: z.string().trim().max(200).optional(),
+  distanceKm: z.number().positive().max(50_000).optional(),
+});
+
+const NewsletterSchema = z.object({ email: z.string().trim().email().max(200) });
+
+const ReviewStatusSchema = z.object({ status: z.enum(["published", "hidden"]) });
+
+const DriverStatusSchema = z.object({
+  state: z.enum(["approved", "suspended", "rejected", "pending_review"]),
+  reason: z.string().trim().max(300).optional(),
+});
 
 const StripeIntentSchema = z.object({
   bookingId: z.string().trim().min(3).max(160),
@@ -212,17 +275,11 @@ const CheckpointUpdateSchema = z.object({
   notes: z.string().trim().max(500).optional(),
 });
 
-const DriverNotifySchema = z.object({
-  bookingId: z.string().trim().min(3).max(160),
-  driverId: z.string().trim().min(1).max(160).optional(),
-  driverPhone: z.string().trim().min(5).max(40).optional(),
-  driverName: z.string().trim().max(160).optional(),
-  pickup: z.string().trim().max(200).optional(),
-  destination: z.string().trim().max(200).optional(),
-});
+/** Staff and drivers are identified by their sign-in email or Firebase UID. */
+const AccountReferenceSchema = z.string().trim().min(3).max(200);
 
 const PromoteAdminSchema = z.object({
-  uid: z.string().trim().min(3).max(160),
+  account: AccountReferenceSchema,
   role: z.enum(["super_admin", "dispatcher", "finance_admin", "customer_support_agent"]).default("dispatcher"),
 });
 
@@ -230,7 +287,7 @@ const DriverOnboardingSchema = z.object({
   name: z.string().trim().min(2).max(160),
   license: z.string().trim().min(3).max(80),
   phone: z.string().trim().min(5).max(40),
-  authUid: z.string().trim().min(3).max(160),
+  account: AccountReferenceSchema,
   vehicleId: z.string().trim().max(160).optional(),
 });
 
@@ -245,6 +302,7 @@ const AdminSettingKeySchema = z.enum([
   "currency_rates",
   "bank_accounts",
   "feature_flags",
+  "routes",
 ]);
 
 const AdminSettingUpdateSchema = z.object({ value: z.unknown() });
@@ -253,12 +311,6 @@ const PaymentReconciliationSchema = z.object({
   paymentId: z.string().trim().min(3).max(160),
   reconciled: z.boolean(),
   notes: z.string().trim().max(500).optional(),
-});
-
-const ClientAuditSchema = z.object({
-  action: z.string().trim().min(2).max(100),
-  resource: z.string().trim().min(1).max(240).default("client"),
-  details: z.record(z.string(), z.unknown()).default({}),
 });
 
 const ArchiveBookingsSchema = z.object({
@@ -323,11 +375,6 @@ const SupportMessageSchema = z.object({
 const SupportStatusSchema = z.object({
   status: z.enum(["open", "in_progress", "waiting_customer", "resolved", "closed"]),
   escalationLevel: z.number().int().min(0).max(3).optional(),
-});
-
-const RouteDistanceSchema = z.object({
-  origin: z.string().trim().min(3).max(200),
-  destination: z.string().trim().min(3).max(200),
 });
 
 class HttpError extends Error {
@@ -403,7 +450,7 @@ function requireCsrf(req: Request, _res: Response, next: NextFunction) {
   const token = req.get("x-csrf-token");
   const cookieToken = parseCookies(req).blm_csrf;
   if (!token || !cookieToken || !constantTimeEqual(token, cookieToken)) {
-    throw new HttpError(403, "Invalid or missing CSRF token");
+    throw new HttpError(403, "Your security check expired. Please refresh the page and try again.");
   }
   next();
 }
@@ -419,8 +466,8 @@ function getAllowedOrigins() {
 let stripeClient: Stripe | null = null;
 function getStripe() {
   if (!stripeClient) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) throw new HttpError(503, "STRIPE_SECRET_KEY is missing");
+    const key = envValue("STRIPE_SECRET_KEY");
+    if (!key) throw new HttpError(503, "Card payments aren’t set up yet. Please choose another way to pay.");
     stripeClient = new Stripe(key);
   }
   return stripeClient;
@@ -429,39 +476,80 @@ function getStripe() {
 function initializeFirebaseAdmin() {
   if (getApps().length > 0) return getApps()[0];
 
-  const serviceJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (serviceJson) {
-    const serviceAccount = JSON.parse(serviceJson);
-    return initializeApp({
-      credential: cert(serviceAccount),
-      projectId: serviceAccount.project_id || process.env.FIREBASE_PROJECT_ID,
+  const projectId = firebaseWebConfig.projectId;
+  const serviceAccount = readServiceAccount();
+  // Customers see a plain message; the technical reason goes to the server log and /api/health.
+  const unavailable = (reason: string) => {
+    log("error", `Firebase Admin unavailable: ${reason}`);
+    return new HttpError(503, "Online booking is temporarily unavailable. Please try again shortly, or book with us on WhatsApp.");
+  };
+  if (serviceAccount?.project_id && projectId && serviceAccount.project_id !== projectId) {
+    throw unavailable(`service account belongs to "${serviceAccount.project_id}" but the web app signs users into "${projectId}". Use a service account from the same project.`);
+  }
+  if (process.env.FIREBASE_PROJECT_ID && projectId && process.env.FIREBASE_PROJECT_ID !== projectId) {
+    log("warn", "FIREBASE_PROJECT_ID differs from the web app project and is ignored", {
+      configured: process.env.FIREBASE_PROJECT_ID,
+      webProject: projectId,
     });
+  }
+  if (!serviceAccount && !process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+    throw unavailable("credentials are not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS.");
   }
 
   return initializeApp({
-    credential: applicationDefault(),
-    projectId: process.env.FIREBASE_PROJECT_ID,
+    credential: serviceAccount ? cert(serviceAccount as any) : applicationDefault(),
+    projectId: projectId || serviceAccount?.project_id,
   });
 }
 
+let adminDb: FirebaseFirestore.Firestore | null = null;
 function getAdminDb() {
-  return getFirestore(initializeFirebaseAdmin());
+  if (!adminDb) {
+    const databaseId = firebaseWebConfig.firestoreDatabaseId;
+    adminDb = databaseId && databaseId !== "(default)"
+      ? getFirestore(initializeFirebaseAdmin(), databaseId)
+      : getFirestore(initializeFirebaseAdmin());
+    adminDb.settings({ ignoreUndefinedProperties: true });
+  }
+  return adminDb;
 }
-
-const defaultFeatureFlags = {
-  paystack: true,
-  stripe: true,
-  manualBankTransfer: true,
-  liveTracking: true,
-  whatsappNotifications: true,
-  smsNotifications: true,
-  french: true,
-};
 
 async function getFeatureFlags() {
   const snapshot = await getAdminDb().collection("settings").doc("feature_flags").get();
   const value = snapshot.data()?.value;
-  return { ...defaultFeatureFlags, ...(value && typeof value === "object" ? value : {}) };
+  return { ...DEFAULT_FEATURE_FLAGS, ...(value && typeof value === "object" ? value : {}) };
+}
+
+async function getPricingCatalog() {
+  const settings = getAdminDb().collection("settings");
+  const [rules, vehicles, packages, states, countries, cars] = await Promise.all(
+    ["pricing_rules", "vehicle_types", "touring_packages", "touring_states", "international_tours", "car_hire_options"].map(
+      (key) => settings.doc(key).get(),
+    ),
+  );
+  return resolvePricingCatalog({
+    rules: rules.data()?.value,
+    vehicles: vehicles.data()?.value,
+    touringPackages: packages.data()?.value,
+    touringStates: states.data()?.value,
+    internationalTours: countries.data()?.value,
+    carHireOptions: cars.data()?.value,
+  });
+}
+
+async function getCurrencyRates() {
+  const snapshot = await getAdminDb().collection("settings").doc("currency_rates").get();
+  return resolveCurrencyRates(snapshot.data()?.value);
+}
+
+async function getActiveHubs() {
+  const snapshot = await getAdminDb().collection("hubs").get();
+  const hubs = snapshot.docs
+    .map((document): Record<string, any> => ({ id: document.id, ...document.data() }))
+    .filter((hub) => hub.active !== false)
+    .map((hub) => ({ id: hub.id, name: String(hub.name || ""), address: String(hub.address || ""), active: true }))
+    .filter((hub) => hub.name);
+  return hubs.length ? hubs : company.hubs.map((hub) => ({ ...hub, active: true }));
 }
 
 async function getBankConfig() {
@@ -484,7 +572,7 @@ async function getBankConfig() {
 }
 
 async function getRouteDistance(origin: string, destination: string) {
-  const key = process.env.GOOGLE_MAPS_PLATFORM_KEY;
+  const key = envValue("GOOGLE_MAPS_PLATFORM_KEY");
   if (!key) return null;
   const response = await axios.get("https://maps.googleapis.com/maps/api/distancematrix/json", {
     params: { origins: origin, destinations: destination, mode: "driving", departure_time: "now", key },
@@ -492,7 +580,7 @@ async function getRouteDistance(origin: string, destination: string) {
   });
   const element = response.data?.rows?.[0]?.elements?.[0];
   if (response.data?.status !== "OK" || element?.status !== "OK") {
-    throw new HttpError(422, "The route could not be calculated. Check the pickup and destination.");
+    throw new HttpError(422, "We couldn’t find a road route between those places. Please check the addresses.");
   }
   return {
     distanceKm: Number((Number(element.distance.value) / 1000).toFixed(1)),
@@ -503,81 +591,54 @@ async function getRouteDistance(origin: string, destination: string) {
   };
 }
 
-async function calculateAuthoritativeQuote(input: z.infer<typeof BookingCreateSchema>) {
-  const settings = getAdminDb().collection("settings");
-  const [rulesSnap, vehiclesSnap, packagesSnap, statesSnap, countriesSnap, carsSnap, hubsSnap] = await Promise.all([
-    settings.doc("pricing_rules").get(),
-    settings.doc("vehicle_types").get(),
-    settings.doc("touring_packages").get(),
-    settings.doc("touring_states").get(),
-    settings.doc("international_tours").get(),
-    settings.doc("car_hire_options").get(),
-    getAdminDb().collection("hubs").get(),
-  ]);
-  const rules = { pricePerKm: 350, logisticsPricePerKm: 250, standardServiceFee: 4500, pickupLogisticsFee: 22000, pricePerKg: 1200, tourGuideFee: 15000, carHireDriverDailyFee: 10000, carHireCautionFee: 25000, crossBorderProcessingFee: 30000, crossBorderBasePerPassenger: 90000, returnMultiplier: 2, weekendSurchargePercent: 0, nightSurchargePercent: 0, ...(rulesSnap.data()?.value || {}) };
-  const vehicles = Array.isArray(vehiclesSnap.data()?.value) && vehiclesSnap.data()!.value.length ? vehiclesSnap.data()!.value : defaultVehicles;
-  const packages = Array.isArray(packagesSnap.data()?.value) && packagesSnap.data()!.value.length ? packagesSnap.data()!.value : company.touringPackages;
-  const states = Array.isArray(statesSnap.data()?.value) && statesSnap.data()!.value.length ? statesSnap.data()!.value : company.touringStates;
-  const countries = Array.isArray(countriesSnap.data()?.value) && countriesSnap.data()!.value.length ? countriesSnap.data()!.value : company.internationalTours;
-  const cars = Array.isArray(carsSnap.data()?.value) && carsSnap.data()!.value.length ? carsSnap.data()!.value : company.carHireOptions;
-  const hubs = hubsSnap.docs.map((document) => ({ id: document.id, ...document.data() } as Record<string, any>));
-  const service = input.serviceType.toLowerCase();
+type QuoteInput = z.infer<typeof QuoteSchema>;
+
+/** Route distance cache so quote previews and the final booking use the identical Maps result. */
+const routeCache = new Map<string, { at: number; value: Awaited<ReturnType<typeof getRouteDistance>> }>();
+async function cachedRouteDistance(origin: string, destination: string) {
+  const key = `${origin.toLowerCase()}|${destination.toLowerCase()}`;
+  const hit = routeCache.get(key);
+  if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.value;
+  const value = await getRouteDistance(origin, destination);
+  routeCache.set(key, { at: Date.now(), value });
+  if (routeCache.size > 500) routeCache.delete(routeCache.keys().next().value as string);
+  return value;
+}
+
+async function calculateAuthoritativeQuote(input: QuoteInput) {
+  const [catalog, hubs] = await Promise.all([getPricingCatalog(), getActiveHubs()]);
+  const kind = serviceKind(input.serviceType);
   let routeMetadata: Awaited<ReturnType<typeof getRouteDistance>> = null;
 
-  if (service.includes("long") || service.includes("short") || service.includes("distance")) {
-    const vehicle = vehicles.find((item: any) => String(item.title).toLowerCase() === input.vehicleClass.toLowerCase());
-    if (vehicles.length > 0 && !vehicle) throw new HttpError(422, "The selected vehicle class is no longer available");
-    routeMetadata = await getRouteDistance(input.pickup, input.destination);
-  } else if (service.includes("car hire")) {
-    const car = cars.find((item: any) => item.id === input.carHireVehicle);
-    if (cars.length > 0 && !car) throw new HttpError(422, "The selected hire vehicle is no longer in the fleet catalogue");
-    if (car?.available === false) throw new HttpError(409, "The selected hire vehicle is currently unavailable");
-    const selectedHub = hubs.find((hub) => hub.name === input.pickupHub || hub.location === input.pickupHub || hub.address === input.pickupHub);
-    if (hubs.length > 0 && (!selectedHub || selectedHub.active === false)) {
-      throw new HttpError(422, "The selected pickup location is no longer available");
+  if (kind === "distance") {
+    const vehicle = catalog.vehicles.find((item) => item.title.toLowerCase() === input.vehicleClass.toLowerCase());
+    if (!vehicle) throw new HttpError(422, "That car type is no longer available. Please pick another.");
+  } else if (kind === "car_hire") {
+    const car = catalog.carHireOptions.find((item) => item.id === input.carHireVehicle);
+    if (!car) throw new HttpError(422, "That hire car is no longer available. Please pick another.");
+    if (!car.available) throw new HttpError(409, "That hire car is booked out right now. Please pick another.");
+    if (input.pickupHub && !hubs.some((hub) => hub.name === input.pickupHub)) {
+      throw new HttpError(422, "That pickup point is no longer available. Please pick another.");
     }
-  } else if (service.includes("tour")) {
-    const selectedPackage = packages.find((item: any) => item.id === input.touringPackage || item.name === input.touringPackage || item.title === input.touringPackage) || {};
-    const state = states.find((item: any) => item.name === input.touringState) || {};
-    if (packages.length > 0 && !Object.keys(selectedPackage).length) throw new HttpError(422, "The selected touring package is no longer available");
-    if (states.length > 0 && !Object.keys(state).length) throw new HttpError(422, "The selected touring destination is no longer available");
-  } else if (service.includes("cross-border") || service.includes("cross border")) {
-    const country = countries.find((item: any) => item.name === input.internationalCountry);
-    if (countries.length > 0 && !country) throw new HttpError(422, "The selected international destination is no longer available");
-  } else if (service.includes("pickup") || service.includes("logistics")) {
-    routeMetadata = await getRouteDistance(input.pickup, input.destination);
+  } else if (kind === "touring") {
+    if (!catalog.touringPackages.some((item) => item.id === input.touringPackage)) throw new HttpError(422, "That tour is no longer available. Please pick another.");
+    if (!catalog.touringStates.some((item) => item.name === input.touringState)) throw new HttpError(422, "That state is no longer available for tours. Please pick another.");
+  } else if (kind === "cross_border") {
+    if (!catalog.internationalTours.some((item) => item.name === input.internationalCountry)) throw new HttpError(422, "We no longer go to that country. Please pick another.");
+  }
+
+  if (needsRouteDistance(kind) && input.pickup.length >= 3 && input.destination.length >= 3) {
+    routeMetadata = await cachedRouteDistance(input.pickup, input.destination);
+  }
+  if (needsRouteDistance(kind) && !routeMetadata && !input.distanceKm) {
+    throw new HttpError(422, "Please enter where you’re going from and to.");
   }
 
   const quote = calculateBookingQuote(
-    {
-      serviceType: input.serviceType,
-      vehicleClass: input.vehicleClass,
-      date: input.date,
-      time: input.time,
-      distanceKm: routeMetadata?.distanceKm || input.distanceKm,
-      isReturn: input.isReturn,
-      carHireVehicle: input.carHireVehicle,
-      carHireDurationDays: input.carHireDurationDays,
-      carHireWithDriver: input.carHireWithDriver,
-      touringPackage: input.touringPackage,
-      touringState: input.touringState,
-      tourGuideNeeded: input.tourGuideNeeded,
-      internationalCountry: input.internationalCountry,
-      passengerCount: input.passengerCount,
-      borderClearanceHelp: input.borderClearanceHelp,
-      packageWeightKg: input.packageWeightKg,
-    },
-    {
-      rules,
-      vehicles,
-      touringPackages: packages,
-      touringStates: states,
-      internationalTours: countries,
-      carHireOptions: cars,
-    },
+    { ...input, distanceKm: routeMetadata?.distanceKm || input.distanceKm },
+    catalog,
   );
-
-  return { ...quote, routeMetadata };
+  return { ...quote, kind, distanceSource: routeMetadata ? "google_maps" : needsRouteDistance(kind) ? "customer_estimate" : null, routeMetadata };
 }
 
 function getFirebaseAuth() {
@@ -590,26 +651,25 @@ function hasRole(user: AuthenticatedUser, roles: Role[]) {
   return roles.includes(user.role) || user.role === "super_admin";
 }
 
+/**
+ * Privileged roles come only from server-controlled sources: the `admins` collection
+ * (written exclusively by this API) or custom claims set by this API. The `users`
+ * document is client-writable at creation, so it may only grant `driver`/`customer`.
+ */
 async function resolveRole(decoded: DecodedIdToken): Promise<Role> {
-  const claimRole = decoded.role || decoded.adminRole;
-  if (typeof claimRole === "string" && isRole(claimRole)) {
-    return normalizeRole(claimRole);
-  }
-
   const db = getAdminDb();
   const adminDoc = await db.collection("admins").doc(decoded.uid).get();
   if (adminDoc.exists) {
-    const data = adminDoc.data() || {};
-    const storedRole = data.role || data.adminRole;
-    if (typeof storedRole === "string" && isRole(storedRole)) {
-      return normalizeRole(storedRole);
-    }
-    return "super_admin";
+    const storedRole = adminDoc.data()?.role;
+    if (typeof storedRole === "string" && isRole(storedRole)) return normalizeRole(storedRole);
   }
 
-  const userDoc = await db.collection("users").doc(decoded.uid).get();
-  const userRole = userDoc.data()?.role;
-  return typeof userRole === "string" && isRole(userRole) ? normalizeRole(userRole) : "customer";
+  const claimRole = decoded.role;
+  if (claimRole === "driver") return "driver";
+
+  const driverDoc = await db.collection("drivers").doc(decoded.uid).get();
+  if (driverDoc.exists) return "driver";
+  return "customer";
 }
 
 function isRole(role: string): role is Role | "admin" {
@@ -634,7 +694,7 @@ async function recordSession(req: Request, auth: AuthenticatedUser) {
   const sessionId = sessionIdForRequest(req, auth.uid);
   const ref = getAdminDb().collection("user_sessions").doc(sessionId);
   const existing = await ref.get();
-  if (existing.data()?.revoked === true) throw new HttpError(401, "This device session has been revoked");
+  if (existing.data()?.revoked === true) throw new HttpError(401, "This device was signed out. Please sign in again.");
 
   await ref.set(
       {
@@ -654,7 +714,7 @@ async function recordSession(req: Request, auth: AuthenticatedUser) {
 async function buildAuthenticatedUser(req: Request, enforceEmailVerified = true): Promise<AuthenticatedUser> {
   const header = req.get("authorization");
   if (!header?.startsWith("Bearer ")) {
-    throw new HttpError(401, "Missing bearer token");
+    throw new HttpError(401, "Please sign in first.");
   }
 
   const token = header.slice("Bearer ".length).trim();
@@ -669,7 +729,7 @@ async function buildAuthenticatedUser(req: Request, enforceEmailVerified = true)
   };
 
   if (enforceEmailVerified && !auth.emailVerified && auth.role === "customer") {
-    throw new HttpError(403, "Email verification is required");
+    throw new HttpError(403, "Please confirm your email address first. Check your inbox for the link.");
   }
 
   await recordSession(req, auth);
@@ -687,9 +747,9 @@ function authenticate(req: Request, _res: Response, next: NextFunction) {
 
 function requireRoles(...roles: Role[]) {
   return (req: Request, _res: Response, next: NextFunction) => {
-    if (!req.auth) throw new HttpError(401, "Authentication required");
+    if (!req.auth) throw new HttpError(401, "Please sign in first.");
     if (!hasRole(req.auth, roles)) {
-      throw new HttpError(403, "Insufficient permissions");
+      throw new HttpError(403, "You don’t have permission to do this.");
     }
     next();
   };
@@ -743,8 +803,19 @@ class OperationsQueue {
       log("warn", "REDIS_URL missing; background jobs will run inline and health will report degraded");
       return;
     }
+    if (isVercel) {
+      // A Vercel function stops between requests, so a queue worker would never run; do jobs directly.
+      return;
+    }
 
-    this.connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+    this.connection = new IORedis(redisUrl, { maxRetriesPerRequest: null, enableOfflineQueue: false });
+    let lastErrorLog = 0;
+    this.connection.on("error", (error) => {
+      // Log at most once a minute instead of on every reconnect attempt.
+      if (Date.now() - lastErrorLog < 60_000) return;
+      lastErrorLog = Date.now();
+      log("error", "Redis is unreachable; background jobs will run directly until it reconnects", { error: error.message });
+    });
     this.queue = new Queue("blm-ops", { connection: this.connection });
     this.deadLetterQueue = new Queue("blm-ops-dead-letter", { connection: this.connection });
     this.enabled = true;
@@ -756,6 +827,11 @@ class OperationsQueue {
       },
       { connection: this.connection },
     );
+
+    // Connection errors are already reported (throttled) by the Redis client above.
+    worker.on("error", () => undefined);
+    this.queue.on("error", () => undefined);
+    this.deadLetterQueue.on("error", () => undefined);
 
     worker.on("failed", async (job, error) => {
       log("error", "Queue job failed", {
@@ -776,18 +852,33 @@ class OperationsQueue {
     });
   }
 
-  async enqueue(name: QueueJobName, data: Record<string, unknown>, attempts = 3) {
-    if (!this.enabled || !this.queue) {
-      await processQueueJob(name, data);
-      return { inline: true };
-    }
+  get connected() {
+    return this.enabled && this.connection?.status === "ready";
+  }
 
-    return this.queue.add(name, data, {
-      attempts,
-      backoff: { type: "exponential", delay: 5_000 },
-      removeOnComplete: 1_000,
-      removeOnFail: false,
-    });
+  /**
+   * Queue a job, or run it straight away when Redis is not configured or not reachable.
+   * A failing side job (an email or SMS) must never fail the customer's booking or payment.
+   */
+  async enqueue(name: QueueJobName, data: Record<string, unknown>, attempts = 3) {
+    if (this.queue && this.connected) {
+      try {
+        return await this.queue.add(name, data, {
+          attempts,
+          backoff: { type: "exponential", delay: 5_000 },
+          removeOnComplete: 1_000,
+          removeOnFail: false,
+        });
+      } catch (error) {
+        log("warn", "Could not queue job; running it directly", { name, error: String(error) });
+      }
+    }
+    try {
+      await processQueueJob(name, data);
+    } catch (error) {
+      log("error", "Background job failed", { name, error: error instanceof Error ? error.message : String(error) });
+    }
+    return { inline: true };
   }
 }
 
@@ -834,7 +925,6 @@ async function processQueueJob(name: QueueJobName, data: Record<string, unknown>
     batch.set(getAdminDb().collection("booking_events").doc(), { bookingId, type: "dispatch.assigned", actorId: "system", actorRole: "system", metadata: { driverId: chosen.id }, createdAt: FieldValue.serverTimestamp() });
     await batch.commit();
     await queueCustomerStatusNotifications(bookingId, booking.data() || {}, "Confirmed");
-    await publishRealtime({ type: "dispatch.assigned", audience: "admin", userIds: [String(booking.data()?.customerId || ""), chosen.id], payload: { bookingId, driverId: chosen.id } });
     return;
   }
 
@@ -902,7 +992,7 @@ async function deliverNotification(notificationId: string) {
 }
 
 async function sendEmailViaResend(to: string, subject: string, body: string) {
-  const apiKey = process.env.RESEND_API_KEY;
+  const apiKey = envValue("RESEND_API_KEY");
   if (!apiKey) {
     log("warn", "RESEND_API_KEY missing; email notification blocked", { to, subject });
     return "provider_not_configured";
@@ -930,9 +1020,9 @@ async function sendEmailViaResend(to: string, subject: string, body: string) {
 }
 
 async function sendTwilioMessage(to: string, body: string, whatsapp = false) {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = whatsapp ? process.env.TWILIO_WHATSAPP_FROM : process.env.TWILIO_FROM_NUMBER;
+  const sid = envValue("TWILIO_ACCOUNT_SID");
+  const token = envValue("TWILIO_AUTH_TOKEN");
+  const from = whatsapp ? envValue("TWILIO_WHATSAPP_FROM") : envValue("TWILIO_FROM_NUMBER");
   if (!sid || !token || !from) {
     log("warn", `Twilio env missing; ${whatsapp ? "WhatsApp" : "SMS"} notification blocked`, { to });
     return "provider_not_configured";
@@ -963,21 +1053,34 @@ function toMinorUnits(amount: number, currency: string) {
 }
 
 async function convertFromNgn(amountInNgn: number, currency: z.infer<typeof SupportedCurrencySchema>) {
-  const snapshot = await getAdminDb().collection("settings").doc("currency_rates").get();
-  const configured = snapshot.data()?.value;
-  const configuredRate = configured && typeof configured === "object" ? Number(configured[currency]) : Number.NaN;
-  const rate = Number.isFinite(configuredRate) && configuredRate > 0 ? configuredRate : CURRENCY_RATES_FROM_NGN[currency] || 1;
-  return Number((amountInNgn * rate).toFixed(currency === "NGN" || currency === "XOF" ? 0 : 2));
+  return convertWithRates(amountInNgn, currency, await getCurrencyRates());
+}
+
+async function findAuthUser(account: string) {
+  const auth = getFirebaseAuth();
+  const user = account.includes("@")
+    ? await auth.getUserByEmail(account.toLowerCase()).catch(() => null)
+    : await auth.getUser(account).catch(() => null);
+  if (!user) throw new HttpError(404, `There’s no BLM account for ${account}. Ask them to sign up on the website first.`);
+  return user;
+}
+
+function serializeTimestamps<T extends Record<string, any>>(data: T): T {
+  const output: Record<string, any> = { ...data };
+  for (const [key, value] of Object.entries(output)) {
+    if (value && typeof value === "object" && typeof value.toDate === "function") output[key] = value.toDate().toISOString();
+  }
+  return output as T;
 }
 
 async function loadBooking(bookingId: string, auth: AuthenticatedUser, adminAccessRoles: Role[] = adminRoles) {
   const ref = getAdminDb().collection("bookings").doc(bookingId);
   const snap = await ref.get();
-  if (!snap.exists) throw new HttpError(404, "Booking not found");
+  if (!snap.exists) throw new HttpError(404, "We couldn’t find that booking.");
   const booking = snap.data() || {};
   const ownerId = String(booking.customerId || "");
   if (ownerId !== auth.uid && !hasRole(auth, adminAccessRoles)) {
-    throw new HttpError(403, "Booking access denied");
+    throw new HttpError(403, "You can only view your own bookings.");
   }
   return { ref, snap, booking };
 }
@@ -1000,7 +1103,8 @@ async function queueCustomerStatusNotifications(bookingId: string, booking: Reco
   if (!claimed) return;
   const flags = await getFeatureFlags();
   const customerName = String(booking.customerName || "Customer");
-  const message = `Good day ${customerName}, your BLM booking ${booking.trackingId || bookingId} is now ${status}. Track it at ${(process.env.APP_URL || "").replace(/\/$/, "")}/tracking?booking=${encodeURIComponent(booking.trackingId || bookingId)}`;
+  const friendlyStatus = ({ Booked: "booked", Paid: "paid", Confirmed: "confirmed — a driver has been assigned", Dispatched: "on its way: your driver is heading to you", InTransit: "on the move", Completed: "complete. Thank you for travelling with BLM", Cancelled: "cancelled" } as Record<string, string>)[status] || status;
+  const message = `Hello ${customerName}, your BLM booking ${booking.trackingId || bookingId} is ${friendlyStatus}. Track it here: ${(process.env.APP_URL || "").replace(/\/$/, "")}/tracking?booking=${encodeURIComponent(booking.trackingId || bookingId)}`;
   const phone = String(booking.customerPhone || booking.phone || "").trim();
   if (phone && flags.whatsappNotifications) {
     await queueNotification({ channel: "whatsapp", to: phone, body: message, template: "booking_status_update", metadata: { bookingId, status } });
@@ -1012,7 +1116,7 @@ async function queueCustomerStatusNotifications(bookingId: string, booking: Reco
     await queueNotification({
       channel: "email",
       to: String(booking.customerEmail),
-      subject: `Booking status update: ${status}`,
+      subject: `Your BLM booking update`,
       body: message,
       template: "booking_status_update",
       metadata: { bookingId, status },
@@ -1036,11 +1140,11 @@ async function markPaymentSucceeded(paymentRef: FirebaseFirestore.DocumentRefere
   const db = getAdminDb();
   const bookingId = await db.runTransaction(async (tx) => {
     const paymentSnap = await tx.get(paymentRef);
-    if (!paymentSnap.exists) throw new HttpError(404, "Payment record not found");
+    if (!paymentSnap.exists) throw new HttpError(404, "We couldn’t find that payment.");
     const payment = paymentSnap.data() || {};
     const bookingRef = db.collection("bookings").doc(String(payment.bookingId));
     const bookingSnap = await tx.get(bookingRef);
-    if (!bookingSnap.exists) throw new HttpError(404, "Booking record not found");
+    if (!bookingSnap.exists) throw new HttpError(404, "We couldn’t find that booking.");
     const booking = bookingSnap.data() || {};
 
     if (payment.status === "succeeded") return null;
@@ -1159,8 +1263,8 @@ async function reconcileStripePayment(paymentIntent: Stripe.PaymentIntent, event
 }
 
 async function reconcilePaystackReference(reference: string, eventId: string) {
-  const secretKey = process.env.PAYSTACK_SECRET_KEY;
-  if (!secretKey) throw new HttpError(503, "PAYSTACK_SECRET_KEY is missing");
+  const secretKey = envValue("PAYSTACK_SECRET_KEY");
+  if (!secretKey) throw new HttpError(503, "Paystack isn’t set up yet. Please choose another way to pay.");
 
   const response = await axios.get(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
     headers: { Authorization: `Bearer ${secretKey}` },
@@ -1195,36 +1299,73 @@ async function reconcilePaystackReference(reference: string, eventId: string) {
   return data;
 }
 
-const realtimeClients = new Map<string, { auth: AuthenticatedUser; res: Response }>();
-
-function canReceiveEvent(user: AuthenticatedUser, event: RealtimeEvent) {
-  if (event.audience === "all") return true;
-  if (event.audience === "admin" && hasRole(user, adminRoles)) return true;
-  if (event.userIds?.includes(user.uid)) return true;
-  return false;
+function contentSecurityDirectives() {
+  const authDomain = process.env.VITE_FIREBASE_AUTH_DOMAIN?.trim();
+  const sentry = ["https://*.sentry.io"];
+  return {
+    defaultSrc: ["'self'"],
+    baseUri: ["'self'"],
+    objectSrc: ["'none'"],
+    frameAncestors: ["'self'"],
+    scriptSrc: ["'self'", "https://js.stripe.com", "https://*.js.stripe.com", "https://maps.googleapis.com", "https://apis.google.com", "https://www.gstatic.com"],
+    styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+    fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+    imgSrc: ["'self'", "data:", "blob:", "https:"],
+    connectSrc: [
+      "'self'",
+      "https://*.googleapis.com",
+      "https://*.firebaseio.com",
+      "wss://*.firebaseio.com",
+      "https://*.firebaseapp.com",
+      "https://api.stripe.com",
+      "https://maps.googleapis.com",
+      "https://open.er-api.com",
+      ...sentry,
+    ],
+    frameSrc: [
+      "'self'",
+      "https://*.firebaseapp.com",
+      ...(authDomain ? [`https://${authDomain}`] : []),
+      "https://js.stripe.com",
+      "https://*.js.stripe.com",
+      "https://hooks.stripe.com",
+      "https://accounts.google.com",
+      "https://appleid.apple.com",
+    ],
+    formAction: ["'self'", "https://checkout.paystack.com"],
+    workerSrc: ["'self'", "blob:"],
+    manifestSrc: ["'self'"],
+    upgradeInsecureRequests: (process.env.APP_URL || "").startsWith("https://") ? [] : null,
+  };
 }
 
-async function publishRealtime(event: Omit<RealtimeEvent, "id" | "createdAt">) {
-  const fullEvent: RealtimeEvent = {
-    ...event,
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
-  };
-
-  await getAdminDb().collection("realtime_events").doc(fullEvent.id).set(fullEvent);
-
-  for (const [id, client] of realtimeClients) {
-    if (!canReceiveEvent(client.auth, fullEvent)) continue;
-    try {
-      client.res.write(`event: ${fullEvent.type}\n`);
-      client.res.write(`data: ${JSON.stringify(fullEvent)}\n\n`);
-    } catch (error) {
-      realtimeClients.delete(id);
-    }
+/** On Vercel, fall back to the project's own addresses so only the Firebase key is required. */
+function applyHostingDefaults() {
+  if (!isVercel) return;
+  const productionHost = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  if (!envValue("APP_URL") && productionHost) process.env.APP_URL = `https://${productionHost}`;
+  if (!envValue("CORS_ORIGINS") && envValue("APP_URL")) {
+    const previewHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter(Boolean).map((host) => `https://${host}`);
+    process.env.CORS_ORIGINS = [envValue("APP_URL"), ...previewHosts].join(",");
   }
 }
 
-async function startServer() {
+/** A request from a page on the same address as the server is never a cross-site request. */
+function isSameOrigin(origin: string, req: Request) {
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  try {
+    return Boolean(host) && new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds the whole API. Railway and local development also serve the website from it;
+ * on Vercel the website is served by Vercel itself and only the API runs here.
+ */
+export async function createApp({ serveFrontend }: { serveFrontend: boolean }) {
+  applyHostingDefaults();
   const missingEnvironment = validateEnvironment();
   const app = express();
   operationsQueue = new OperationsQueue();
@@ -1233,22 +1374,25 @@ async function startServer() {
 
   app.set("trust proxy", 1);
   app.use(
-    cors({
-      origin(origin, callback) {
-        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-          callback(null, true);
-          return;
-        }
+    cors((req, callback) => {
+      const origin = req.headers.origin;
+      const allowed = !origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin) || isSameOrigin(origin, req as Request);
+      if (!allowed) {
         callback(new Error("CORS origin denied"));
-      },
-      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      credentials: true,
+        return;
+      }
+      callback(null, { origin: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], credentials: true });
     }),
   );
   app.use(
     helmet({
-      contentSecurityPolicy: isProduction ? undefined : false,
+      // Explicit allow-list: the default policy would block Firebase sign-in, Firestore,
+      // Stripe, Google Fonts/Maps and uploaded images on the live site.
+      contentSecurityPolicy: isProduction ? { useDefaults: false, directives: contentSecurityDirectives() } : false,
       crossOriginEmbedderPolicy: false,
+      // Google/Apple sign-in opens a popup that must be able to report back to this page.
+      crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+      crossOriginResourcePolicy: { policy: "cross-origin" },
     }),
   );
 
@@ -1256,8 +1400,8 @@ async function startServer() {
     "/api/webhooks/stripe",
     express.raw({ type: "application/json", limit: "256kb" }),
     asyncHandler(async (req, res) => {
-      const secret = process.env.STRIPE_WEBHOOK_SECRET;
-      if (!secret) throw new HttpError(503, "STRIPE_WEBHOOK_SECRET is missing");
+      const secret = envValue("STRIPE_WEBHOOK_SECRET");
+      if (!secret) throw new HttpError(503, "Card payment confirmations aren’t set up yet (STRIPE_WEBHOOK_SECRET).");
 
       const signature = req.get("stripe-signature");
       if (!signature) throw new HttpError(400, "Missing Stripe signature");
@@ -1292,8 +1436,8 @@ async function startServer() {
     "/api/webhooks/paystack",
     express.raw({ type: "application/json", limit: "256kb" }),
     asyncHandler(async (req, res) => {
-      const secretKey = process.env.PAYSTACK_SECRET_KEY;
-      if (!secretKey) throw new HttpError(503, "PAYSTACK_SECRET_KEY is missing");
+      const secretKey = envValue("PAYSTACK_SECRET_KEY");
+      if (!secretKey) throw new HttpError(503, "Paystack isn’t set up yet. Please choose another way to pay.");
 
       const signature = req.get("x-paystack-signature") || "";
       const expected = crypto.createHmac("sha512", secretKey).update(req.body).digest("hex");
@@ -1314,34 +1458,44 @@ async function startServer() {
 
   const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 150,
+    max: 600,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: "Too many requests from this IP, please try again later" },
+    message: { error: "Too many requests. Please wait a few minutes and try again." },
   });
   const paymentLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 30,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: "Too many payment attempts, please try again later" },
+    message: { error: "Too many payment attempts. Please wait a few minutes and try again." },
   });
-  app.use("/api", generalLimiter);
+  const quoteLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 400,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many price checks. Please wait a moment." },
+  });
+  app.use("/api/quote", quoteLimiter);
+  app.use("/api", (req, res, next) => (req.path === "/quote" ? next() : generalLimiter(req, res, next)));
 
   app.get("/api/health", asyncHandler(async (_req, res) => {
     res.json({
       ok: true,
       timestamp: new Date().toISOString(),
-      redis: operationsQueue.enabled ? "connected" : "missing",
-      queues: operationsQueue.enabled ? "bullmq" : "inline_degraded",
-      firebaseAdmin: "configured_lazily",
+      redis: operationsQueue.connected ? "connected" : operationsQueue.enabled ? "unreachable" : "not_configured",
+      queues: operationsQueue.connected ? "queue" : "running_directly",
+      firebaseAdmin: readServiceAccount() || process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() ? "configured" : "missing_credentials",
+      firebaseProject: firebaseWebConfig.projectId || null,
+      firestoreDatabase: firebaseWebConfig.firestoreDatabaseId,
       providers: {
-        resend: Boolean(process.env.RESEND_API_KEY),
-        twilio: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER),
-        stripe: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET),
-        paystack: Boolean(process.env.PAYSTACK_SECRET_KEY),
-        whatsapp: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_WHATSAPP_FROM),
-        maps: Boolean(process.env.GOOGLE_MAPS_PLATFORM_KEY),
+        resend: Boolean(envValue("RESEND_API_KEY")),
+        twilio: Boolean(envValue("TWILIO_ACCOUNT_SID") && envValue("TWILIO_AUTH_TOKEN") && envValue("TWILIO_FROM_NUMBER")),
+        stripe: Boolean(envValue("STRIPE_SECRET_KEY") && envValue("STRIPE_WEBHOOK_SECRET")),
+        paystack: Boolean(envValue("PAYSTACK_SECRET_KEY")),
+        whatsapp: Boolean(envValue("TWILIO_ACCOUNT_SID") && envValue("TWILIO_AUTH_TOKEN") && envValue("TWILIO_WHATSAPP_FROM")),
+        maps: Boolean(envValue("GOOGLE_MAPS_PLATFORM_KEY")),
         sentry: Boolean(process.env.SENTRY_DSN),
       },
       missingEnvironment: isProduction ? [] : missingEnvironment,
@@ -1354,12 +1508,76 @@ async function startServer() {
     res.json({
       features: flags,
       payments: {
-        paystack: Boolean(flags.paystack && process.env.PAYSTACK_SECRET_KEY),
-        stripe: Boolean(flags.stripe && process.env.STRIPE_SECRET_KEY),
+        paystack: Boolean(flags.paystack && envValue("PAYSTACK_SECRET_KEY")),
+        stripe: Boolean(flags.stripe && envValue("STRIPE_SECRET_KEY")),
         manualBankTransfer: Boolean(flags.manualBankTransfer && bank.configured),
       },
-      mapsEnabled: Boolean(flags.liveTracking && process.env.GOOGLE_MAPS_PLATFORM_KEY),
+      mapsEnabled: Boolean(flags.liveTracking && envValue("GOOGLE_MAPS_PLATFORM_KEY")),
     });
+  }));
+
+  /** Everything the public site needs to show prices, fleet and options. */
+  app.get("/api/public/catalog", asyncHandler(async (_req, res) => {
+    const settings = getAdminDb().collection("settings");
+    const today = new Date().toISOString().slice(0, 10);
+    const [catalog, hubs, rates, flags, bank, routesSnap, trackingSnap, blockedSnap] = await Promise.all([
+      getPricingCatalog(),
+      getActiveHubs(),
+      getCurrencyRates(),
+      getFeatureFlags(),
+      getBankConfig(),
+      settings.doc("routes").get(),
+      settings.doc("tracking_locations").get(),
+      getAdminDb().collection("blocked_dates").where("date", ">=", today).get(),
+    ]);
+    const stringList = (value: unknown, fallback: string[]) =>
+      Array.isArray(value) && value.length ? value.map(String).filter(Boolean) : fallback;
+    const body: PublicCatalog = {
+      ...catalog,
+      hubs,
+      currencyRates: rates,
+      blockedDates: blockedSnap.docs.map((document) => String(document.data().date)).sort(),
+      routes: stringList(routesSnap.data()?.value, company.routes),
+      trackingLocations: stringList(trackingSnap.data()?.value, DEFAULT_TRACKING_LOCATIONS),
+      mapsEnabled: Boolean(envValue("GOOGLE_MAPS_PLATFORM_KEY")),
+      features: flags,
+      payments: {
+        paystack: Boolean(flags.paystack && envValue("PAYSTACK_SECRET_KEY")),
+        stripe: Boolean(flags.stripe && envValue("STRIPE_SECRET_KEY") && envValue("VITE_STRIPE_PUBLISHABLE_KEY")),
+        manualBankTransfer: Boolean(flags.manualBankTransfer && bank.configured),
+      },
+    };
+    res.set("Cache-Control", "no-cache");
+    res.json(body);
+  }));
+
+  /** Authoritative price preview: the exact figure POST /api/bookings will charge. */
+  app.post("/api/quote", requireCsrf, asyncHandler(async (req, res) => {
+    const input = parseBody(QuoteSchema, req.body);
+    res.json(await calculateAuthoritativeQuote(input));
+  }));
+
+  app.post("/api/newsletter", paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+    const { email } = parseBody(NewsletterSchema, req.body);
+    const id = crypto.createHash("sha256").update(email.toLowerCase()).digest("hex").slice(0, 40);
+    const ref = getAdminDb().collection("newsletter_subscribers").doc(id);
+    const existing = await ref.get();
+    await ref.set({
+      email: email.toLowerCase(),
+      status: "subscribed",
+      updatedAt: FieldValue.serverTimestamp(),
+      ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+    }, { merge: true });
+    if (!existing.exists) {
+      await queueNotification({
+        channel: "email",
+        to: process.env.SUPPORT_ALERT_EMAIL || company.email,
+        subject: "New newsletter sign-up",
+        body: `${email} signed up for BLM news and offers.`,
+        template: "newsletter_subscribed",
+      });
+    }
+    res.status(existing.exists ? 200 : 201).json({ success: true });
   }));
 
   app.get("/api/security/csrf-token", (_req, res) => {
@@ -1397,12 +1615,29 @@ async function startServer() {
         ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
       }, { merge: true });
     }
+    // Keep the token's role claim in step with the server record so Storage and
+    // Firestore rules (which read request.auth.token.role) agree with the API.
+    const claimRole = req.auth!.token.role;
+    const desiredClaim = req.auth!.role === "customer" ? undefined : req.auth!.role;
+    let claimsUpdated = false;
+    if (claimRole !== desiredClaim) {
+      const record = await getFirebaseAuth().getUser(req.auth!.uid);
+      const claims = { ...(record.customClaims || {}) };
+      if (desiredClaim) claims.role = desiredClaim;
+      else delete claims.role;
+      await getFirebaseAuth().setCustomUserClaims(req.auth!.uid, claims);
+      claimsUpdated = true;
+    }
+    const profile = await getAdminDb().collection("users").doc(req.auth!.uid).get();
     await persistAudit(req, "AUTH_SESSION_SYNC", `users/${req.auth!.uid}`);
     res.json({
       uid: req.auth!.uid,
       email: req.auth!.email,
       role: req.auth!.role,
       emailVerified: req.auth!.emailVerified,
+      fullName: String(profile.data()?.fullName || req.auth!.token.name || ""),
+      phone: String(profile.data()?.phone || ""),
+      claimsUpdated,
     });
   }));
 
@@ -1427,7 +1662,7 @@ async function startServer() {
     const id = z.string().trim().length(64).parse(req.params.id);
     const ref = getAdminDb().collection("user_sessions").doc(id);
     const snapshot = await ref.get();
-    if (!snapshot.exists || snapshot.data()?.userId !== req.auth!.uid) throw new HttpError(404, "Session not found");
+    if (!snapshot.exists || snapshot.data()?.userId !== req.auth!.uid) throw new HttpError(404, "We couldn’t find that device.");
     await ref.update({ revoked: true, revokedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     await persistAudit(req, "DEVICE_SESSION_REVOKED", `user_sessions/${id}`);
     res.json({ success: true, current: id === sessionIdForRequest(req, req.auth!.uid) });
@@ -1443,22 +1678,16 @@ async function startServer() {
     res.json({ success: true, revoked: snapshot.size });
   }));
 
-  app.post("/api/audit", authenticate, requireCsrf, asyncHandler(async (req, res) => {
-    const event = parseBody(ClientAuditSchema, req.body);
-    await persistAudit(req, event.action, event.resource, event.details);
-    res.status(201).json({ success: true });
-  }));
-
   app.post("/api/payment/manual/initialize", authenticate, requireCsrf, asyncHandler(async (req, res) => {
     const { bookingId } = parseBody(ManualPaymentSchema, req.body);
     const [flags, bank] = await Promise.all([getFeatureFlags(), getBankConfig()]);
     if (!flags.manualBankTransfer || !bank.configured) {
-      throw new HttpError(503, "Manual bank transfer is not configured");
+      throw new HttpError(503, "Bank transfer isn’t available right now. Please choose another way to pay.");
     }
 
     const { ref: bookingRef, booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
     if (!["Quoted", "Booked"].includes(String(booking.status))) {
-      throw new HttpError(409, "Booking is not payable in its current state");
+      throw new HttpError(409, "This booking can’t be paid for right now. It may already be paid or cancelled.");
     }
 
     const existing = await getAdminDb().collection("payments")
@@ -1476,7 +1705,7 @@ async function startServer() {
     const trackingId = `BLM-${String(booking.serviceType || "TRK").toUpperCase().includes("LOGISTICS") ? "LOG" : "TRK"}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
     const deadline = new Date(Date.now() + bank.deadlineHours * 60 * 60 * 1000).toISOString();
     const amount = Number(booking.totalAmount || 0);
-    if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Booking amount is invalid");
+    if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Something is wrong with this booking’s price. Please contact us.");
 
     const batch = getAdminDb().batch();
     batch.set(paymentRef, {
@@ -1513,12 +1742,12 @@ async function startServer() {
     const payload = parseBody(ManualProofSchema, req.body);
     const ref = getAdminDb().collection("payments").doc(payload.paymentId);
     const snapshot = await ref.get();
-    if (!snapshot.exists) throw new HttpError(404, "Payment record not found");
+    if (!snapshot.exists) throw new HttpError(404, "We couldn’t find that payment.");
     const payment = snapshot.data() || {};
     if (payment.customerId !== req.auth!.uid && !hasRole(req.auth!, ["finance_admin", "customer_support_agent"])) {
-      throw new HttpError(403, "You cannot update this payment");
+      throw new HttpError(403, "You can only update your own payments.");
     }
-    if (["PAID", "REFUNDED"].includes(String(payment.status))) throw new HttpError(409, "Payment is already finalized");
+    if (["PAID", "REFUNDED"].includes(String(payment.status))) throw new HttpError(409, "This payment has already been completed.");
 
     await ref.update({
       proofOfPaymentUrl: payload.proofOfPaymentUrl,
@@ -1537,9 +1766,9 @@ async function startServer() {
     const payload = parseBody(ManualReviewSchema, req.body);
     const paymentRef = getAdminDb().collection("payments").doc(payload.paymentId);
     const paymentSnapshot = await paymentRef.get();
-    if (!paymentSnapshot.exists) throw new HttpError(404, "Payment record not found");
+    if (!paymentSnapshot.exists) throw new HttpError(404, "We couldn’t find that payment.");
     const payment = paymentSnapshot.data() || {};
-    if (payment.provider !== "manual_bank_transfer") throw new HttpError(400, "Payment is not a manual transfer");
+    if (payment.provider !== "manual_bank_transfer") throw new HttpError(400, "This payment wasn’t made by bank transfer.");
     const bookingRef = getAdminDb().collection("bookings").doc(String(payment.bookingId));
 
     if (payload.decision === "reject") {
@@ -1601,6 +1830,12 @@ async function startServer() {
 
   app.post("/api/bookings", authenticate, requireCsrf, asyncHandler(async (req, res) => {
     const input = parseBody(BookingCreateSchema, req.body);
+    const today = new Date().toISOString().slice(0, 10);
+    if (input.date < today) throw new HttpError(422, "Please pick today or a later date.");
+    const blocked = await getAdminDb().collection("blocked_dates").where("date", "==", input.date).limit(1).get();
+    if (!blocked.empty) {
+      throw new HttpError(409, `Sorry, we’re not taking bookings on ${input.date} (${blocked.docs[0].data().reason || "closed"}). Please pick another day.`);
+    }
     const quote = await calculateAuthoritativeQuote(input);
     const ref = getAdminDb().collection("bookings").doc();
     const trackingId = `BLM-${input.serviceType.toLowerCase().includes("logistics") ? "LOG" : "TRK"}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
@@ -1634,16 +1869,24 @@ async function startServer() {
     res.status(201).json({ id: ref.id, trackingId, totalAmount: quote.total, pricingSnapshot: booking.pricingSnapshot });
   }));
 
-  app.post("/api/routes/distance", paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
-    const { origin, destination } = parseBody(RouteDistanceSchema, req.body);
-    const route = await getRouteDistance(origin, destination);
-    if (!route) throw new HttpError(503, "Google Maps distance calculation is not configured");
-    res.json(route);
-  }));
-
-  app.post("/api/validate-booking", asyncHandler(async (req, res) => {
-    const validatedData = parseBody(BookingValidationSchema, req.body);
-    res.json({ status: "validated", data: validatedData });
+  /** Booking + its payment state for the checkout screen (owner or staff only). */
+  app.get("/api/bookings/:id", authenticate, asyncHandler(async (req, res) => {
+    const bookingId = z.string().trim().min(3).max(160).parse(req.params.id);
+    const { booking } = await loadBooking(bookingId, req.auth!);
+    const paymentsSnap = await getAdminDb().collection("payments").where("bookingId", "==", bookingId).get();
+    const payments = paymentsSnap.docs
+      .map((document) => {
+        const { clientSecret: _secret, idempotencyKey: _key, ...rest } = document.data();
+        return serializeTimestamps({ id: document.id, ...rest });
+      })
+      .sort((a: any, b: any) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const manual = payments.find((payment: any) => payment.provider === "manual_bank_transfer");
+    const bank = manual ? await getBankConfig() : null;
+    res.json({
+      booking: serializeTimestamps({ id: bookingId, ...booking }),
+      payments,
+      bankDetails: bank && bank.configured ? bank : null,
+    });
   }));
 
   app.get("/api/reviews", asyncHandler(async (_req, res) => {
@@ -1672,9 +1915,9 @@ async function startServer() {
   app.post("/api/reviews", authenticate, requireCsrf, asyncHandler(async (req, res) => {
     const payload = parseBody(ReviewSubmissionSchema, req.body);
     const { booking } = await loadBooking(payload.bookingId, req.auth!, []);
-    if (String(booking.status) !== "Completed") throw new HttpError(409, "Reviews are available after the booking is completed");
+    if (String(booking.status) !== "Completed") throw new HttpError(409, "You can leave a review once your trip is finished.");
     const existing = await getAdminDb().collection("reviews").where("bookingId", "==", payload.bookingId).limit(1).get();
-    if (!existing.empty) throw new HttpError(409, "A review has already been submitted for this booking");
+    if (!existing.empty) throw new HttpError(409, "You’ve already reviewed this trip. Thank you!");
     const ref = await getAdminDb().collection("reviews").add({
       ...payload,
       customerId: req.auth!.uid,
@@ -1736,8 +1979,8 @@ async function startServer() {
     await queueNotification({
       channel: "email",
       to: process.env.SUPPORT_ALERT_EMAIL || "bookings@blmmotors.ng",
-      subject: `${input.priority === "urgent" ? "Urgent " : ""}support ticket: ${input.subject}`,
-      body: `${req.auth!.email || "A customer"} opened ticket ${ticketRef.id}. ${input.message}`,
+      subject: `${input.priority === "urgent" ? "URGENT: " : ""}New customer message: ${input.subject}`,
+      body: `${req.auth!.email || "A customer"} sent a message (ref ${ticketRef.id}):\n\n${input.message}`,
       template: "support_ticket_created",
       metadata: { ticketId: ticketRef.id, customerId: req.auth!.uid },
     });
@@ -1748,9 +1991,9 @@ async function startServer() {
   app.get("/api/support/tickets/:id/messages", authenticate, asyncHandler(async (req, res) => {
     const id = z.string().trim().min(3).max(160).parse(req.params.id);
     const ticket = await getAdminDb().collection("support_tickets").doc(id).get();
-    if (!ticket.exists) throw new HttpError(404, "Support ticket not found");
+    if (!ticket.exists) throw new HttpError(404, "We couldn’t find that message.");
     const data = ticket.data() || {};
-    if (data.customerId !== req.auth!.uid && !hasRole(req.auth!, ["customer_support_agent"])) throw new HttpError(403, "Support ticket access denied");
+    if (data.customerId !== req.auth!.uid && !hasRole(req.auth!, ["customer_support_agent"])) throw new HttpError(403, "You can only see your own messages.");
     const snapshot = await getAdminDb().collection("support_conversations").doc(id).collection("messages").orderBy("createdAt", "asc").limit(300).get();
     const messages = snapshot.docs.map((message) => {
       const value = message.data();
@@ -1765,21 +2008,21 @@ async function startServer() {
     const database = getAdminDb();
     const ticketRef = database.collection("support_tickets").doc(id);
     const ticket = await ticketRef.get();
-    if (!ticket.exists) throw new HttpError(404, "Support ticket not found");
+    if (!ticket.exists) throw new HttpError(404, "We couldn’t find that message.");
     const data = ticket.data() || {};
     const supportAgent = hasRole(req.auth!, ["customer_support_agent"]);
-    if (data.customerId !== req.auth!.uid && !supportAgent) throw new HttpError(403, "Support ticket access denied");
-    if (data.status === "closed") throw new HttpError(409, "Closed tickets cannot receive replies");
+    if (data.customerId !== req.auth!.uid && !supportAgent) throw new HttpError(403, "You can only see your own messages.");
+    if (data.status === "closed") throw new HttpError(409, "This conversation is closed. Please send a new message.");
     const messageRef = database.collection("support_conversations").doc(id).collection("messages").doc();
     const batch = database.batch();
     batch.set(messageRef, { senderId: req.auth!.uid, senderRole: req.auth!.role, message, createdAt: FieldValue.serverTimestamp() });
     batch.update(ticketRef, { status: supportAgent ? "waiting_customer" : "open", lastMessagePreview: message.slice(0, 180), updatedAt: FieldValue.serverTimestamp() });
     await batch.commit();
     if (supportAgent && data.customerEmail) {
-      await queueNotification({ channel: "email", to: String(data.customerEmail), subject: `BLM support update: ${data.subject}`, body: message, template: "support_ticket_reply", metadata: { ticketId: id } });
+      await queueNotification({ channel: "email", to: String(data.customerEmail), subject: `BLM replied: ${data.subject}`, body: message, template: "support_ticket_reply", metadata: { ticketId: id } });
     }
     if (supportAgent && data.phone && (await getFeatureFlags()).whatsappNotifications) {
-      await queueNotification({ channel: "whatsapp", to: String(data.phone), body: `BLM Support: ${message}`, template: "support_ticket_reply", metadata: { ticketId: id } });
+      await queueNotification({ channel: "whatsapp", to: String(data.phone), body: `BLM: ${message}`, template: "support_ticket_reply", metadata: { ticketId: id } });
     }
     await persistAudit(req, "SUPPORT_MESSAGE_CREATED", `support_tickets/${id}`, { senderRole: req.auth!.role });
     res.status(201).json({ id: messageRef.id });
@@ -1790,7 +2033,7 @@ async function startServer() {
     const update = parseBody(SupportStatusSchema, req.body);
     const ref = getAdminDb().collection("support_tickets").doc(id);
     const ticket = await ref.get();
-    if (!ticket.exists) throw new HttpError(404, "Support ticket not found");
+    if (!ticket.exists) throw new HttpError(404, "We couldn’t find that message.");
     await ref.update({ ...update, assignedAgentId: req.auth!.uid, updatedAt: FieldValue.serverTimestamp() });
     await persistAudit(req, "SUPPORT_TICKET_STATUS_UPDATED", `support_tickets/${id}`, update, ticket.data());
     res.json({ success: true });
@@ -1813,27 +2056,29 @@ async function startServer() {
       const linkedBookingId = payment.empty ? "" : String(payment.docs[0].data().bookingId || "");
       if (linkedBookingId) bookingSnap = await bookings.doc(linkedBookingId).get();
     }
-    if (!bookingSnap.exists) throw new HttpError(404, "Tracking reference not found");
+    if (!bookingSnap.exists) throw new HttpError(404, "We couldn’t find a booking with that tracking number.");
 
     const bookingId = bookingSnap.id;
     const booking = bookingSnap.data() || {};
     const eventsSnap = await getAdminDb()
       .collection("booking_events")
       .where("bookingId", "==", bookingId)
-      .orderBy("createdAt", "desc")
-      .limit(8)
-      .get()
-      .catch(() => null);
+      .limit(50)
+      .get();
 
-    const events = eventsSnap?.docs.map((doc) => {
+    // Customer-safe event feed (no actor IDs), newest first. Sorted in memory to avoid a composite index.
+    const events = eventsSnap.docs.map((doc) => {
       const event = doc.data();
+      const metadata = event.metadata || {};
       return {
         id: doc.id,
-        type: event.type || "booking.update",
-        metadata: event.metadata || {},
+        type: String(event.type || "booking.update"),
+        location: metadata.location ? String(metadata.location) : null,
+        notes: metadata.notes ? String(metadata.notes) : null,
+        status: metadata.status ? String(metadata.status) : null,
         createdAt: event.createdAt?.toDate?.().toISOString?.() || null,
       };
-    }) || [];
+    }).sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt))).slice(0, 20);
 
     const statusOrder = ["Quoted", "Booked", "Paid", "Confirmed", "Dispatched", "InTransit", "Completed"];
     const mayShowLocation = statusOrder.indexOf(String(booking.status)) >= statusOrder.indexOf("Dispatched");
@@ -1892,23 +2137,23 @@ async function startServer() {
     authenticate,
     requireCsrf,
     asyncHandler(async (req, res) => {
-      if (!(await getFeatureFlags()).stripe) throw new HttpError(503, "Stripe payments are disabled");
+      if (!(await getFeatureFlags()).stripe) throw new HttpError(503, "Card payments are switched off right now. Please choose another way to pay.");
       const { bookingId, currency: requestedCurrency } = parseBody(StripeIntentSchema, req.body);
       const { booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
       if (!["Quoted", "Booked"].includes(String(booking.status))) {
-        throw new HttpError(409, "Booking is not payable in its current state");
+        throw new HttpError(409, "This booking can’t be paid for right now. It may already be paid or cancelled.");
       }
 
       const existing = await findExistingPayment(bookingId, "stripe");
       if (existing?.data.status === "succeeded") {
-        throw new HttpError(409, "Booking has already been paid");
+        throw new HttpError(409, "This booking is already paid.");
       }
       if (existing?.data.clientSecret) {
         return res.json({ clientSecret: existing.data.clientSecret, paymentId: existing.id, reused: true });
       }
 
       const baseAmount = Number(booking.totalAmount || 0);
-      if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Booking amount is invalid");
+      if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Something is wrong with this booking’s price. Please contact us.");
       const currency = String(requestedCurrency || booking.checkoutCurrency || booking.displayCurrency || booking.currency || "NGN").toUpperCase() as z.infer<typeof SupportedCurrencySchema>;
       SupportedCurrencySchema.parse(currency);
       const amount = await convertFromNgn(baseAmount, currency);
@@ -1961,8 +2206,8 @@ async function startServer() {
       await queueNotification({
         channel: "email",
         to: req.auth!.email || String(booking.customerEmail || ""),
-        subject: "Booking payment started",
-        body: `Your payment for booking ${bookingId} has been initialized. We will confirm it after server-side reconciliation.`,
+        subject: "We’re processing your payment",
+        body: `We’ve started processing your payment for booking ${bookingId}. We’ll let you know as soon as it’s confirmed.`,
         template: "payment_initialized",
         metadata: { bookingId, paymentId: paymentRef.id, provider: "stripe" },
       });
@@ -1979,7 +2224,7 @@ async function startServer() {
     asyncHandler(async (req, res) => {
       const { paymentIntentId } = parseBody(StripeReconcileSchema, req.body);
       const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
-      if (!intent.metadata?.bookingId) throw new HttpError(400, "Payment intent is missing booking metadata");
+      if (!intent.metadata?.bookingId) throw new HttpError(400, "We couldn’t match this payment to a booking. Please contact us.");
       await loadBooking(intent.metadata.bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
       await reconcileStripePayment(intent, `client_reconcile:${crypto.randomUUID()}`);
       await persistAudit(req, "PAYMENT_RECONCILED", `stripe/${paymentIntentId}`, { status: intent.status });
@@ -1997,7 +2242,7 @@ async function startServer() {
       const { booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
       const canSelfCancel = booking.customerId === req.auth!.uid;
       if (!canSelfCancel && !hasRole(req.auth!, ["finance_admin", "customer_support_agent"])) {
-        throw new HttpError(403, "Refund access denied");
+        throw new HttpError(403, "You can’t request a refund for this booking.");
       }
 
       const paymentSnap = await getAdminDb()
@@ -2010,10 +2255,10 @@ async function startServer() {
 
       const payment = paymentSnap.empty ? null : paymentSnap.docs[0].data();
       if (!payment && paymentIntentId && booking.paymentIntentId !== paymentIntentId) {
-        throw new HttpError(403, "Refund payment intent does not belong to this booking");
+        throw new HttpError(403, "That payment doesn’t belong to this booking.");
       }
       const intentId = payment?.providerPaymentId || booking.paymentIntentId;
-      if (!intentId) throw new HttpError(404, "No refundable Stripe payment found for this booking");
+      if (!intentId) throw new HttpError(404, "There’s no card payment to refund on this booking.");
 
       const refund = await getStripe().refunds.create(
         {
@@ -2051,18 +2296,12 @@ async function startServer() {
       await queueNotification({
         channel: "email",
         to: String(booking.customerEmail || req.auth!.email || ""),
-        subject: "Refund initiated",
-        body: `A refund has been initiated for booking ${bookingId}. Status: ${refund.status}.`,
+        subject: "Your refund is on its way",
+        body: `We’ve sent a refund for booking ${bookingId} to your card. It can take 5–10 working days to show on your statement.`,
         template: "refund_initiated",
         metadata: { bookingId, refundId: refund.id },
       });
 
-      await publishRealtime({
-        type: "booking.refund_created",
-        userIds: [String(booking.customerId)],
-        audience: "admin",
-        payload: { bookingId, refundId: refund.id, status: refund.status },
-      });
 
       res.json({ success: true, refundId: refund.id, status: refund.status });
     }),
@@ -2074,27 +2313,27 @@ async function startServer() {
     authenticate,
     requireCsrf,
     asyncHandler(async (req, res) => {
-      if (!(await getFeatureFlags()).paystack) throw new HttpError(503, "Paystack payments are disabled");
+      if (!(await getFeatureFlags()).paystack) throw new HttpError(503, "Paystack is switched off right now. Please choose another way to pay.");
       const { bookingId, currency: requestedCurrency } = parseBody(PaystackInitializeSchema, req.body);
-      const secretKey = process.env.PAYSTACK_SECRET_KEY;
-      if (!secretKey) throw new HttpError(503, "PAYSTACK_SECRET_KEY is missing");
+      const secretKey = envValue("PAYSTACK_SECRET_KEY");
+      if (!secretKey) throw new HttpError(503, "Paystack isn’t set up yet. Please choose another way to pay.");
 
       const { booking } = await loadBooking(bookingId, req.auth!, ["finance_admin", "customer_support_agent"]);
       if (!["Quoted", "Booked"].includes(String(booking.status))) {
-        throw new HttpError(409, "Booking is not payable in its current state");
+        throw new HttpError(409, "This booking can’t be paid for right now. It may already be paid or cancelled.");
       }
 
       const existing = await findExistingPayment(bookingId, "paystack");
       if (existing?.data.status === "succeeded") {
-        throw new HttpError(409, "Booking has already been paid");
+        throw new HttpError(409, "This booking is already paid.");
       }
 
       const baseAmount = Number(booking.totalAmount || 0);
-      if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Booking amount is invalid");
+      if (!Number.isFinite(baseAmount) || baseAmount <= 0) throw new HttpError(400, "Something is wrong with this booking’s price. Please contact us.");
       const currency = String(requestedCurrency || booking.checkoutCurrency || booking.displayCurrency || booking.currency || "NGN").toUpperCase() as z.infer<typeof SupportedCurrencySchema>;
       SupportedCurrencySchema.parse(currency);
       if (!["NGN", "GHS"].includes(currency)) {
-        throw new HttpError(400, "Paystack checkout is enabled for NGN and GHS only. Use Stripe for this currency.");
+        throw new HttpError(400, "Paystack only accepts naira (NGN) and cedis (GHS). Please pay by card for other currencies.");
       }
       const amount = await convertFromNgn(baseAmount, currency);
 
@@ -2163,7 +2402,7 @@ async function startServer() {
         .where("providerReference", "==", reference)
         .limit(1)
         .get();
-      if (paymentSnap.empty) throw new HttpError(404, "Paystack payment reference not found");
+      if (paymentSnap.empty) throw new HttpError(404, "We couldn’t find that Paystack payment.");
 
       const payment = paymentSnap.docs[0].data();
       await loadBooking(String(payment.bookingId), req.auth!, ["finance_admin", "customer_support_agent"]);
@@ -2215,44 +2454,7 @@ async function startServer() {
       await queueCustomerStatusNotifications(bookingId, booking, status);
 
       await persistAudit(req, "BOOKING_STATUS_UPDATED", `bookings/${bookingId}`, { status }, before, update);
-      await publishRealtime({
-        type: "booking.status_updated",
-        userIds: [String(booking.customerId)],
-        audience: "admin",
-        payload: { bookingId, status, assignedDriverId: assignedDriverId || null },
-      });
 
-      res.json({ success: true });
-    }),
-  );
-
-  app.post(
-    "/api/drivers/notify",
-    authenticate,
-    requireRoles("dispatcher", "customer_support_agent"),
-    requireCsrf,
-    asyncHandler(async (req, res) => {
-      const payload = parseBody(DriverNotifySchema, req.body);
-      let driver: Record<string, unknown> = {};
-      if (payload.driverId) {
-        const driverSnap = await getAdminDb().collection("drivers").doc(payload.driverId).get();
-        driver = driverSnap.data() || {};
-      }
-      const { booking } = await loadBooking(payload.bookingId, req.auth!, ["dispatcher", "customer_support_agent"]);
-      const phone = payload.driverPhone || String(driver.phone || "");
-      if (!phone) throw new HttpError(400, "Driver phone is required");
-
-      await queueNotification({
-        channel: "sms",
-        to: phone,
-        body: `DISPATCH ALERT: ${payload.driverName || driver.name || "Driver"}, booking ${payload.bookingId}. Route: ${
-          payload.pickup || booking.pickup
-        } -> ${payload.destination || booking.destination}.`,
-        template: "driver_dispatch_alert",
-        metadata: { bookingId: payload.bookingId, driverId: payload.driverId || null },
-      });
-
-      await persistAudit(req, "DRIVER_NOTIFIED", `bookings/${payload.bookingId}`, { driverId: payload.driverId || null });
       res.json({ success: true });
     }),
   );
@@ -2271,7 +2473,7 @@ async function startServer() {
       );
       const { ref, snap, booking } = await loadBooking(bookingId, req.auth!, ["customer_support_agent", "dispatcher"]);
       if (!["Quoted", "Booked", "Paid", "Confirmed"].includes(String(booking.status))) {
-        throw new HttpError(409, "Booking cannot be cancelled in its current state");
+        throw new HttpError(409, "This booking can’t be cancelled now because the trip has already started or finished.");
       }
 
       await ref.update({
@@ -2298,12 +2500,6 @@ async function startServer() {
       });
 
       await persistAudit(req, "BOOKING_CANCELLED", `bookings/${bookingId}`, { reason: reason || null }, snap.data());
-      await publishRealtime({
-        type: "booking.cancelled",
-        userIds: [String(booking.customerId)],
-        audience: "admin",
-        payload: { bookingId },
-      });
 
       res.json({ success: true });
     }),
@@ -2325,16 +2521,16 @@ async function startServer() {
           transaction.get(bookingRef),
           transaction.get(driverRef),
         ]);
-        if (!bookingSnap.exists) throw new HttpError(404, "Booking not found");
-        if (!driverSnap.exists) throw new HttpError(404, "Driver not found");
+        if (!bookingSnap.exists) throw new HttpError(404, "We couldn’t find that booking.");
+        if (!driverSnap.exists) throw new HttpError(404, "We couldn’t find that driver.");
 
         const booking = bookingSnap.data() || {};
         const driver = driverSnap.data() || {};
         if (!["Paid", "Confirmed", "Dispatched", "InTransit"].includes(String(booking.status))) {
-          throw new HttpError(409, "This booking is not ready for driver assignment");
+          throw new HttpError(409, "A driver can only be assigned after the booking is paid.");
         }
-        if (["suspended", "rejected"].includes(String(driver.onboardingStatus || "").toLowerCase())) {
-          throw new HttpError(409, "This driver is not approved for assignments");
+        if (["suspended", "rejected"].includes(String(driver.onboarding?.state || "").toLowerCase())) {
+          throw new HttpError(409, "This driver hasn’t been approved yet.");
         }
 
         const previousDriverId = String(booking.assignedDriverId || booking.driverId || "");
@@ -2378,18 +2574,12 @@ async function startServer() {
         await queueNotification({
           channel: "sms",
           to: phone,
-          body: `DISPATCH ALERT: booking ${bookingId}. Route: ${result.booking.pickup || "Pickup"} -> ${result.booking.destination || "Destination"}.`,
+          body: `New BLM trip ${result.booking.trackingId || bookingId}: from ${result.booking.pickup || "pickup"} to ${result.booking.destination || "destination"}, ${result.booking.date || ""} ${result.booking.time || ""}. Open the driver app for details.`,
           template: "driver_dispatch_alert",
           metadata: { bookingId, driverId },
         });
       }
       await persistAudit(req, "DRIVER_ASSIGNED", `bookings/${bookingId}`, { driverId, previousDriverId: result.previousDriverId || null });
-      await publishRealtime({
-        type: "dispatch.assigned",
-        audience: "admin",
-        userIds: [String(result.booking.customerId || ""), driverId].filter(Boolean),
-        payload: { bookingId, driverId },
-      });
       res.json({ bookingId, driverId });
     }),
   );
@@ -2406,7 +2596,7 @@ async function startServer() {
       const chosen = drivers.empty ? null : drivers.docs[0];
       if (!chosen) {
         await operationsQueue.enqueue("dispatch.assign", { bookingId, reason: "no_available_driver" });
-        throw new HttpError(409, "No available driver found");
+        throw new HttpError(409, "No drivers are available right now. We’ll assign one as soon as someone is free.");
       }
 
       await ref.update({
@@ -2423,12 +2613,6 @@ async function startServer() {
         updatedAt: FieldValue.serverTimestamp(),
       });
       await persistAudit(req, "DRIVER_AUTO_ASSIGNED", `bookings/${bookingId}`, { driverId: chosen.id });
-      await publishRealtime({
-        type: "dispatch.assigned",
-        audience: "admin",
-        userIds: [String(booking.customerId), chosen.id],
-        payload: { bookingId, driverId: chosen.id },
-      });
       res.json({ bookingId, driverId: chosen.id });
     }),
   );
@@ -2465,7 +2649,6 @@ async function startServer() {
       });
       await queueCustomerStatusNotifications(update.bookingId, { ...booking, currentCheckpoint: update.location }, update.status);
       await persistAudit(req, "BOOKING_CHECKPOINT_UPDATED", `bookings/${update.bookingId}`, { location: update.location, status: update.status });
-      await publishRealtime({ type: "booking.checkpoint_updated", audience: "admin", userIds: [String(booking.customerId || "")], payload: { bookingId: update.bookingId, location: update.location, status: update.status } });
       res.json({ success: true, event });
     }),
   );
@@ -2477,17 +2660,16 @@ async function startServer() {
     requireCsrf,
     asyncHandler(async (req, res) => {
       const driver = parseBody(DriverOnboardingSchema, req.body);
-      const firebaseUser = await getFirebaseAuth().getUser(driver.authUid).catch(() => null);
-      if (!firebaseUser) throw new HttpError(404, "No Firebase user exists for this driver UID");
-      const adminRecord = await getAdminDb().collection("admins").doc(driver.authUid).get();
-      if (adminRecord.exists) throw new HttpError(409, "An admin account cannot also be linked as a driver");
+      const firebaseUser = await findAuthUser(driver.account);
+      const adminRecord = await getAdminDb().collection("admins").doc(firebaseUser.uid).get();
+      if (adminRecord.exists) throw new HttpError(409, "This person is a staff member, so they can’t also be a driver.");
 
-      const ref = getAdminDb().collection("drivers").doc(driver.authUid);
+      const ref = getAdminDb().collection("drivers").doc(firebaseUser.uid);
       const existing = await ref.get();
-      if (existing.exists) throw new HttpError(409, "This Firebase user is already linked to a driver profile");
+      if (existing.exists) throw new HttpError(409, "This person is already a driver.");
 
       await ref.set({
-        authUid: driver.authUid,
+        authUid: firebaseUser.uid,
         profile: {
           name: driver.name,
           phone: driver.phone,
@@ -2517,14 +2699,14 @@ async function startServer() {
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
-      await getAdminDb().collection("users").doc(driver.authUid).set({
-        uid: driver.authUid,
+      await getAdminDb().collection("users").doc(firebaseUser.uid).set({
+        uid: firebaseUser.uid,
         email: firebaseUser.email || null,
         fullName: driver.name,
         role: "driver",
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
-      await getFirebaseAuth().setCustomUserClaims(driver.authUid, {
+      await getFirebaseAuth().setCustomUserClaims(firebaseUser.uid, {
         ...(firebaseUser.customClaims || {}),
         role: "driver",
       });
@@ -2541,11 +2723,11 @@ async function startServer() {
     asyncHandler(async (req, res) => {
       const location = parseBody(DriverLocationSchema, req.body);
       const driver = await resolveDriverForUser(req.auth!.uid);
-      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      if (!driver) throw new HttpError(404, "Your account isn’t set up as a driver yet. Please contact BLM.");
       if (location.bookingId) {
         const booking = await getAdminDb().collection("bookings").doc(location.bookingId).get();
         if (!booking.exists || booking.data()?.assignedDriverId !== driver.id) {
-          throw new HttpError(403, "This booking is not assigned to the signed-in driver");
+          throw new HttpError(403, "This trip isn’t assigned to you.");
         }
       }
       const ref = getAdminDb().collection("driver_locations").doc(driver.id);
@@ -2558,11 +2740,6 @@ async function startServer() {
         },
         { merge: true },
       );
-      await publishRealtime({
-        type: "driver.location_updated",
-        audience: "admin",
-        payload: { driverId: driver.id, ...location },
-      });
       res.json({ success: true });
     }),
   );
@@ -2573,7 +2750,7 @@ async function startServer() {
     requireRoles("driver"),
     asyncHandler(async (req, res) => {
       const driver = await resolveDriverForUser(req.auth!.uid);
-      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      if (!driver) throw new HttpError(404, "Your account isn’t set up as a driver yet. Please contact BLM.");
       const jobs = await getAdminDb().collection("bookings")
         .where("assignedDriverId", "==", driver.id)
         .where("status", "in", ["Paid", "Confirmed", "Dispatched", "InTransit"])
@@ -2607,7 +2784,10 @@ async function startServer() {
     asyncHandler(async (req, res) => {
       const { state } = parseBody(DriverAvailabilitySchema, req.body);
       const driver = await resolveDriverForUser(req.auth!.uid);
-      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      if (!driver) throw new HttpError(404, "Your account isn’t set up as a driver yet. Please contact BLM.");
+      if (state === "available" && driver.data()?.onboarding?.state !== "approved") {
+        throw new HttpError(409, "Your driver account is waiting for approval from BLM.");
+      }
       await driver.ref.update({ "availability.state": state, "availability.updatedAt": FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
       await persistAudit(req, "DRIVER_AVAILABILITY_UPDATED", `drivers/${driver.id}`, { state });
       res.json({ success: true, state });
@@ -2622,11 +2802,11 @@ async function startServer() {
     asyncHandler(async (req, res) => {
       const { bookingId, action, note } = parseBody(DriverJobActionSchema, req.body);
       const driver = await resolveDriverForUser(req.auth!.uid);
-      if (!driver) throw new HttpError(404, "Driver profile is not linked to this account");
+      if (!driver) throw new HttpError(404, "Your account isn’t set up as a driver yet. Please contact BLM.");
       const bookingRef = getAdminDb().collection("bookings").doc(bookingId);
       const bookingSnap = await bookingRef.get();
       if (!bookingSnap.exists || bookingSnap.data()?.assignedDriverId !== driver.id) {
-        throw new HttpError(403, "This booking is not assigned to the signed-in driver");
+        throw new HttpError(403, "This trip isn’t assigned to you.");
       }
       const booking = bookingSnap.data() || {};
       const statusByAction: Record<string, string> = { accept: "Confirmed", arrived: "Dispatched", in_transit: "InTransit", completed: "Completed" };
@@ -2667,7 +2847,6 @@ async function startServer() {
       }
       await queueCustomerStatusNotifications(bookingId, booking, status);
       await persistAudit(req, "DRIVER_JOB_STATUS_UPDATED", `bookings/${bookingId}`, { driverId: driver.id, action, status });
-      await publishRealtime({ type: "booking.status_updated", audience: "admin", userIds: [String(booking.customerId || "")], payload: { bookingId, status, driverId: driver.id } });
       res.json({ success: true, status });
     }),
   );
@@ -2678,10 +2857,15 @@ async function startServer() {
     requireRoles("super_admin"),
     requireCsrf,
     asyncHandler(async (req, res) => {
-      const { uid, role } = parseBody(PromoteAdminSchema, req.body);
-      await getAdminDb().collection("admins").doc(uid).set(
+      const { account, role } = parseBody(PromoteAdminSchema, req.body);
+      const user = await findAuthUser(account);
+      const driver = await getAdminDb().collection("drivers").doc(user.uid).get();
+      if (driver.exists) throw new HttpError(409, "This person is a driver, so they can’t also be given staff access.");
+      await getAdminDb().collection("admins").doc(user.uid).set(
         {
           role,
+          email: user.email || null,
+          displayName: user.displayName || null,
           promotedBy: req.auth!.email,
           promotedByUid: req.auth!.uid,
           createdAt: FieldValue.serverTimestamp(),
@@ -2689,8 +2873,9 @@ async function startServer() {
         },
         { merge: true },
       );
-      await persistAudit(req, "ADMIN_ROLE_GRANTED", `admins/${uid}`, { role });
-      res.json({ success: true });
+      await getFirebaseAuth().setCustomUserClaims(user.uid, { ...(user.customClaims || {}), role });
+      await persistAudit(req, "ADMIN_ROLE_GRANTED", `admins/${user.uid}`, { role, email: user.email || null });
+      res.json({ success: true, uid: user.uid, email: user.email, role });
     }),
   );
 
@@ -2701,9 +2886,68 @@ async function startServer() {
     requireCsrf,
     asyncHandler(async (req, res) => {
       const uid = z.string().trim().min(3).max(160).parse(req.params.uid);
-      await getAdminDb().collection("admins").doc(uid).delete();
-      await persistAudit(req, "ADMIN_ROLE_REVOKED", `admins/${uid}`);
+      if (uid === req.auth!.uid) throw new HttpError(409, "You can’t remove your own access.");
+      const ref = getAdminDb().collection("admins").doc(uid);
+      const before = await ref.get();
+      if (!before.exists) throw new HttpError(404, "We couldn’t find that staff member.");
+      if (before.data()?.role === "super_admin") {
+        const supers = await getAdminDb().collection("admins").where("role", "==", "super_admin").get();
+        if (supers.size <= 1) throw new HttpError(409, "You need at least one person with full access.");
+      }
+      await ref.delete();
+      const user = await getFirebaseAuth().getUser(uid).catch(() => null);
+      if (user) {
+        const claims = { ...(user.customClaims || {}) };
+        delete claims.role;
+        await getFirebaseAuth().setCustomUserClaims(uid, claims);
+        await getFirebaseAuth().revokeRefreshTokens(uid);
+      }
+      await persistAudit(req, "ADMIN_ROLE_REVOKED", `admins/${uid}`, {}, before.data());
       res.json({ success: true });
+    }),
+  );
+
+  app.post(
+    "/api/admin/reviews/:id/status",
+    authenticate,
+    requireRoles("customer_support_agent", "dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const id = z.string().trim().min(3).max(160).parse(req.params.id);
+      const { status } = parseBody(ReviewStatusSchema, req.body);
+      const ref = getAdminDb().collection("reviews").doc(id);
+      const before = await ref.get();
+      if (!before.exists) throw new HttpError(404, "We couldn’t find that review.");
+      await ref.update({ status, moderatedBy: req.auth!.uid, updatedAt: FieldValue.serverTimestamp() });
+      await persistAudit(req, "REVIEW_MODERATED", `reviews/${id}`, { status }, before.data());
+      res.json({ success: true, status });
+    }),
+  );
+
+  app.post(
+    "/api/admin/drivers/:id/status",
+    authenticate,
+    requireRoles("dispatcher"),
+    requireCsrf,
+    asyncHandler(async (req, res) => {
+      const id = z.string().trim().min(3).max(160).parse(req.params.id);
+      const { state, reason } = parseBody(DriverStatusSchema, req.body);
+      const ref = getAdminDb().collection("drivers").doc(id);
+      const before = await ref.get();
+      if (!before.exists) throw new HttpError(404, "We couldn’t find that driver.");
+      const labels = { approved: "Approved", suspended: "Suspended", rejected: "Rejected", pending_review: "Pending Approval" } as const;
+      await ref.update({
+        "onboarding.state": state,
+        [`onboarding.${state}At`]: FieldValue.serverTimestamp(),
+        "kyc.status": state === "approved" ? "verified" : state === "pending_review" ? "pending" : state,
+        "kyc.licenseVerification": state === "approved" ? "verified" : "pending",
+        status: labels[state],
+        statusReason: reason || null,
+        ...(state === "approved" ? {} : { "availability.state": "offline" }),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await persistAudit(req, "DRIVER_STATUS_UPDATED", `drivers/${id}`, { state, reason: reason || null }, before.data());
+      res.json({ success: true, state });
     }),
   );
 
@@ -2716,15 +2960,15 @@ async function startServer() {
       const key = AdminSettingKeySchema.parse(req.params.key);
       const { value } = parseBody(AdminSettingUpdateSchema, req.body);
       if (["bank_accounts", "currency_rates", "feature_flags"].includes(key) && !hasRole(req.auth!, ["finance_admin"])) {
-        throw new HttpError(403, "Finance administrator permission is required for this setting");
+        throw new HttpError(403, "Only staff with Payments access can change this.");
       }
       const serialized = JSON.stringify(value);
-      if (serialized.length > 500_000) throw new HttpError(413, "Setting payload is too large");
+      if (serialized.length > 500_000) throw new HttpError(413, "This is too much data to save at once.");
       if (["vehicle_types", "touring_packages", "touring_states", "international_tours", "car_hire_options", "tracking_locations"].includes(key) && !Array.isArray(value)) {
-        throw new HttpError(400, "This setting must be an array");
+        throw new HttpError(400, "This setting is in the wrong format.");
       }
       if (["pricing_rules", "currency_rates", "bank_accounts", "feature_flags"].includes(key) && (!value || typeof value !== "object" || Array.isArray(value))) {
-        throw new HttpError(400, "This setting must be an object");
+        throw new HttpError(400, "This setting is in the wrong format.");
       }
 
       const ref = getAdminDb().collection("settings").doc(key);
@@ -2768,7 +3012,7 @@ async function startServer() {
       const { reason } = parseBody(AdminDeleteSchema, req.body);
       const ref = getAdminDb().collection("hubs").doc(id);
       const snapshot = await ref.get();
-      if (!snapshot.exists) throw new HttpError(404, "Hub not found");
+      if (!snapshot.exists) throw new HttpError(404, "We couldn’t find that pickup point.");
       await ref.delete();
       await persistAudit(req, "HUB_DELETED", `hubs/${id}`, { reason }, snapshot.data());
       res.json({ success: true });
@@ -2783,7 +3027,7 @@ async function startServer() {
     asyncHandler(async (req, res) => {
       const block = parseBody(BlockedDateSchema, req.body);
       const existing = await getAdminDb().collection("blocked_dates").where("date", "==", block.date).limit(1).get();
-      if (!existing.empty) throw new HttpError(409, "This service date is already blocked");
+      if (!existing.empty) throw new HttpError(409, "That day is already closed.");
       const ref = await getAdminDb().collection("blocked_dates").add({
         ...block,
         createdAt: FieldValue.serverTimestamp(),
@@ -2804,7 +3048,7 @@ async function startServer() {
       const { reason } = parseBody(AdminDeleteSchema, req.body);
       const ref = getAdminDb().collection("blocked_dates").doc(id);
       const snapshot = await ref.get();
-      if (!snapshot.exists) throw new HttpError(404, "Blocked date not found");
+      if (!snapshot.exists) throw new HttpError(404, "We couldn’t find that closed day.");
       await ref.delete();
       await persistAudit(req, "SERVICE_DATE_RESTORED", `blocked_dates/${id}`, { reason }, snapshot.data());
       res.json({ success: true });
@@ -2820,7 +3064,7 @@ async function startServer() {
       const input = parseBody(PaymentReconciliationSchema, req.body);
       const ref = getAdminDb().collection("payments").doc(input.paymentId);
       const snapshot = await ref.get();
-      if (!snapshot.exists) throw new HttpError(404, "Payment not found");
+      if (!snapshot.exists) throw new HttpError(404, "We couldn’t find that payment.");
       const now = new Date().toISOString();
       await ref.update({
         isReconciled: input.reconciled,
@@ -2901,31 +3145,20 @@ async function startServer() {
     }),
   );
 
-  app.get("/api/realtime/events", authenticate, asyncHandler(async (req, res) => {
-    const clientId = crypto.randomUUID();
-    realtimeClients.set(clientId, { auth: req.auth!, res });
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
 
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
-    res.write(`event: connected\n`);
-    res.write(`data: ${JSON.stringify({ clientId, role: req.auth!.role })}\n\n`);
-
-    req.on("close", () => {
-      realtimeClients.delete(clientId);
-    });
-  }));
 
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
-    const error = err instanceof HttpError ? err : new HttpError(500, "Internal server error");
+    const error = err instanceof HttpError ? err : new HttpError(500, "Something went wrong on our side. Please try again.");
     log(error.status >= 500 ? "error" : "warn", error.message, {
       path: req.path,
       method: req.method,
       status: error.status,
       details: error.details,
+      // The customer sees a friendly message; the log keeps the real cause.
+      cause: err instanceof HttpError ? undefined : err instanceof Error ? err.stack || err.message : String(err),
     });
     if (error.status >= 500) {
       Sentry.captureException(err, { extra: { path: req.path, method: req.method } });
@@ -2936,7 +3169,11 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== "production") {
+  if (!serveFrontend) return app;
+
+  if (!isProduction) {
+    // Vite is only needed while developing; production serves the prebuilt dist folder.
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2944,36 +3181,35 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    const searchLandingPages = [
-      "/services",
-      "/services/long-and-short-distance-trips",
-      "/services/cross-border-trips",
-      "/services/touring",
-      "/services/car-hire",
-      "/services/pickup-and-logistics",
-      "/corridors/lagos-cotonou",
-      "/corridors/cotonou-lagos",
-      "/corridors/lagos-lome",
-      "/corridors/lagos-accra",
-      "/legal",
-    ];
-    for (const route of searchLandingPages) {
-      app.get(route, (_req, res) => {
-        res.sendFile(path.join(distPath, route.slice(1), "index.html"));
-      });
+    if (!fs.existsSync(path.join(distPath, "index.html"))) {
+      throw new Error("dist/index.html is missing. Run \"npm run build\" before \"npm start\".");
     }
-    app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    // Hashed bundles never change, so browsers may cache them for a year; pages are always revalidated.
+    app.use("/assets", express.static(path.join(distPath, "assets"), { immutable: true, maxAge: "1y" }));
+    app.use(express.static(distPath, { maxAge: "1h", index: false, redirect: false }));
+    app.get("*", (req, res) => {
+      // Public pages have a pre-built copy (dist/<page>/index.html) with the right title and
+      // description for search engines; every other route gets the main app page.
+      const prebuilt = path.join(distPath, path.normalize(req.path).replace(/^([/\\])+/, ""), "index.html");
+      const page = prebuilt.startsWith(distPath) && fs.existsSync(prebuilt) ? prebuilt : path.join(distPath, "index.html");
+      res.set("Cache-Control", "no-cache");
+      res.sendFile(page);
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    log("info", "Server running", { url: `http://0.0.0.0:${PORT}` });
-  });
+  return app;
 }
 
-startServer().catch((error) => {
-  log("error", "Server failed to start", { error: error instanceof Error ? error.stack || error.message : String(error) });
-  process.exit(1);
-});
+// On Vercel, api/index.ts imports createApp and runs it per request instead.
+if (!isVercel) {
+  createApp({ serveFrontend: true })
+    .then((app) => {
+      app.listen(PORT, "0.0.0.0", () => {
+        log("info", "Server running", { url: `http://0.0.0.0:${PORT}` });
+      });
+    })
+    .catch((error) => {
+      log("error", "Server failed to start", { error: error instanceof Error ? error.stack || error.message : String(error) });
+      process.exit(1);
+    });
+}

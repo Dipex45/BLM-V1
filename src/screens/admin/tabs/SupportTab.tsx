@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { apiGet, apiPost } from "../../../lib/api";
+import { apiErrorMessage, apiGet, apiPost } from "../../../lib/api";
 import EmptyState from "../components/EmptyState";
 import StatusBadge from "../components/StatusBadge";
 
@@ -44,11 +44,12 @@ export default function SupportTab({
   const reply = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selected) return;
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     await apiPost(`/api/support/tickets/${selected.id}/messages`, {
       message: String(form.get("message")),
     });
-    event.currentTarget.reset();
+    formElement.reset();
     await loadMessages(selected);
     await onRefresh();
   };
@@ -65,7 +66,7 @@ export default function SupportTab({
       <div className="border-b border-outline lg:border-b-0 lg:border-r">
         <div className="border-b border-outline p-4">
           <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-            Support queue
+            Customer messages
           </h2>
           <p className="mt-1 text-xs text-on-surface-variant">
             {
@@ -73,7 +74,7 @@ export default function SupportTab({
                 (ticket) => !["resolved", "closed"].includes(ticket.status),
               ).length
             }{" "}
-            active requests
+            waiting for a reply
           </p>
         </div>
         {tickets.length ? (
@@ -103,8 +104,8 @@ export default function SupportTab({
         ) : (
           <EmptyState
             icon="support_agent"
-            title="Queue is clear"
-            description="New customer requests will appear here."
+            title="All caught up"
+            description="New customer messages will show up here."
           />
         )}
       </div>
@@ -142,7 +143,7 @@ export default function SupportTab({
                 >
                   <p className="leading-6">{message.message}</p>
                   <p className="mt-1 text-xs text-on-surface-variant">
-                    {message.senderRole.replaceAll("_", " ")} /{" "}
+                    {message.senderRole === "customer" ? "Customer" : "BLM team"} ·{" "}
                     {message.createdAt
                       ? new Date(message.createdAt).toLocaleString()
                       : ""}
@@ -173,8 +174,8 @@ export default function SupportTab({
         ) : (
           <EmptyState
             icon="forum"
-            title="Select a support request"
-            description="Read the conversation, reply, and manage its resolution state."
+            title="Pick a message"
+            description="Read it, reply, and mark it done when it’s sorted."
           />
         )}
       </div>

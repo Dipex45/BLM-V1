@@ -19,57 +19,79 @@ export type AdminRole =
   | "finance_admin"
   | "customer_support_agent";
 
+const ROLE_LABELS: Record<string, string> = {
+  super_admin: "Full access",
+  admin: "Full access",
+  dispatcher: "Bookings & drivers",
+  finance_admin: "Payments",
+  customer_support_agent: "Customer help",
+  driver: "Driver",
+  customer: "Customer",
+};
+
+/** Friendly name for a staff role. */
+export const roleLabel = (role?: string) => (role ? ROLE_LABELS[role] || role.replaceAll("_", " ") : "");
+
+const DRIVER_STATES: Record<string, string> = {
+  approved: "Approved",
+  pending_review: "Waiting for approval",
+  suspended: "Suspended",
+  rejected: "Declined",
+};
+
+export const driverStateLabel = (state?: string) => (state ? DRIVER_STATES[state] || state : "Waiting for approval");
+
 export const adminSectionDetails: Record<
   AdminTab,
   { title: string; description: string }
 > = {
   bookings: {
     title: "Bookings",
-    description: "Dispatch, assignment, route, and tracking operations.",
+    description: "See every booking, assign drivers and post trip updates.",
   },
   payments: {
     title: "Payments",
     description:
-      "Verification, reconciliation, refunds, and transaction evidence.",
+      "Check payments, confirm bank transfers and give refunds.",
   },
   support: {
     title: "Support",
-    description: "Customer conversations, escalation, and resolution tracking.",
+    description: "Read and reply to customer messages.",
   },
   drivers: {
     title: "Drivers",
-    description: "Driver identity, availability, and portal access.",
+    description: "Add drivers, approve them and see who is available.",
   },
   prices: {
     title: "Pricing",
-    description: "Vehicle classes and authoritative base pricing.",
+    description: "Set the cars customers can choose and what they cost.",
   },
   hubs: {
-    title: "Hubs",
-    description: "Customer-selectable pickup and operating locations.",
+    title: "Pickup points",
+    description: "Places where customers can collect hire cars.",
   },
   schedules: {
-    title: "Schedules",
-    description: "Blocked dates and service availability.",
+    title: "Closed days",
+    description: "Days when customers can’t book.",
   },
   settings: {
-    title: "Configuration",
-    description: "Tours, fleet, rates, providers, tracking, and bank details.",
+    title: "Settings",
+    description: "Prices, tours, hire cars, exchange rates, bank details and payment options.",
   },
   admins: {
-    title: "Administrators",
-    description: "Role assignment and privileged access.",
+    title: "Staff access",
+    description: "Choose who can use the admin panel and what they can do.",
   },
   analytics: {
-    title: "Analytics",
-    description: "Revenue, booking status, and operating performance.",
+    title: "Reports",
+    description: "Money earned and how bookings are going.",
   },
   reviews: {
     title: "Reviews",
-    description: "Verified customer feedback and service quality.",
+    description: "Read customer reviews and hide any that break the rules.",
   },
   maintenance: {
-    title: "System health",
-    description: "Diagnostics, data integrity, and retention operations.",
+    title: "System check",
+    description: "Check for problems and tidy up old records.",
   },
 };

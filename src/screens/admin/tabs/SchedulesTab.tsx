@@ -11,12 +11,12 @@ export default function SchedulesTab({
   onUnblock: (id: string) => void;
 }) {
   const [date, setDate] = useState("");
-  const [reason, setReason] = useState("Service unavailable");
+  const [reason, setReason] = useState("We’re closed");
   return (
     <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
       <section className="h-fit rounded-lg border border-outline bg-white p-5 shadow-sm">
         <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-          Block a service date
+          Close a day
         </h2>
         <form
           className="mt-5 space-y-4"
@@ -46,14 +46,14 @@ export default function SchedulesTab({
             />
           </label>
           <button className="h-10 w-full rounded-md bg-primary px-4 text-sm font-bold text-white hover:bg-primary-container">
-            Block date
+            Close this day
           </button>
         </form>
       </section>
       <section className="overflow-hidden rounded-lg border border-outline bg-white shadow-sm">
         <div className="border-b border-outline px-5 py-4">
           <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-            Active schedule restrictions
+            Closed days
           </h2>
         </div>
         <div className="divide-y divide-outline">
@@ -82,7 +82,7 @@ export default function SchedulesTab({
             <EmptyState
               icon="event_available"
               title="No blocked dates"
-              description="All upcoming dates are currently available for customer bookings."
+              description="Customers can book any day."
             />
           )}
         </div>

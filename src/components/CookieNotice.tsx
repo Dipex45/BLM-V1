@@ -27,9 +27,9 @@ export default function CookieNotice() {
         >
           <div className="flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <h4 className="text-xs font-bold">Necessary site storage</h4>
+              <h4 className="text-xs font-bold">We only use essential cookies</h4>
               <p className="mt-0.5 text-xs leading-snug text-on-surface-variant">
-                Used for secure sign-in, bookings, language, and currency. No advertising cookies.{' '}
+                They keep you signed in and remember your bookings, language and currency. No ads.{' '}
                 <a href="/legal#privacy" className="font-bold text-primary underline">Privacy</a>
               </p>
             </div>

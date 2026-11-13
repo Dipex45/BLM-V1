@@ -1,12 +1,14 @@
 rules_version = '2';
+
+// Staff are recognised by the `role` custom claim, which only the BLM API sets.
 service firebase.storage {
   match /b/{bucket}/o {
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isAdmin() {
-      return isSignedIn() && firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid));
+    function isStaff() {
+      return isSignedIn() && request.auth.token.role in ['admin', 'super_admin', 'dispatcher', 'finance_admin', 'customer_support_agent'];
     }
 
     function isImageUnderFiveMb() {
@@ -23,13 +25,13 @@ service firebase.storage {
     }
 
     match /payment-proofs/{userId}/{paymentId}/{fileName} {
-      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow read: if isSignedIn() && (request.auth.uid == userId || isStaff());
       allow write: if isSignedIn() && request.auth.uid == userId && isPaymentProofUnderFiveMb();
     }
 
     match /car_hire/{fileName} {
       allow read: if true;
-      allow write: if isAdmin() && isImageUnderFiveMb();
+      allow write: if isStaff() && isImageUnderFiveMb();
     }
 
     match /{allPaths=**} {

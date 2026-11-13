@@ -5,10 +5,10 @@ type Language = 'en' | 'fr';
 const translations = {
   en: {
     services: 'Services', track: 'Track booking', reviews: 'Reviews', book: 'Book', login: 'Log in', createAccount: 'Create account',
-    chooseService: 'Choose a service', serviceHeading: 'Select your service to view options and pricing.',
-    serviceBody: 'Every service includes a clear price breakdown, route options, and secure payment checkout.',
-    trackingTitle: 'Track your BLM booking or shipment', trackingBody: 'Enter your tracking ID or booking reference to view verified transit milestones and dispatch progress.',
-    trackingAction: 'Track movement', paymentChannels: 'Payment channels', selectPayment: 'Select payment method', checkout: 'Secure checkout',
+    chooseService: 'Choose a service', serviceHeading: 'Pick a service to see your options and the price.',
+    serviceBody: 'You see the full price before you pay, and you can pay safely online.',
+    trackingTitle: 'Track your trip or delivery', trackingBody: 'Enter the tracking number from your booking confirmation to see where things are.',
+    trackingAction: 'Track', paymentChannels: 'Payment', selectPayment: 'How would you like to pay?', checkout: 'Payment',
   },
   fr: {
     services: 'Services', track: 'Suivre une reservation', reviews: 'Avis', book: 'Reserver', login: 'Connexion', createAccount: 'Creer un compte',

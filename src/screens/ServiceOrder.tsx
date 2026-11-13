@@ -1,1224 +1,520 @@
-import { useState, useEffect, FormEvent } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Link, useParams, useNavigate } from 'react-router-dom';
-import { company, defaultVehicles } from '../lib/company';
-import { useCurrency } from '../hooks/useCurrency';
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+import { company } from '../lib/company';
+import { distanceVehicles, effectiveKmRate, serviceSlug } from '../lib/catalog';
+import { needsRouteDistance, type BookingQuote } from '../lib/bookingPricing';
+import { apiErrorMessage, apiPost } from '../lib/api';
+import { useCatalog } from '../hooks/useCatalog';
 import { useAuth } from '../hooks/useAuth';
-import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
-import { db } from '../lib/firebase';
-import DOMPurify from 'dompurify';
-import { apiPost } from '../lib/api';
+import { useCurrency } from '../contexts/CurrencyContext';
+import { AnimatedNumber, easeOutExpo, fadeUp, Spinner } from '../components/ui/motion';
 
-const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-const fadeUp = {
-  hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' as const } },
+type ServerQuote = BookingQuote & {
+  distanceSource: 'google_maps' | 'customer_estimate' | null;
+  routeMetadata: { distanceKm: number; durationText: string; distanceText: string } | null;
 };
 
-const stagger = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.05, delayChildren: 0.1 } },
+const TIME_SLOTS = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
+const todayIso = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const formatSlot = (slot: string) => {
+  const hour = Number(slot.slice(0, 2));
+  return `${hour % 12 || 12}:00 ${hour < 12 ? 'AM' : 'PM'}`;
 };
 
-const fieldVariant = {
-  hidden: { opacity: 0, y: 14 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' as const } },
-};
-
-const VALID_TIME_SLOTS = [
-  '07:00',
-  '08:00',
-  '09:00',
-  '10:00',
-  '11:00',
-  '12:00',
-  '13:00',
-  '14:00',
-  '15:00',
-  '16:00',
-  '17:00',
-  '18:00',
-  '19:00',
-  '20:00',
-];
+function Section({ step, title, icon, children }: { step: number; title: string; icon: string; children: ReactNode }) {
+  return (
+    <motion.section variants={fadeUp} className="card p-6 sm:p-8">
+      <div className="mb-6 flex items-center gap-3">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-secondary text-sm font-bold text-white">{step}</span>
+        <h2 className="flex items-center gap-2 text-lg font-bold">{title}<span className="material-symbols-outlined text-xl text-primary">{icon}</span></h2>
+      </div>
+      {children}
+    </motion.section>
+  );
+}
 
 export default function ServiceOrder() {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
+  const { catalog, error: catalogError, reload } = useCatalog();
   const { formatPrice, displayCurrency } = useCurrency();
+  const service = company.services.find((item) => serviceSlug(item.title) === slug);
+  const kind = service?.kind || 'distance';
+  const usesRoute = needsRouteDistance(kind);
 
-  const service = company.services.find((s) => slugify(s.title) === slug) || 
-    (slug === '24-7-transport-services' ? company.services[0] : undefined);
-
-  const isDistanceTrips = slug === 'long-and-short-distance-trips' || slug === '24-7-transport-services';
-  const isCarHire = slug === 'car-hire';
-  const isTouring = slug === 'touring';
-  const isCrossBorder = slug === 'cross-border-trips';
-  const isLogistics = slug === 'pickup-and-logistics';
-
-  // Admin dynamic state
-  const [vehicles, setVehicles] = useState<any[]>(defaultVehicles);
-  const [carHireOptions, setCarHireOptions] = useState<any[]>(company.carHireOptions);
-  const [touringStates, setTouringStates] = useState<any[]>(company.touringStates);
-  const [touringPackages, setTouringPackages] = useState<any[]>(company.touringPackages);
-  const [internationalTours, setInternationalTours] = useState<any[]>(company.internationalTours);
-  const [hubs, setHubs] = useState<any[]>(company.hubs);
-  const [pricingRules, setPricingRules] = useState(company.pricingRules);
-  const [blockedDates, setBlockedDates] = useState<string[]>([]);
-  const [submitting, setSubmitting] = useState(false);
-  const [orderError, setOrderError] = useState<string | null>(null);
-
-  // Form State
-  const [formData, setFormData] = useState({
+  const [form, setForm] = useState({
     fullName: '',
     email: '',
     phone: '',
     pickup: '',
     destination: '',
-    date: new Date().toISOString().split('T')[0],
+    date: todayIso(),
     time: '08:00',
     notes: '',
-    // Distance trips (Charged per KM):
     distanceKm: 25,
-    vehicleClass: 'Economy',
+    vehicleClass: '',
     isReturn: false,
-    // Car Hire:
-    selectedCarId: company.carHireOptions[0]?.id || 'toyota-corolla',
-    hireDurationDays: 1,
-    withDriver: true,
-    cautionFeeConsent: false,
-    selectedPickupHub: company.hubs[0]?.name || 'Lagos - Ikeja Terminal',
-    // Touring (5 packages, no stops selector):
-    touringPackageId: 'touring-basic',
-    touringState: 'Lagos',
+    carHireVehicle: '',
+    carHireDurationDays: 1,
+    carHireWithDriver: true,
+    cautionConsent: false,
+    pickupHub: '',
+    touringPackage: '',
+    touringState: '',
     tourGuideNeeded: true,
-    // Cross-Border:
-    crossBorderCountry: 'Benin Republic',
+    internationalCountry: '',
     passengerCount: 1,
     borderClearanceHelp: true,
-    // Logistics:
     packageType: 'Document / Parcel',
-    cargoWeightKg: 'Under 5kg',
     packageWeightKg: 1,
     logisticsDetails: '',
   });
+  const [quote, setQuote] = useState<ServerQuote | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quoting, setQuoting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const quoteSeq = useRef(0);
+
+  const update = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((current) => ({ ...current, [key]: value }));
+
+  // Seed selections from the live catalog once it arrives.
+  useEffect(() => {
+    if (!catalog) return;
+    setForm((current) => ({
+      ...current,
+      vehicleClass: current.vehicleClass || distanceVehicles(catalog.vehicles)[0]?.title || '',
+      carHireVehicle: current.carHireVehicle || catalog.carHireOptions.find((car) => car.available)?.id || '',
+      pickupHub: current.pickupHub || catalog.hubs[0]?.name || '',
+      touringPackage: current.touringPackage || catalog.touringPackages[0]?.id || '',
+      touringState: current.touringState || catalog.touringStates[0]?.name || '',
+      internationalCountry: current.internationalCountry
+        || catalog.internationalTours.find((country) => country.name === searchParams.get('country'))?.name
+        || catalog.internationalTours[0]?.name
+        || '',
+    }));
+  }, [catalog]);
 
   useEffect(() => {
-    const fetchAdminSettings = async () => {
-      try {
-        const vehicleSnap = await getDoc(doc(db, 'settings', 'vehicle_types'));
-        if (vehicleSnap.exists() && Array.isArray(vehicleSnap.data().value) && vehicleSnap.data().value.length > 0) {
-          setVehicles(vehicleSnap.data().value);
-        }
-      } catch (e) {
-        console.warn('Using default vehicle types');
-      }
-
-      try {
-        const carSnap = await getDoc(doc(db, 'settings', 'car_hire_options'));
-        if (carSnap.exists() && Array.isArray(carSnap.data().value) && carSnap.data().value.length > 0) {
-          setCarHireOptions(carSnap.data().value);
-        }
-      } catch (e) {
-        console.warn('Using default car hire options');
-      }
-
-      try {
-        const tourSnap = await getDoc(doc(db, 'settings', 'touring_states'));
-        if (tourSnap.exists() && Array.isArray(tourSnap.data().value) && tourSnap.data().value.length > 0) {
-          setTouringStates(tourSnap.data().value);
-        }
-      } catch (e) {
-        console.warn('Using default touring states');
-      }
-
-      try {
-        const intlSnap = await getDoc(doc(db, 'settings', 'international_tours'));
-        if (intlSnap.exists() && Array.isArray(intlSnap.data().value) && intlSnap.data().value.length > 0) {
-          setInternationalTours(intlSnap.data().value);
-        }
-      } catch (e) {
-        console.warn('Using default international tours');
-      }
-
-      try {
-        const rulesSnap = await getDoc(doc(db, 'settings', 'pricing_rules'));
-        if (rulesSnap.exists() && rulesSnap.data().value) {
-          setPricingRules({ ...company.pricingRules, ...rulesSnap.data().value });
-        }
-      } catch (e) {
-        console.warn('Using default pricing rules');
-      }
-
-      try {
-        const hubsSnap = await getDocs(collection(db, 'hubs'));
-        const hData: any[] = hubsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
-        if (hData.length > 0) {
-          setHubs(hData);
-          setFormData((prev) => ({
-            ...prev,
-            selectedPickupHub: hData[0].name || hData[0].location || hData[0].address || 'Main Hub',
-          }));
-        }
-      } catch (e) {
-        console.warn('Using default hubs');
-      }
-
-      try {
-        const blockedSnap = await getDocs(collection(db, 'blocked_dates'));
-        setBlockedDates(blockedSnap.docs.map((d) => d.data().date));
-      } catch (e) {
-        console.warn('Using default blocked dates');
-      }
-    };
-
-    fetchAdminSettings();
-  }, []);
-
-  // Pre-fill user profile if logged in
-  useEffect(() => {
-    if (user) {
-      setFormData((prev) => ({
-        ...prev,
-        fullName: prev.fullName || user.displayName || '',
-        email: prev.email || user.email || '',
-      }));
-    }
+    if (!user) return;
+    setForm((current) => ({
+      ...current,
+      fullName: current.fullName || user.displayName || '',
+      email: current.email || user.email || '',
+      phone: current.phone || user.phone || '',
+    }));
   }, [user]);
+
+  const pricingInput = useMemo(() => ({
+    serviceType: service?.title || '',
+    vehicleClass: form.vehicleClass,
+    pickup: kind === 'car_hire' ? form.pickupHub : form.pickup.trim(),
+    destination: kind === 'car_hire' ? `Car hire (${form.pickupHub})` : form.destination.trim(),
+    date: form.date,
+    time: form.time,
+    isReturn: form.isReturn,
+    carHireVehicle: form.carHireVehicle || undefined,
+    carHireDurationDays: Number(form.carHireDurationDays) || 1,
+    carHireWithDriver: form.carHireWithDriver,
+    pickupHub: form.pickupHub || undefined,
+    touringPackage: form.touringPackage || undefined,
+    touringState: form.touringState || undefined,
+    tourGuideNeeded: form.tourGuideNeeded,
+    internationalCountry: form.internationalCountry || undefined,
+    passengerCount: Number(form.passengerCount) || 1,
+    borderClearanceHelp: form.borderClearanceHelp,
+    packageWeightKg: Number(form.packageWeightKg) || 1,
+    distanceKm: usesRoute && !catalog?.mapsEnabled ? Number(form.distanceKm) || 1 : undefined,
+  }), [catalog?.mapsEnabled, form, kind, service?.title, usesRoute]);
+
+  const routeReady = !usesRoute || !catalog?.mapsEnabled || (pricingInput.pickup.length >= 3 && pricingInput.destination.length >= 3);
+  const selectionsReady = Boolean(catalog) && (kind !== 'distance' || form.vehicleClass) && (kind !== 'car_hire' || form.carHireVehicle) && (kind !== 'touring' || form.touringPackage);
+
+  // Authoritative quote from the server, debounced while the customer types.
+  useEffect(() => {
+    if (!service || !selectionsReady || !routeReady) {
+      setQuote(null);
+      return;
+    }
+    const sequence = ++quoteSeq.current;
+    setQuoting(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const { data } = await apiPost<ServerQuote>('/api/quote', pricingInput);
+        if (sequence !== quoteSeq.current) return;
+        setQuote(data);
+        setQuoteError(null);
+      } catch (error) {
+        if (sequence !== quoteSeq.current) return;
+        setQuote(null);
+        setQuoteError(apiErrorMessage(error, 'We couldn’t get a price for this trip.'));
+      } finally {
+        if (sequence === quoteSeq.current) setQuoting(false);
+      }
+    }, usesRoute ? 700 : 250);
+    return () => window.clearTimeout(timer);
+  }, [pricingInput, routeReady, selectionsReady, service, usesRoute]);
 
   if (!service) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
-        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md text-center">
-          <span className="material-symbols-outlined mb-6 text-6xl text-on-surface-variant">search_off</span>
-          <h1 className="mb-3 text-3xl font-bold text-on-surface">Service not found</h1>
-          <p className="mb-8 text-on-surface-variant">The service you're looking for doesn't exist or may have been moved.</p>
-          <Link to="/services" className="inline-flex items-center gap-2 rounded-xl bg-primary px-8 py-4 text-sm font-bold text-white">
-            <span className="material-symbols-outlined text-base">arrow_back</span>
-            Back to services
-          </Link>
-        </motion.div>
+      <div className="container-page flex min-h-[60vh] flex-col items-center justify-center text-center">
+        <span className="material-symbols-outlined text-6xl text-on-surface-variant">search_off</span>
+        <h1 className="mt-4 text-3xl font-extrabold">Service not found</h1>
+        <Link to="/services" className="btn-primary mt-8">Back to services</Link>
       </div>
     );
   }
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    const { name, value, type } = e.target;
-    if (type === 'checkbox') {
-      const checked = (e.target as HTMLInputElement).checked;
-      setFormData({ ...formData, [name]: checked });
-    } else {
-      setFormData({ ...formData, [name]: value });
-    }
+  const blocked = catalog?.blockedDates.includes(form.date);
+  const selectedCar = catalog?.carHireOptions.find((car) => car.id === form.carHireVehicle);
+
+  const validate = () => {
+    if (!quote) return quoteError || 'Please wait for the price to load.';
+    if (blocked) return 'We’re not taking bookings on that day. Please pick another.';
+    if (form.date < todayIso()) return 'Please pick today or a later date.';
+    if (form.fullName.trim().length < 2) return 'Please enter your full name.';
+    if (form.phone.trim().length < 5) return 'Please enter a phone number we can call you on.';
+    if (kind !== 'car_hire' && (!form.pickup.trim() || !form.destination.trim())) return 'Please enter where you’re going from and to.';
+    if (kind === 'car_hire' && !form.cautionConsent) return 'Please tick the box to agree to the refundable deposit.';
+    if (kind === 'logistics' && form.logisticsDetails.trim().length < 3) return 'Please tell us what you’re sending.';
+    return null;
   };
 
-  // Price Calculation tailored per service
-  const calculatePrice = () => {
-    const finalizeQuote = <T extends { basePrice: number; extraFee: number }>(quote: T) => {
-      const subtotal = Math.round(quote.basePrice + quote.extraFee);
-      const travelDate = new Date(`${formData.date}T${formData.time}:00`);
-      const validDate = !Number.isNaN(travelDate.getTime());
-      const weekendPercent = Number((pricingRules as any).weekendSurchargePercent || 0);
-      const nightPercent = Number((pricingRules as any).nightSurchargePercent || 0);
-      const weekendSurcharge = validDate && [0, 6].includes(travelDate.getDay())
-        ? Math.round(subtotal * weekendPercent / 100)
-        : 0;
-      const nightSurcharge = validDate && (travelDate.getHours() < 6 || travelDate.getHours() >= 22)
-        ? Math.round(subtotal * nightPercent / 100)
-        : 0;
-
-      return {
-        ...quote,
-        kmRate: Number((quote as any).kmRate || 0),
-        km: Number((quote as any).km || 0),
-        weekendSurcharge,
-        nightSurcharge,
-        total: subtotal + weekendSurcharge + nightSurcharge,
-      };
-    };
-
-    // 1. LONG & SHORT DISTANCE TRIPS (CHARGED PER KILOMETER)
-    if (isDistanceTrips) {
-      const selected = vehicles.find((v) => v.title === formData.vehicleClass) || vehicles[0];
-      const kmRate = Number(selected?.kmRate || (selected?.price ? Math.round(selected.price / 80) : 350)) || Number(pricingRules.pricePerKm || 350);
-      const km = Math.max(Number(formData.distanceKm) || 1, 1);
-      const baseDistanceFare = km * kmRate;
-      const mult = formData.isReturn ? Number(pricingRules.returnMultiplier || 2) : 1;
-      const serviceFee = Number(pricingRules.standardServiceFee || 4500);
-      const subtotal = Math.round(baseDistanceFare * mult);
-      return finalizeQuote({
-        basePrice: subtotal,
-        extraFee: serviceFee,
-        feeLabel: `Distance: ${km} km @ ${formatPrice(kmRate)}/km ${formData.isReturn ? '(Round Trip 2x)' : ''} + Standard Service Fee`,
-        vehicleClass: selected?.title || 'Economy',
-        kmRate,
-        km,
-      });
-    }
-
-    // 2. CAR HIRE (SELECTED PICKUP HUB, DURATION IN DAYS, CAUTION DEPOSIT)
-    if (isCarHire) {
-      const carHireVehicleObj = vehicles.find((v) => v.title.toLowerCase().includes('car hire')) || { price: 70000 };
-      const selectedCar = carHireOptions.find((car) => car.id === formData.selectedCarId);
-      const basePerDay = Number(selectedCar?.pricePerDay || selectedCar?.price || carHireVehicleObj.price || 70000);
-      const days = Math.max(Number(formData.hireDurationDays) || 1, 1);
-      const caution = Number(pricingRules.carHireCautionFee || 25000);
-      const driverDailyFee = Number((pricingRules as any).carHireDriverDailyFee || 10000);
-      const driverFee = formData.withDriver ? driverDailyFee * days : 0;
-      const baseTotal = basePerDay * days;
-      return finalizeQuote({
-        basePrice: baseTotal,
-        extraFee: caution + driverFee,
-        feeLabel: `Caution Deposit (${formatPrice(caution)}) ${driverFee > 0 ? `+ Chauffeur (${formatPrice(driverFee)})` : ''}`,
-        vehicleClass: selectedCar?.name || 'Car Hire',
-      });
-    }
-
-    // 3. TOURING (LOCATION-BASED PACKAGES, NOT DAILY)
-    if (isTouring) {
-      const selectedPkg = touringPackages.find((p) => p.id === formData.touringPackageId) || touringPackages[0];
-      const locationCount = Number(selectedPkg?.locations || selectedPkg?.days || 1);
-      const stateFactor = touringStates.find((s) => s.name === formData.touringState)?.factor || 1;
-      const guideFee = formData.tourGuideNeeded ? Number((pricingRules as any).tourGuideFee || 15000) : 0;
-      const pkgPrice = Math.round(Number(selectedPkg?.price || (Number(pricingRules.touringPerLocation || 15000) * locationCount)) * stateFactor);
-      return finalizeQuote({
-        basePrice: pkgPrice,
-        extraFee: guideFee,
-        feeLabel: `${selectedPkg.name} (${locationCount} locations) in ${formData.touringState} ${guideFee > 0 ? '+ Professional Guide' : ''}`,
-        vehicleClass: selectedPkg.title || selectedPkg.name,
-      });
-    }
-
-    // 4. CROSS-BORDER TRIPS
-    if (isCrossBorder) {
-      const countryObj = internationalTours.find((c) => c.name === formData.crossBorderCountry);
-      const countryFactor = countryObj?.factor || 1.1;
-      const passengerCount = Math.max(Number(formData.passengerCount) || 1, 1);
-      const baseTotal = Math.round((Number(pricingRules.crossBorderBasePerPassenger || 90000) * passengerCount) * countryFactor);
-      const clearanceFee = formData.borderClearanceHelp ? Number(pricingRules.crossBorderProcessingFee || 30000) : 0;
-      return finalizeQuote({
-        basePrice: baseTotal,
-        extraFee: clearanceFee,
-        feeLabel: `${passengerCount} passenger${passengerCount > 1 ? 's' : ''} • ${formData.crossBorderCountry}`,
-        vehicleClass: 'Cross-Border transit',
-      });
-    }
-
-    // 5. PICKUP AND LOGISTICS (CUSTOMER SETS DOORSTEP PICKUP & DELIVERY)
-    if (isLogistics) {
-      const logObj = vehicles.find((v) => v.title.toLowerCase().includes('pickup') || v.title.toLowerCase().includes('logistics')) || { price: 65000 };
-      const base = Number(logObj.price || 65000);
-      const routeDistanceKm = Math.max(Number(formData.distanceKm) || 1, 1);
-      const handlingFee = Number(pricingRules.pickupLogisticsFee || 22000);
-      const routeFee = Math.round(routeDistanceKm * Number(pricingRules.logisticsPricePerKm || 250));
-      const weightKg = Math.max(Number(formData.packageWeightKg) || 1, 1);
-      const weightFee = Math.round(weightKg * Number(pricingRules.pricePerKg || 1200));
-      return finalizeQuote({
-        basePrice: base + routeFee,
-        extraFee: handlingFee + weightFee,
-        feeLabel: `${routeDistanceKm}km route + Handling + ${weightKg}kg cargo`,
-        vehicleClass: 'Pickup & Logistics',
-      });
-    }
-
-    // Default Fallback
-    const def = vehicles[0] || { price: 25000, title: 'Economy' };
-    return finalizeQuote({
-      basePrice: Number(def.price || 25000),
-      extraFee: Number(pricingRules.standardServiceFee || 4500),
-      feeLabel: 'Standard Service Fee',
-      vehicleClass: def.title,
-    });
-  };
-
-  const calculatedQuote = calculatePrice();
-
-  // WhatsApp Order message builder
-  const buildWhatsAppMessage = (): string => {
-    const pickupLoc = isCarHire 
-      ? formData.selectedPickupHub 
-      : formData.pickup;
-    const destLoc = isCarHire 
-      ? `Car Hire Rental (${formData.selectedPickupHub})` 
-      : formData.destination;
-
-    const lines = [
-      `Good day BLM, I want to book your services.`,
-      ``,
-      `*Service Category:* ${service.title}`,
-      `*Vehicle / Class:* ${calculatedQuote.vehicleClass}`,
-      `*Calculated Total Price:* ${formatPrice(calculatedQuote.total)} (NGN ${calculatedQuote.total})`,
-      formData.fullName && `*Customer Name:* ${formData.fullName}`,
-      formData.phone && `*Phone Number:* ${formData.phone}`,
-      formData.email && `*Email Address:* ${formData.email}`,
-      `*Pickup Location:* ${pickupLoc}`,
-      !isCarHire && `*Destination:* ${destLoc}`,
-      `*Date:* ${formData.date}`,
-      `*Time:* ${formData.time}`,
-      isDistanceTrips && `*Estimated Distance:* ${formData.distanceKm} km`,
-      isDistanceTrips && `*Trip Type:* ${formData.isReturn ? 'Round Trip (Return)' : 'One Way'}`,
-      isCarHire && `*Selected Vehicle:* ${carHireOptions.find((c) => c.id === formData.selectedCarId)?.name || 'Standard Sedan'}`,
-      isCarHire && `*Duration:* ${formData.hireDurationDays} day(s)`,
-      isCarHire && `*Chauffeur:* ${formData.withDriver ? 'With BLM Professional Driver' : 'Self Drive'}`,
-      isTouring && `*Touring Package:* ${touringPackages.find((p) => p.id === formData.touringPackageId)?.name}`,
-      isTouring && `*Touring State:* ${formData.touringState}`,
-      isCrossBorder && `*Destination Country:* ${formData.crossBorderCountry}`,
-      isCrossBorder && `*Passengers:* ${formData.passengerCount}`,
-      isLogistics && `*Cargo Category:* ${formData.packageType}`,
-      isLogistics && `*Declared Weight:* ${formData.packageWeightKg}kg`,
-      formData.notes && `*Special Notes:* ${formData.notes}`,
-    ].filter(Boolean);
-    return lines.join('\n');
-  };
-
-  const handleWhatsAppOrder = (e: FormEvent) => {
-    e.preventDefault();
-    if (isCarHire && !formData.cautionFeeConsent) {
-      setOrderError('Please consent to the refundable caution fee terms to book Car Hire.');
-      return;
-    }
-    const message = buildWhatsAppMessage();
-    const url = `https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(message)}`;
-    window.open(url, '_blank');
-  };
-
-  // Online Booking -> Creates DB booking doc and navigates directly to /checkout/:bookingId payment page
-  const handleBookOnline = async (e: FormEvent) => {
-    e.preventDefault();
-    setOrderError(null);
-
+  const submit = async (event?: FormEvent) => {
+    event?.preventDefault();
+    setFormError(null);
     if (!user) {
-      sessionStorage.setItem('pending_booking_slug', slug || '');
-      navigate('/login');
+      sessionStorage.setItem('blm-return-to', `/services/${slug}`);
+      navigate('/login', { state: { from: `/services/${slug}` } });
       return;
     }
-
-    if (blockedDates.includes(formData.date)) {
-      setOrderError('Selected date is currently blocked for maintenance/schedules. Please select another date.');
-      return;
-    }
-
-    if (isCarHire && !formData.cautionFeeConsent) {
-      setOrderError('Please accept the car hire caution fee consent to proceed.');
-      return;
-    }
-
-    if (isLogistics && !formData.logisticsDetails.trim()) {
-      setOrderError('Please describe package contents and handling instructions.');
-      return;
-    }
-
-    if (!isCarHire && !formData.pickup.trim()) {
-      setOrderError('Please enter your pickup address.');
-      return;
-    }
-
-    if (!isCarHire && !formData.destination.trim()) {
-      setOrderError('Please enter your destination address.');
-      return;
-    }
+    const problem = validate();
+    if (problem) return setFormError(problem);
 
     setSubmitting(true);
     try {
-      const quote = calculatedQuote;
-      const pickupLoc = isCarHire ? formData.selectedPickupHub : formData.pickup.trim();
-      const destLoc = isCarHire ? `Car Hire Rental (${formData.selectedPickupHub})` : formData.destination.trim();
-
-      const bookingPayload = {
-        customerName: DOMPurify.sanitize(formData.fullName.trim() || user.displayName || user.email || 'Customer'),
-        customerEmail: DOMPurify.sanitize(formData.email.trim() || user.email || 'customer@blmmotors.com'),
-        customerPhone: DOMPurify.sanitize(formData.phone.trim()),
-        pickup: DOMPurify.sanitize(pickupLoc || 'Pickup Terminal'),
-        destination: DOMPurify.sanitize(destLoc || 'Destination Hub'),
-        vehicleClass: DOMPurify.sanitize(quote.vehicleClass),
-        date: formData.date,
-        time: formData.time,
+      const { data } = await apiPost<{ id: string }>('/api/bookings', {
+        ...pricingInput,
+        vehicleClass: quote!.vehicleClass,
+        customerName: form.fullName.trim(),
+        customerEmail: (form.email.trim() || user.email || '').toLowerCase(),
+        customerPhone: form.phone.trim(),
+        notes: form.notes.trim(),
         displayCurrency,
-        isReturn: formData.isReturn,
-        notes: DOMPurify.sanitize(formData.notes),
-        serviceType: service.title,
-        touringPackage: formData.touringPackageId,
-        touringState: formData.touringState,
-        tourGuideNeeded: formData.tourGuideNeeded,
-        internationalCountry: formData.crossBorderCountry,
-        passengerCount: Number(formData.passengerCount),
-        borderClearanceHelp: formData.borderClearanceHelp,
-        logisticsDetails: DOMPurify.sanitize(formData.logisticsDetails),
-        packageWeightKg: Number(formData.packageWeightKg),
-        carHireVehicle: formData.selectedCarId,
-        carHireDurationDays: Number(formData.hireDurationDays),
-        carHireWithDriver: formData.withDriver,
-        pickupHub: formData.selectedPickupHub,
-        pricingSnapshot: {
-          basePrice: quote.basePrice,
-          extraFee: quote.extraFee,
-          feeLabel: quote.feeLabel,
-          total: quote.total,
-          weekendSurcharge: quote.weekendSurcharge,
-          nightSurcharge: quote.nightSurcharge,
-          ...((isDistanceTrips || isLogistics) ? { distanceKm: Number(formData.distanceKm) } : {}),
-        },
-      };
-
-      const response = await apiPost<{ id: string; totalAmount: number }>('/api/bookings', bookingPayload);
-
-      navigate(`/checkout/${encodeURIComponent(response.data.id)}`);
-    } catch (err: any) {
-      console.error('Booking online failed:', err);
-      setOrderError(err.message || 'Unable to place booking right now. Please check your inputs and try again.');
+        logisticsDetails: kind === 'logistics' ? `${form.packageType}: ${form.logisticsDetails.trim()}` : undefined,
+        distanceKm: usesRoute ? quote!.distanceKm : undefined,
+      });
+      navigate(`/checkout/${encodeURIComponent(data.id)}`);
+    } catch (error) {
+      setFormError(apiErrorMessage(error, 'We couldn’t make your booking. Please try again.'));
     } finally {
       setSubmitting(false);
     }
   };
 
-  const inputClasses =
-    'w-full rounded-xl border border-outline bg-surface-container px-4 py-3.5 text-sm font-medium text-on-surface transition-all duration-200 placeholder:text-on-surface-variant/50 focus:border-primary focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/15';
+  const whatsappOrder = () => {
+    const lines = [
+      'Good day BLM, I want to book your services.',
+      '',
+      `*Service:* ${service.title}`,
+      quote && `*Vehicle / package:* ${quote.vehicleClass}`,
+      quote && `*Quoted total:* ${formatPrice(quote.total, 'NGN')}`,
+      form.fullName && `*Name:* ${form.fullName}`,
+      form.phone && `*Phone:* ${form.phone}`,
+      `*Pickup:* ${pricingInput.pickup || 'to confirm'}`,
+      kind !== 'car_hire' && `*Destination:* ${pricingInput.destination || 'to confirm'}`,
+      `*Date:* ${form.date} at ${form.time}`,
+      quote?.distanceKm ? `*Distance:* ${quote.distanceKm} km` : null,
+      form.notes && `*Notes:* ${form.notes}`,
+    ].filter(Boolean);
+    window.open(`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(lines.join('\n'))}`, '_blank', 'noopener');
+  };
+
+  const option = (active: boolean) => ({ 'data-active': active ? 'true' : 'false' });
 
   return (
-    <div className="flex min-h-screen flex-col overflow-x-hidden bg-background">
-      {/* Hero Header */}
-      <section className="relative overflow-hidden bg-secondary px-4 pb-16 pt-10 text-white sm:px-6 md:px-8 lg:px-12">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom_left,rgba(212,0,0,0.18),transparent_60%)]" />
-        <div className="relative z-10 mx-auto max-w-7xl">
-          <motion.div initial="hidden" animate="show" variants={fadeUp}>
-            <Link
-              to="/services"
-              className="mb-8 inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm font-bold text-white/80 backdrop-blur transition-all hover:bg-white/20 hover:text-white"
-            >
-              <span className="material-symbols-outlined text-base">arrow_back</span>
-              Back to all services
-            </Link>
-
-            <div className="flex flex-col gap-6 sm:flex-row sm:items-center">
-              <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl bg-primary text-white shadow-xl shadow-primary/30 sm:h-24 sm:w-24">
-                <span className="material-symbols-outlined text-4xl sm:text-5xl">{service.icon}</span>
-              </div>
-              <div>
-                <h1 className="text-3xl font-black leading-tight sm:text-4xl md:text-5xl">{service.title}</h1>
-                <p className="mt-3 max-w-2xl text-base font-medium leading-relaxed text-white/80 md:text-lg">
-                  {service.desc}
-                </p>
-              </div>
+    <div>
+      <section className="relative overflow-hidden bg-secondary text-white">
+        <div className="hero-grid absolute inset-0" />
+        <div className="absolute -left-40 -top-40 h-96 w-96 rounded-full bg-primary/30 blur-3xl" />
+        <div className="container-page relative py-12 sm:py-16">
+          <Link to="/services" className="inline-flex items-center gap-1 text-sm font-semibold text-white/70 hover:text-white">
+            <span className="material-symbols-outlined text-base">arrow_back</span> All services
+          </Link>
+          <motion.div initial="hidden" animate="show" variants={fadeUp} className="mt-6 flex flex-col gap-6 sm:flex-row sm:items-center">
+            <span className="flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl bg-primary shadow-[var(--shadow-glow)]">
+              <span className="material-symbols-outlined text-4xl">{service.icon}</span>
+            </span>
+            <div>
+              <h1 className="text-3xl font-extrabold sm:text-5xl">{service.title}</h1>
+              <p className="mt-3 max-w-2xl text-white/75">{service.desc}</p>
             </div>
           </motion.div>
         </div>
       </section>
 
-      {/* Main Order & Booking Container */}
-      <section className="bg-white px-4 py-16 sm:px-6 md:px-8 lg:px-12">
-        <div className="mx-auto grid max-w-7xl grid-cols-1 gap-12 lg:grid-cols-[1.15fr_0.85fr]">
-          {/* Order Form */}
-          <motion.form
-            onSubmit={handleBookOnline}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true }}
-            variants={stagger}
-            className="order-2 space-y-8 lg:order-1"
-          >
-            <div>
-              <h2 className="text-2xl font-bold text-on-surface sm:text-3xl">
-                {isDistanceTrips && 'Long & Short Distance Trip Booking'}
-                {isCarHire && 'Car Hire Reservation'}
-                {isTouring && 'Touring Package Selection'}
-                {isCrossBorder && 'Cross-Border Travel Booking'}
-                {isLogistics && 'Doorstep Pickup & Logistics'}
-              </h2>
-              <p className="mt-2 text-sm text-on-surface-variant font-medium">
-                {isDistanceTrips && 'Priced transparently per kilometer based on your route distance and selected vehicle class.'}
-                {isCarHire && 'Select your vehicle, duration, and designated pickup terminal.'}
-                {isTouring && 'Choose from our curated all-inclusive touring packages across Nigeria.'}
-                {isCrossBorder && 'Cross-border transport with assisted border passage across Benin, Togo, and Ghana.'}
-                {isLogistics && 'Enter your doorstep pickup and destination address with direct weight-based calculation.'}
-              </p>
-            </div>
+      <div className="container-page grid gap-8 py-12 lg:grid-cols-[1fr_380px]">
+        {catalogError && (
+          <div className="alert-error lg:col-span-2">
+            <span className="material-symbols-outlined">cloud_off</span><span className="flex-1">{catalogError}</span>
+            <button type="button" onClick={reload} className="font-bold underline">Retry</button>
+          </div>
+        )}
 
-            {orderError && (
-              <div className="rounded-xl border border-error/20 bg-error-container p-4 text-sm font-bold text-on-error-container">
-                {orderError}
-              </div>
-            )}
-
-            {/* 1. LONG & SHORT DISTANCE TRIPS (PER KILOMETER CHARGING) */}
-            {isDistanceTrips && (
-              <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
-                <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-2xl text-primary">moving</span>
-                  <h3 className="text-lg font-bold text-on-surface">1. Choose Vehicle Class & Distance</h3>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  {vehicles.filter(v => ['Economy', 'Business', 'Executive SUV'].includes(v.title) || (!v.title.toLowerCase().includes('touring') && !v.title.toLowerCase().includes('logistics') && !v.title.toLowerCase().includes('car hire') && !v.title.toLowerCase().includes('cross-border'))).slice(0, 3).map((veh) => {
-                    const kmRate = Number(veh.kmRate || (veh.title === 'Business' ? 450 : veh.title === 'Executive SUV' ? 700 : 300));
-                    return (
-                      <label
-                        key={veh.title}
-                        className={`cursor-pointer rounded-2xl border p-5 transition-all flex flex-col justify-between ${
-                          formData.vehicleClass === veh.title
-                            ? 'border-primary bg-white shadow-md ring-2 ring-primary/20'
-                            : 'border-outline bg-white/70 hover:border-primary/40'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="vehicleClass"
-                          value={veh.title}
-                          checked={formData.vehicleClass === veh.title}
-                          onChange={handleChange}
-                          className="sr-only"
-                        />
-                        <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-bold text-on-surface">{veh.title}</span>
-                            <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-bold text-primary">
-                              {formatPrice(kmRate)}/km
-                            </span>
-                          </div>
-                          <p className="text-xs text-on-surface-variant leading-relaxed">{veh.desc}</p>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
-
-                {/* Kilometers Input & Quick Selectors */}
-                <div className="space-y-3 pt-2">
-                  <div className="flex justify-between items-center">
-                    <label className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Estimated Distance (in Kilometers)
-                    </label>
-                    <span className="text-xs font-bold text-primary">
-                      Rate: {formatPrice(calculatedQuote.kmRate || 350)} per km
-                    </span>
-                  </div>
-
-                  <div className="relative">
-                    <input
-                      type="number"
-                      name="distanceKm"
-                      min={1}
-                      max={5000}
-                      value={formData.distanceKm}
-                      onChange={(e) => setFormData({ ...formData, distanceKm: Math.max(1, parseInt(e.target.value) || 1) })}
-                      className={`${inputClasses} text-lg font-bold text-primary pr-14`}
-                      placeholder="e.g. 25"
-                      required
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold text-on-surface-variant">
-                      KM
-                    </span>
-                  </div>
-
-                  {/* Quick Distance Chips */}
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {[
-                      { label: '15 km (City Trip)', km: 15 },
-                      { label: '50 km (Intercity)', km: 50 },
-                      { label: '120 km (Short Interstate)', km: 120 },
-                      { label: '300 km (Interstate Route)', km: 300 },
-                      { label: '600 km (Regional Trip)', km: 600 },
-                    ].map((chip) => (
-                      <button
-                        key={chip.km}
-                        type="button"
-                        onClick={() => setFormData({ ...formData, distanceKm: chip.km })}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                          formData.distanceKm === chip.km
-                            ? 'bg-primary text-white shadow-sm'
-                            : 'bg-white border border-outline text-on-surface hover:border-primary'
-                        }`}
-                      >
-                        {chip.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="flex items-center gap-3 pt-2 text-sm font-semibold text-on-surface cursor-pointer">
-                  <input
-                    type="checkbox"
-                    name="isReturn"
-                    checked={formData.isReturn}
-                    onChange={handleChange}
-                    className="h-4 w-4 rounded text-primary focus:ring-primary"
-                  />
-                  <span>Round Trip / Return Journey (Multiplies distance calculation 2x)</span>
-                </label>
-              </motion.div>
-            )}
-
-            {/* 2. CAR HIRE FLEET SELECTION (PREDEFINED PICKUP LOCATIONS ONLY) */}
-            {isCarHire && (
-              <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
-                <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-2xl text-primary">car_rental</span>
-                  <h3 className="text-lg font-bold text-on-surface">Select Car Model & Rental Plan</h3>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  {carHireOptions.map((car) => (
-                    <label
-                      key={car.id}
-                      className={`relative flex cursor-pointer flex-col justify-between rounded-xl border p-4 transition-all ${
-                        formData.selectedCarId === car.id
-                          ? 'border-primary bg-white shadow-md ring-2 ring-primary/20'
-                          : 'border-outline bg-white/70 hover:border-primary/50'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="selectedCarId"
-                        value={car.id}
-                        checked={formData.selectedCarId === car.id}
-                        onChange={handleChange}
-                        className="sr-only"
-                      />
-                      {car.image && (
-                        <img src={car.image} alt={car.name} className="h-24 w-full rounded-lg object-cover mb-3" />
-                      )}
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <p className="font-bold text-sm text-on-surface">{car.name}</p>
-                          <span className="rounded-md bg-surface-container px-2 py-0.5 text-[10px] font-bold text-on-surface-variant">
-                            {car.seats} seats
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-on-surface-variant">{car.desc}</p>
-                      </div>
-                    </label>
+        {!catalog ? (
+          <div className="space-y-6">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-56 rounded-2xl" />)}</div>
+        ) : (
+          <motion.form onSubmit={submit} initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="space-y-6">
+            {kind === 'distance' && (
+              <Section step={1} title="Choose your car" icon="directions_car">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {distanceVehicles(catalog.vehicles).map((vehicle) => (
+                    <button type="button" key={vehicle.title} onClick={() => update('vehicleClass', vehicle.title)} className="option-card text-left" {...option(form.vehicleClass === vehicle.title)}>
+                      <span className="material-symbols-outlined text-primary">{vehicle.icon}</span>
+                      <p className="mt-3 font-bold">{vehicle.title}</p>
+                      <p className="mt-1 text-sm font-bold text-primary">{formatPrice(effectiveKmRate(vehicle, catalog.rules))}/km</p>
+                      <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">{vehicle.desc}</p>
+                    </button>
                   ))}
                 </div>
-
-                {/* Car Hire Pickup Location Dropdown (Pre-set locations only, no text input) */}
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                    Pickup Location
-                  </label>
-                  <p className="text-xs text-on-surface-variant mb-2">Choose one of the pickup locations currently available.</p>
-                  <select
-                    name="selectedPickupHub"
-                    value={formData.selectedPickupHub}
-                    onChange={handleChange}
-                    className={inputClasses}
-                    required
-                  >
-                    {hubs.map((hub) => (
-                      <option key={hub.name} value={hub.name}>
-                        {hub.name} — {hub.address}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Rental Duration (Days)
-                    </label>
-                    <input
-                      type="number"
-                      name="hireDurationDays"
-                      min={1}
-                      max={30}
-                      value={formData.hireDurationDays}
-                      onChange={handleChange}
-                      className={inputClasses}
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Chauffeur Service
-                    </label>
-                    <select
-                      name="withDriver"
-                      value={formData.withDriver ? 'yes' : 'no'}
-                      onChange={(e) => setFormData({ ...formData, withDriver: e.target.value === 'yes' })}
-                      className={inputClasses}
-                    >
-                      <option value="yes">With Professional BLM Chauffeur (+{formatPrice(Number((pricingRules as any).carHireDriverDailyFee || 10000))}/day)</option>
-                      <option value="no">Self-Drive</option>
-                    </select>
-                  </div>
-                </div>
-
-                <label className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4 text-xs font-semibold text-on-surface cursor-pointer">
-                  <input
-                    type="checkbox"
-                    name="cautionFeeConsent"
-                    checked={formData.cautionFeeConsent}
-                    onChange={handleChange}
-                    className="mt-0.5 h-4 w-4 rounded text-primary focus:ring-primary"
-                  />
-                  <span>
-                    I consent to the BLM Motors car hire caution deposit ({formatPrice(pricingRules.carHireCautionFee)} refundable upon safe vehicle return) and accept responsibility for vehicle care.
-                  </span>
+                <label className="mt-5 flex cursor-pointer items-center gap-3 text-sm font-semibold">
+                  <input type="checkbox" checked={form.isReturn} onChange={(e) => update('isReturn', e.target.checked)} className="h-4 w-4 accent-[var(--color-primary)]" />
+                  Return trip (we charge the distance ×{catalog.rules.returnMultiplier})
                 </label>
-              </motion.div>
+              </Section>
             )}
 
-            {/* 3. TOURING SELECTION (LOCATION-BASED PACKAGES) */}
-            {isTouring && (
-              <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
-                <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-2xl text-primary">explore</span>
-                  <h3 className="text-lg font-bold text-on-surface">Select Touring Package & Destination</h3>
-                </div>
-
-                {/* 5 Distinct Touring Packages */}
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  {touringPackages.map((pkg) => (
-                    <label
-                      key={pkg.id}
-                      className={`cursor-pointer rounded-2xl border p-4 transition-all flex flex-col justify-between ${
-                        formData.touringPackageId === pkg.id
-                          ? 'border-primary bg-white shadow-md ring-2 ring-primary/20'
-                          : 'border-outline bg-white/70 hover:border-primary/40'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="touringPackageId"
-                        value={pkg.id}
-                        checked={formData.touringPackageId === pkg.id}
-                        onChange={handleChange}
-                        className="sr-only"
-                      />
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="font-bold text-sm text-on-surface">{pkg.name}</span>
-                          <span className="text-xs font-bold text-primary">{formatPrice(pkg.price)}</span>
-                        </div>
-                        <span className="inline-block px-2 py-0.5 rounded bg-surface-container text-[10px] font-bold text-on-surface-variant mb-2">
-                          {pkg.locations || pkg.days || 1} locations
-                        </span>
-                        <p className="text-xs text-on-surface-variant leading-relaxed">{pkg.desc}</p>
+            {kind === 'car_hire' && (
+              <Section step={1} title="Choose your car" icon="car_rental">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {catalog.carHireOptions.map((car) => (
+                    <button type="button" key={car.id} disabled={!car.available} onClick={() => update('carHireVehicle', car.id)} className="option-card overflow-hidden p-0 text-left disabled:cursor-not-allowed disabled:opacity-50" {...option(form.carHireVehicle === car.id)}>
+                      <img src={car.image || company.carHireOptions.find((item) => item.id === car.id)?.image || '/brand/car-01.webp'} alt={car.name} loading="lazy" className="h-28 w-full object-cover" />
+                      <div className="p-4">
+                        <div className="flex items-center justify-between gap-2"><p className="font-bold">{car.name}</p><span className="text-xs text-on-surface-variant">{car.seats} seats</span></div>
+                        <p className="mt-1 text-sm font-bold text-primary">{formatPrice(car.pricePerDay)}/day</p>
+                        {!car.available && <p className="mt-1 text-xs font-semibold text-on-surface-variant">Currently unavailable</p>}
                       </div>
-                    </label>
+                    </button>
                   ))}
                 </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Touring State / Region
-                    </label>
-                    <select
-                      name="touringState"
-                      value={formData.touringState}
-                      onChange={handleChange}
-                      className={inputClasses}
-                    >
-                      {touringStates.map((st) => (
-                        <option key={st.name} value={st.name}>
-                          {st.name}
-                        </option>
-                      ))}
+                <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                  <label className="sm:col-span-3">
+                    <span className="field-label">Pickup point</span>
+                    <select className="field" value={form.pickupHub} onChange={(e) => update('pickupHub', e.target.value)}>
+                      {catalog.hubs.map((hub) => <option key={hub.name} value={hub.name}>{hub.name} — {hub.address}</option>)}
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Dedicated Tour Guide
-                    </label>
-                    <select
-                      name="tourGuideNeeded"
-                      value={formData.tourGuideNeeded ? 'yes' : 'no'}
-                      onChange={(e) => setFormData({ ...formData, tourGuideNeeded: e.target.value === 'yes' })}
-                      className={inputClasses}
-                    >
-                      <option value="yes">Include Certified Local Tour Guide (+{formatPrice(Number((pricingRules as any).tourGuideFee || 15000))})</option>
-                      <option value="no">Chauffeur / Self-Guided Only</option>
+                  </label>
+                  <label>
+                    <span className="field-label">Days</span>
+                    <input type="number" min={1} max={365} className="field" value={form.carHireDurationDays} onChange={(e) => update('carHireDurationDays', Math.max(1, Number(e.target.value) || 1))} />
+                  </label>
+                  <label className="sm:col-span-2">
+                    <span className="field-label">Driver</span>
+                    <select className="field" value={form.carHireWithDriver ? 'yes' : 'no'} onChange={(e) => update('carHireWithDriver', e.target.value === 'yes')}>
+                      <option value="yes">With a BLM driver (+{formatPrice(catalog.rules.carHireDriverDailyFee)}/day)</option>
+                      <option value="no">I’ll drive myself</option>
                     </select>
-                  </div>
+                  </label>
                 </div>
-              </motion.div>
-            )}
-
-            {/* 4. CROSS-BORDER TRIPS */}
-            {isCrossBorder && (
-              <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
-                <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-2xl text-primary">public</span>
-                  <h3 className="text-lg font-bold text-on-surface">International Route & Border Clearance</h3>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Destination Country
-                    </label>
-                    <select
-                      name="crossBorderCountry"
-                      value={formData.crossBorderCountry}
-                      onChange={handleChange}
-                      className={inputClasses}
-                    >
-                      {internationalTours.map((c) => (
-                        <option key={c.name} value={c.name}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Passenger Count
-                    </label>
-                    <input
-                      type="number"
-                      name="passengerCount"
-                      min={1}
-                      max={18}
-                      value={formData.passengerCount}
-                      onChange={handleChange}
-                      className={inputClasses}
-                    />
-                  </div>
-                </div>
-
-                <label className="flex items-center gap-3 text-sm font-semibold text-on-surface cursor-pointer">
-                  <input
-                    type="checkbox"
-                    name="borderClearanceHelp"
-                    checked={formData.borderClearanceHelp}
-                    onChange={handleChange}
-                    className="h-4 w-4 rounded text-primary focus:ring-primary"
-                  />
-                  <span>Assisted Border Clearance & Priority Passage (+{formatPrice(pricingRules.crossBorderProcessingFee)})</span>
+                <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-xl bg-primary-soft p-4 text-sm">
+                  <input type="checkbox" checked={form.cautionConsent} onChange={(e) => update('cautionConsent', e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-primary)]" />
+                  <span>I agree to a {formatPrice(catalog.rules.carHireCautionFee)} refundable deposit. You get it back when {selectedCar?.name || 'the car'} is returned in good condition.</span>
                 </label>
-              </motion.div>
+              </Section>
             )}
 
-            {/* 5. LOGISTICS & PICKUP (DOORSTEP PICKUP BY CUSTOMER) */}
-            {isLogistics && (
-              <motion.div variants={fieldVariant} className="rounded-2xl border border-outline bg-surface-container/30 p-6 md:p-8 space-y-6">
-                <div className="flex items-center gap-3">
-                  <span className="material-symbols-outlined text-2xl text-primary">local_shipping</span>
-                  <h3 className="text-lg font-bold text-on-surface">Cargo & Package Information</h3>
+            {kind === 'touring' && (
+              <Section step={1} title="Choose a tour" icon="explore">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {catalog.touringPackages.map((pkg) => (
+                    <button type="button" key={pkg.id} onClick={() => update('touringPackage', pkg.id)} className="option-card text-left" {...option(form.touringPackage === pkg.id)}>
+                      <p className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">{pkg.title}</p>
+                      <p className="mt-1 font-bold">{pkg.name}</p>
+                      <p className="mt-2 text-lg font-extrabold text-primary">{formatPrice(pkg.price)}</p>
+                      <p className="mt-1 text-xs text-on-surface-variant">{pkg.locations} stops · {pkg.days} day{pkg.days === 1 ? '' : 's'}</p>
+                      <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">{pkg.desc}</p>
+                    </button>
+                  ))}
                 </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Estimated Route Distance (km)
-                    </label>
-                    <input
-                      type="number"
-                      name="distanceKm"
-                      min={1}
-                      max={5000}
-                      value={formData.distanceKm}
-                      onChange={(e) => setFormData({ ...formData, distanceKm: Math.max(Number(e.target.value) || 1, 1) })}
-                      className="w-full rounded-xl border border-outline bg-white p-3 text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Package Category
-                    </label>
-                    <select
-                      name="packageType"
-                      value={formData.packageType}
-                      onChange={handleChange}
-                      className={inputClasses}
-                    >
-                      <option value="Document / Parcel">Document / Envelope</option>
-                      <option value="Box / Commercial Goods">Box / Commercial Goods</option>
-                      <option value="Retail & Electronics">Retail & Electronics</option>
-                      <option value="Heavy Equipment / Freight">Heavy Equipment / Freight</option>
+                <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                  <label>
+                    <span className="field-label">State</span>
+                    <select className="field" value={form.touringState} onChange={(e) => update('touringState', e.target.value)}>
+                      {catalog.touringStates.map((state) => <option key={state.name} value={state.name}>{state.name}{state.factor !== 1 ? ` (×${state.factor})` : ''}</option>)}
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                      Declared Weight (kg)
-                    </label>
-                    <input
-                      type="number"
-                      name="packageWeightKg"
-                      min={1}
-                      max={10000}
-                      value={formData.packageWeightKg}
-                      onChange={(e) => setFormData({ ...formData, packageWeightKg: Math.max(Number(e.target.value) || 1, 1) })}
-                      className={inputClasses}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-on-surface-variant">
-                    Package Description & Handling Notes
                   </label>
-                  <textarea
-                    name="logisticsDetails"
-                    required
-                    value={formData.logisticsDetails}
-                    onChange={handleChange}
-                    rows={2}
-                    placeholder="Describe items, dimensions, fragility, recipient contact info..."
-                    className={`${inputClasses} resize-none`}
-                  />
+                  <label>
+                    <span className="field-label">Tour guide</span>
+                    <select className="field" value={form.tourGuideNeeded ? 'yes' : 'no'} onChange={(e) => update('tourGuideNeeded', e.target.value === 'yes')}>
+                      <option value="yes">Add a local guide (+{formatPrice(catalog.rules.tourGuideFee)})</option>
+                      <option value="no">No guide</option>
+                    </select>
+                  </label>
                 </div>
-              </motion.div>
+              </Section>
             )}
 
-            {/* General Contact & Route Fields */}
-            <div className="space-y-4">
-              <h3 className="text-lg font-bold text-on-surface">
-                {isCarHire ? 'Customer Contact Details & Schedule' : 'Customer Contact & Route Details'}
-              </h3>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:gap-5">
-                <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">Full name</label>
-                  <input
-                    type="text"
-                    name="fullName"
-                    required
-                    value={formData.fullName}
-                    onChange={handleChange}
-                    placeholder="Your full name"
-                    className={inputClasses}
-                  />
-                </motion.div>
-
-                <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">Phone number</label>
-                  <input
-                    type="tel"
-                    name="phone"
-                    required
-                    value={formData.phone}
-                    onChange={handleChange}
-                    placeholder="+234..."
-                    className={inputClasses}
-                  />
-                </motion.div>
-
-                <motion.div variants={fieldVariant} className={isCarHire ? 'sm:col-span-2' : ''}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">Email address</label>
-                  <input
-                    type="email"
-                    name="email"
-                    required
-                    value={formData.email}
-                    onChange={handleChange}
-                    placeholder="name@email.com"
-                    className={inputClasses}
-                  />
-                </motion.div>
-
-                {/* Pickup Address: Text for distance trips, touring, cross-border, and logistics (doorstep pickup). Hidden for Car Hire since it uses selectedPickupHub */}
-                {!isCarHire && (
-                  <motion.div variants={fieldVariant}>
-                    <label className="mb-2 block text-sm font-bold text-on-surface-variant">
-                      {isLogistics ? 'Doorstep Pickup Address' : 'Pickup address / Landmark'}
-                    </label>
-                    <input
-                      type="text"
-                      name="pickup"
-                      required
-                      value={formData.pickup}
-                      onChange={handleChange}
-                      placeholder={isLogistics ? "Enter full street address for pickup" : "Pickup address or city"}
-                      className={inputClasses}
-                    />
-                  </motion.div>
-                )}
-
-                {/* Destination Address: Text for distance trips, touring, cross-border, and logistics. Completely removed for Car Hire. */}
-                {!isCarHire && (
-                  <motion.div variants={fieldVariant} className={!isCarHire ? 'sm:col-span-2' : ''}>
-                    <label className="mb-2 block text-sm font-bold text-on-surface-variant">
-                      {isLogistics ? 'Delivery Destination Address' : 'Destination address / Drop-off location'}
-                    </label>
-                    <input
-                      type="text"
-                      name="destination"
-                      required
-                      value={formData.destination}
-                      onChange={handleChange}
-                      placeholder="Drop-off address or city"
-                      className={inputClasses}
-                    />
-                  </motion.div>
-                )}
-
-                <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">
-                    {isCarHire ? 'Pickup Date' : 'Travel / Pickup Date'}
+            {kind === 'cross_border' && (
+              <Section step={1} title="Where and how many" icon="public">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label>
+                    <span className="field-label">Destination country</span>
+                    <select className="field" value={form.internationalCountry} onChange={(e) => update('internationalCountry', e.target.value)}>
+                      {catalog.internationalTours.map((country) => <option key={country.name} value={country.name}>{country.name}</option>)}
+                    </select>
                   </label>
-                  <input
-                    type="date"
-                    name="date"
-                    required
-                    value={formData.date}
-                    onChange={handleChange}
-                    className={inputClasses}
-                  />
-                </motion.div>
+                  <label>
+                    <span className="field-label">Passengers</span>
+                    <input type="number" min={1} max={50} className="field" value={form.passengerCount} onChange={(e) => update('passengerCount', Math.min(50, Math.max(1, Number(e.target.value) || 1)))} />
+                  </label>
+                </div>
+                <label className="mt-5 flex cursor-pointer items-center gap-3 text-sm font-semibold">
+                  <input type="checkbox" checked={form.borderClearanceHelp} onChange={(e) => update('borderClearanceHelp', e.target.checked)} className="h-4 w-4 accent-[var(--color-primary)]" />
+                  Help at the border (+{formatPrice(catalog.rules.crossBorderProcessingFee)})
+                </label>
+              </Section>
+            )}
 
-                {/* Validated Preferred Time dropdown */}
-                <motion.div variants={fieldVariant}>
-                  <label className="mb-2 block text-sm font-bold text-on-surface-variant">Preferred Time</label>
-                  <select
-                    name="time"
-                    value={formData.time}
-                    onChange={handleChange}
-                    className={inputClasses}
-                  >
-                    {VALID_TIME_SLOTS.map((t) => {
-                      const hour = parseInt(t.split(':')[0]);
-                      const display = hour >= 12 
-                        ? `${hour === 12 ? 12 : hour - 12}:00 PM` 
-                        : `${hour}:00 AM`;
-                      return (
-                        <option key={t} value={t}>
-                          {display}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </motion.div>
-              </div>
+            {kind === 'logistics' && (
+              <Section step={1} title="Package details" icon="inventory_2">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label>
+                    <span className="field-label">Category</span>
+                    <select className="field" value={form.packageType} onChange={(e) => update('packageType', e.target.value)}>
+                      {['Document / Parcel', 'Box / Commercial goods', 'Retail & electronics', 'Heavy equipment / Freight'].map((type) => <option key={type}>{type}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="field-label">Declared weight (kg)</span>
+                    <input type="number" min={1} max={100000} className="field" value={form.packageWeightKg} onChange={(e) => update('packageWeightKg', Math.max(1, Number(e.target.value) || 1))} />
+                    <span className="field-hint">{formatPrice(catalog.rules.pricePerKg)} per kg</span>
+                  </label>
+                  <label className="sm:col-span-2">
+                    <span className="field-label">What are you sending?</span>
+                    <textarea rows={3} className="field resize-none" value={form.logisticsDetails} onChange={(e) => update('logisticsDetails', e.target.value)} placeholder="What’s inside, size, if it’s fragile, and who will receive it" />
+                  </label>
+                </div>
+                <p className="alert-info mt-5"><span className="material-symbols-outlined">gpp_maybe</span>We may check or refuse any package if we don’t know what’s inside or it isn’t legal.</p>
+              </Section>
+            )}
 
-              <motion.div variants={fieldVariant}>
-                <label className="mb-2 block text-sm font-bold text-on-surface-variant">Special instructions / requests</label>
-                <textarea
-                  name="notes"
-                  value={formData.notes}
-                  onChange={handleChange}
-                  rows={2}
-                  placeholder="Extra luggage, child seat, specific route preferences..."
-                  className={`${inputClasses} resize-none`}
-                />
-              </motion.div>
-            </div>
-
-            {/* Action Buttons */}
-            <motion.div variants={fieldVariant} className="flex flex-col gap-4 sm:flex-row pt-4">
-              <button
-                type="submit"
-                disabled={submitting}
-                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-8 py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all duration-200 hover:scale-[1.02] hover:brightness-110 active:scale-[0.98] disabled:opacity-60"
-              >
-                {submitting ? (
-                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                ) : (
+            <Section step={2} title={kind === 'car_hire' ? 'When' : 'Where and when'} icon="route">
+              <div className="grid gap-4 sm:grid-cols-2">
+                {kind !== 'car_hire' && (
                   <>
-                    <span className="material-symbols-outlined text-lg">credit_card</span>
-                    <span>Continue to secure payment</span>
+                    <label>
+                      <span className="field-label">{kind === 'logistics' ? 'Pickup address' : 'Pickup'}</span>
+                      <input className="field" value={form.pickup} onChange={(e) => update('pickup', e.target.value)} placeholder="Street, area, city" autoComplete="street-address" />
+                    </label>
+                    <label>
+                      <span className="field-label">{kind === 'logistics' ? 'Delivery address' : 'Destination'}</span>
+                      <input className="field" value={form.destination} onChange={(e) => update('destination', e.target.value)} placeholder="Street, area, city" />
+                    </label>
                   </>
                 )}
-              </button>
-              <button
-                type="button"
-                onClick={handleWhatsAppOrder}
-                className="inline-flex flex-1 items-center justify-center gap-3 rounded-xl bg-[#25D366] px-8 py-4 text-sm font-bold text-white shadow-lg shadow-[#25D366]/25 transition-all duration-200 hover:scale-[1.02] hover:brightness-110 active:scale-[0.98]"
-              >
-                <span className="material-symbols-outlined text-lg">chat</span>
-                <span>Send WhatsApp order</span>
-              </button>
-            </motion.div>
+                {usesRoute && !catalog.mapsEnabled && (
+                  <label className="sm:col-span-2">
+                    <span className="field-label">About how far? (km)</span>
+                    <input type="number" min={1} max={5000} className="field" value={form.distanceKm} onChange={(e) => update('distanceKm', Math.max(1, Number(e.target.value) || 1))} />
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {[15, 50, 120, 300, 600].map((km) => (
+                        <button type="button" key={km} className="chip" data-active={form.distanceKm === km} onClick={() => update('distanceKm', km)}>{km} km</button>
+                      ))}
+                    </div>
+                  </label>
+                )}
+                {usesRoute && catalog.mapsEnabled && quote?.routeMetadata && (
+                  <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 rounded-xl bg-surface-container px-4 py-3 text-sm font-semibold sm:col-span-2">
+                    <span className="material-symbols-outlined text-primary">alt_route</span>
+                    Road distance: {quote.routeMetadata.distanceText} · about {quote.routeMetadata.durationText} drive
+                  </motion.p>
+                )}
+                <label>
+                  <span className="field-label">Date</span>
+                  <input type="date" min={todayIso()} className="field" value={form.date} onChange={(e) => update('date', e.target.value)} />
+                  {blocked && <span className="mt-1.5 block text-xs font-semibold text-primary">We’re not taking bookings on this day. Please pick another.</span>}
+                </label>
+                <label>
+                  <span className="field-label">Time</span>
+                  <select className="field" value={form.time} onChange={(e) => update('time', e.target.value)}>
+                    {TIME_SLOTS.map((slot) => <option key={slot} value={slot}>{formatSlot(slot)}</option>)}
+                  </select>
+                </label>
+              </div>
+            </Section>
+
+            <Section step={3} title="Your details" icon="person">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label><span className="field-label">Full name</span><input className="field" autoComplete="name" value={form.fullName} onChange={(e) => update('fullName', e.target.value)} /></label>
+                <label><span className="field-label">Phone</span><input type="tel" className="field" autoComplete="tel" value={form.phone} onChange={(e) => update('phone', e.target.value)} placeholder="+234…" /></label>
+                <label className="sm:col-span-2"><span className="field-label">Email</span><input type="email" className="field" autoComplete="email" value={form.email} onChange={(e) => update('email', e.target.value)} /></label>
+                <label className="sm:col-span-2"><span className="field-label">Anything we should know? <span className="font-normal text-on-surface-variant">(optional)</span></span><textarea rows={2} className="field resize-none" value={form.notes} onChange={(e) => update('notes', e.target.value)} placeholder="Extra luggage, child seat, a preferred route…" /></label>
+              </div>
+            </Section>
           </motion.form>
+        )}
 
-          {/* Right Live Price Summary Sidebar */}
-          <motion.aside
-            initial={{ opacity: 0, x: 24 }}
-            whileInView={{ opacity: 1, x: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="order-1 space-y-6 lg:order-2"
-          >
-            <div className="sticky top-28 space-y-6">
-              {/* Dynamic Live Price Card */}
-              <div className="rounded-3xl border border-outline bg-white p-7 shadow-lg shadow-black/5">
-                <div className="flex items-center justify-between pb-6 border-b border-outline">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                      <span className="material-symbols-outlined text-2xl">{service.icon}</span>
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-on-surface">{service.title}</h3>
-                      <p className="text-xs text-on-surface-variant">{calculatedQuote.vehicleClass}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="py-6 space-y-4 text-sm">
-                  <div className="flex justify-between items-center text-on-surface-variant font-medium">
-                    <span>Base Service Fare</span>
-                    <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.basePrice)}</span>
-                  </div>
-
-                  <div className="flex justify-between items-center text-on-surface-variant font-medium">
-                    <span className="max-w-[180px] truncate">{calculatedQuote.feeLabel}</span>
-                    <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.extraFee)}</span>
-                  </div>
-
-                  {calculatedQuote.weekendSurcharge > 0 && (
-                    <div className="flex items-center justify-between gap-3 text-on-surface-variant font-medium">
-                      <span>Weekend surcharge</span>
-                      <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.weekendSurcharge)}</span>
-                    </div>
-                  )}
-
-                  {calculatedQuote.nightSurcharge > 0 && (
-                    <div className="flex items-center justify-between gap-3 text-on-surface-variant font-medium">
-                      <span>Night surcharge</span>
-                      <span className="font-bold text-on-surface">{formatPrice(calculatedQuote.nightSurcharge)}</span>
-                    </div>
-                  )}
-
-                  <div className="flex justify-between items-center text-on-surface-variant font-medium">
-                    <span>Safety & Passenger Insurance</span>
-                    <span className="font-bold text-green-600">Included</span>
-                  </div>
-
-                  <div className="pt-4 border-t border-outline flex justify-between items-baseline">
-                    <span className="font-bold text-base text-on-surface">Total Payable</span>
-                    <span className="text-3xl font-black text-primary">
-                      {formatPrice(calculatedQuote.total)}
+        <aside className="lg:sticky lg:top-28 lg:self-start">
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.15, ease: easeOutExpo }} className="card overflow-hidden">
+            <div className="border-b border-outline bg-surface-container/60 px-6 py-4">
+              <p className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">Your price</p>
+              <p className="mt-1 truncate font-bold">{quote?.vehicleClass || service.title}</p>
+            </div>
+            <div className="space-y-3 p-6 text-sm">
+              {quote ? (
+                <>
+                  <Row label="Trip price" value={formatPrice(quote.basePrice)} />
+                  {quote.extraFee > 0 && <Row label={quote.feeLabel} value={formatPrice(quote.extraFee)} />}
+                  {quote.distanceKm > 0 && <Row label={quote.distanceSource === 'google_maps' ? 'Road distance' : 'Distance'} value={`${quote.distanceKm} km`} />}
+                  {quote.weekendSurcharge > 0 && <Row label="Weekend surcharge" value={formatPrice(quote.weekendSurcharge)} />}
+                  {quote.nightSurcharge > 0 && <Row label="Night surcharge" value={formatPrice(quote.nightSurcharge)} />}
+                  <div className="flex items-baseline justify-between border-t border-outline pt-4">
+                    <span className="font-bold">Total</span>
+                    <span className={`text-3xl font-extrabold text-primary transition-opacity ${quoting ? 'opacity-50' : ''}`}>
+                      <AnimatedNumber value={quote.total} format={(value) => formatPrice(value)} />
                     </span>
                   </div>
-                  <p className="text-[11px] text-right text-on-surface-variant font-medium">Live conversion in {displayCurrency}</p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleBookOnline}
-                  disabled={submitting}
-                  className="w-full mt-2 inline-flex items-center justify-center gap-2 rounded-xl bg-primary py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:scale-[1.02] hover:bg-primary-container disabled:opacity-60"
-                >
-                  <span className="material-symbols-outlined text-lg">payment</span>
-                  <span>Proceed to Payment</span>
-                </button>
-              </div>
-
-              {/* Service Guarantees */}
-              <div className="rounded-3xl border border-outline bg-surface-container-lowest p-7 shadow-sm">
-                <h4 className="mb-4 text-sm font-bold uppercase tracking-wider text-on-surface">Service Guarantees</h4>
-                <ul className="space-y-3">
-                  {[
-                    'Instant card & bank transfer payments with Paystack/Stripe',
-                    'Official booking invoice & tracking reference',
-                    '24/7 dedicated dispatch & support channel',
-                    'Verified, insured vehicles & licensed drivers',
-                  ].map((item) => (
-                    <li key={item} className="flex items-start gap-3 text-xs font-semibold text-on-surface-variant">
-                      <span className="material-symbols-outlined mt-0.5 text-base text-primary">check_circle</span>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
+                  {displayCurrency !== 'NGN' && <p className="text-right text-xs text-on-surface-variant">That’s {formatPrice(quote.total, 'NGN')} in naira</p>}
+                </>
+              ) : quoting ? (
+                <div className="space-y-3"><div className="skeleton h-4" /><div className="skeleton h-4 w-2/3" /><div className="skeleton mt-4 h-9 w-1/2" /></div>
+              ) : (
+                <p className="text-on-surface-variant">
+                  {quoteError || (usesRoute && catalog?.mapsEnabled ? 'Enter where you’re going from and to, and we’ll show the price.' : 'Pick your options to see the price.')}
+                </p>
+              )}
+              {quoting && quote && <p className="flex items-center gap-2 text-xs text-on-surface-variant"><Spinner className="h-3 w-3" /> Updating price…</p>}
             </div>
-          </motion.aside>
-        </div>
-      </section>
+            <div className="space-y-3 border-t border-outline p-6">
+              <AnimatePresence>{formError && <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="alert-error text-xs" role="alert">{formError}</motion.p>}</AnimatePresence>
+              <button type="button" onClick={() => void submit()} disabled={submitting || !catalog} className="btn-primary btn-lg w-full">
+                {submitting ? <><Spinner /> Creating booking…</> : user ? <>Continue to payment <span className="material-symbols-outlined text-lg">arrow_forward</span></> : 'Sign in to book'}
+              </button>
+              <button type="button" onClick={whatsappOrder} className="btn w-full bg-[#25D366] text-white hover:brightness-95">
+                <span className="material-symbols-outlined text-lg">chat</span> Order on WhatsApp
+              </button>
+            </div>
+          </motion.div>
+          <ul className="mt-6 space-y-2 px-2 text-xs text-on-surface-variant">
+            {['The price you see is the price you pay', 'You get a tracking number straight away', 'Checked drivers and insured cars'].map((item) => (
+              <li key={item} className="flex items-center gap-2"><span className="material-symbols-outlined text-base text-success">verified</span>{item}</li>
+            ))}
+          </ul>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <span className="text-on-surface-variant">{label}</span>
+      <span className="shrink-0 font-semibold">{value}</span>
     </div>
   );
 }

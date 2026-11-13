@@ -1,261 +1,123 @@
-import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Link, useSearchParams } from 'react-router-dom';
-import { company, defaultVehicles } from '../lib/company';
-import { useCurrency } from '../hooks/useCurrency';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
-
-const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-
-const containerVariants = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.08, delayChildren: 0.15 },
-  },
-};
-
-const cardVariants = {
-  hidden: { opacity: 0, y: 32 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as const } },
-};
-
-const fadeUp = {
-  hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: 'easeOut' as const } },
-};
+import { company } from '../lib/company';
+import { serviceSlug } from '../lib/catalog';
+import { serviceStartingPrice } from '../lib/bookingPricing';
+import { useCatalog } from '../hooks/useCatalog';
+import { useCurrency } from '../contexts/CurrencyContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { easeOutExpo, fadeUp, Reveal, Stagger, StaggerItem } from '../components/ui/motion';
 
 export default function Services() {
+  const { catalog, error, reload } = useCatalog();
   const { formatPrice } = useCurrency();
-  const [searchParams] = useSearchParams();
-  const isCompactView = searchParams.get('compact') === '1';
-  const [vehicles, setVehicles] = useState<any[]>(defaultVehicles);
-
-  useEffect(() => {
-    const fetchPrices = async () => {
-      try {
-        const snap = await getDoc(doc(db, 'settings', 'vehicle_types'));
-        if (snap.exists() && Array.isArray(snap.data().value) && snap.data().value.length > 0) {
-          setVehicles(snap.data().value);
-        }
-      } catch (e) {
-        console.warn('Using default vehicles');
-      }
-    };
-    fetchPrices();
-  }, []);
-
-  const getServiceStartingPrice = (serviceTitle: string, defaultVehicleClass?: string) => {
-    const target = (defaultVehicleClass || serviceTitle).toLowerCase();
-    const matched = vehicles.find((v) => v.title.toLowerCase().includes(target) || target.includes(v.title.toLowerCase()));
-    if (matched) return formatPrice(matched.price);
-    if (target.includes('cross-border')) return formatPrice(180000);
-    if (target.includes('touring')) return formatPrice(90000);
-    if (target.includes('car hire')) return formatPrice(70000);
-    if (target.includes('pickup') || target.includes('logistics')) return formatPrice(65000);
-    return formatPrice(25000);
-  };
+  const { t } = useLocale();
 
   return (
-    <div className="flex min-h-screen flex-col overflow-x-hidden bg-background">
-      {/* Hero Section */}
-      {!isCompactView && <section className="relative overflow-hidden bg-secondary px-4 pb-20 pt-12 text-white sm:px-6 md:px-8 lg:px-12">
-        <img
-          src={company.servicesImage}
-          alt="BLM Motors transport service vehicle"
-          className="absolute inset-0 h-full w-full object-cover object-center opacity-45"
-        />
-        <div className="absolute inset-0 bg-gradient-to-r from-black via-black/80 to-black/45" />
-        <div className="relative z-10 mx-auto max-w-7xl">
-          <motion.div
-            initial="hidden"
-            animate="show"
-            variants={fadeUp}
-            className="max-w-3xl"
-          >
-            <p className="mb-4 text-xs font-bold uppercase tracking-[0.24em] text-primary">
-              Our services & fleet
-            </p>
-            <h1 className="text-4xl font-black leading-tight sm:text-5xl md:text-6xl">
-              Everything you need to move across Nigeria and beyond.
-            </h1>
-            <p className="mt-6 max-w-2xl text-base font-medium leading-relaxed text-white/80 md:text-lg">
-              {company.summary}
-            </p>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3, duration: 0.5 }}
-            className="mt-10 flex flex-wrap gap-4"
-          >
-            <Link
-              to="/services/long-and-short-distance-trips"
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-8 py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-colors hover:bg-primary-container"
-            >
-              <span className="material-symbols-outlined text-lg">event_available</span>
-              Start secure booking
-            </Link>
-            <a
-              href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/30 bg-white/10 px-8 py-4 text-sm font-bold text-white backdrop-blur transition-colors hover:bg-white/20"
-            >
-              <span className="material-symbols-outlined text-lg">chat</span>
-              WhatsApp Us
-            </a>
+    <div className="overflow-x-hidden">
+      <section className="relative isolate overflow-hidden bg-secondary text-white">
+        <motion.img src={company.servicesImage} alt="" className="absolute inset-0 -z-10 h-full w-full object-cover opacity-40" initial={{ scale: 1.08 }} animate={{ scale: 1 }} transition={{ duration: 1.4, ease: easeOutExpo }} />
+        <div className="absolute inset-0 -z-10 bg-gradient-to-r from-black via-black/85 to-black/40" />
+        <div className="hero-grid absolute inset-0 -z-10" />
+        <div className="container-page py-20 sm:py-28">
+          <motion.div initial="hidden" animate="show" variants={fadeUp} className="max-w-3xl">
+            <p className="eyebrow">Our services</p>
+            <h1 className="mt-4 text-4xl font-extrabold leading-[1.05] sm:text-6xl">Get around Nigeria and West Africa with one booking.</h1>
+            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-white/75">{company.summary}</p>
           </motion.div>
         </div>
-      </section>}
+      </section>
 
-      {/* Services Grid */}
-      <section className="bg-white px-4 py-20 sm:px-6 md:px-8 lg:px-12">
-        <div className="mx-auto max-w-7xl">
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: '-60px' }}
-            transition={{ duration: 0.5 }}
-            className="mb-14 max-w-2xl"
-          >
-            <p className="mb-3 text-xs font-bold uppercase tracking-widest text-primary">Choose a service</p>
-            <h2 className="text-3xl font-bold leading-tight text-on-surface sm:text-4xl">
-              Select your service to view options and pricing.
-            </h2>
-            <p className="mt-4 text-base leading-relaxed text-on-surface-variant">
-              Every service includes its live price breakdown, customizable route options, and instant payment checkout.
-            </p>
-          </motion.div>
+      <section className="container-page py-20">
+        <Reveal className="mb-12 max-w-2xl">
+          <p className="eyebrow">{t('chooseService')}</p>
+          <h2 className="mt-3 text-3xl font-extrabold sm:text-4xl">{t('serviceHeading')}</h2>
+          <p className="mt-4 text-on-surface-variant">{t('serviceBody')}</p>
+        </Reveal>
 
-          <motion.div
-            variants={containerVariants}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, margin: '-50px' }}
-            className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3"
-          >
-            {company.services.map((service) => (
-              <motion.div key={service.title} variants={cardVariants}>
-                <Link
-                  to={`/services/${slugify(service.title)}`}
-                  className="group relative flex h-full flex-col justify-between overflow-hidden rounded-lg border border-outline bg-surface-container-lowest p-7 shadow-sm transition-colors duration-200 hover:border-primary"
-                >
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-4 mb-6">
-                      <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors duration-200 group-hover:bg-primary group-hover:text-white">
-                        <span className="material-symbols-outlined text-2xl">{service.icon}</span>
-                      </div>
-                      <span className="max-w-full rounded-full bg-primary/10 px-3.5 py-1 text-center text-xs font-bold leading-relaxed text-primary">
-                        From {getServiceStartingPrice(service.title, (service as any).vehicleClass)}
-                      </span>
-                    </div>
-                    <h3 className="break-words text-xl font-bold leading-tight text-on-surface transition-colors group-hover:text-primary">
-                      {service.title}
-                    </h3>
-                    <p className="mt-3 break-words text-sm leading-relaxed text-on-surface-variant">{service.desc}</p>
-                  </div>
-                  <div className="mt-8 flex min-w-0 items-center gap-2 text-sm font-bold text-primary">
-                    <span className="break-words">Order This Service</span>
-                    <span className="material-symbols-outlined text-base transition-transform duration-300 group-hover:translate-x-1.5">
-                      arrow_forward
+        {error && (
+          <div className="alert-error mb-8">
+            <span className="material-symbols-outlined">cloud_off</span>
+            <span className="flex-1">{error}</span>
+            <button type="button" onClick={reload} className="font-bold underline">Retry</button>
+          </div>
+        )}
+
+        <Stagger className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {company.services.map((service, index) => {
+            const start = catalog ? serviceStartingPrice(service.kind, catalog) : null;
+            return (
+              <StaggerItem key={service.title} className={index === 0 ? 'lg:row-span-2' : ''}>
+                <Link to={`/services/${serviceSlug(service.title)}`} className="card card-hover group flex h-full flex-col p-7">
+                  <div className="flex items-start justify-between gap-4">
+                    <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-soft text-primary transition-all duration-300 group-hover:rotate-[-6deg] group-hover:bg-primary group-hover:text-white">
+                      <span className="material-symbols-outlined text-2xl">{service.icon}</span>
+                    </span>
+                    <span className="rounded-full bg-surface-container px-3 py-1 text-xs font-bold text-on-surface">
+                      {start ? <>From {formatPrice(start.amount)}{start.suffix}</> : <span className="skeleton inline-block h-3 w-20 align-middle" />}
                     </span>
                   </div>
+                  <h3 className="mt-8 text-xl font-bold group-hover:text-primary">{service.title}</h3>
+                  <p className="mt-3 flex-1 text-sm leading-relaxed text-on-surface-variant">{service.desc}</p>
+                  {index === 0 && catalog && (
+                    <ul className="mt-6 space-y-2 border-t border-outline pt-5 text-sm">
+                      {catalog.vehicles.filter((vehicle) => Number(vehicle.kmRate) > 0).map((vehicle) => (
+                        <li key={vehicle.title} className="flex items-center justify-between">
+                          <span className="font-semibold">{vehicle.title}</span>
+                          <span className="text-on-surface-variant">{formatPrice(Number(vehicle.kmRate))}/km</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <span className="mt-8 inline-flex items-center gap-2 text-sm font-bold text-primary">
+                    See price and book
+                    <span className="material-symbols-outlined text-base transition-transform duration-300 group-hover:translate-x-1.5">arrow_forward</span>
+                  </span>
                 </Link>
-              </motion.div>
+              </StaggerItem>
+            );
+          })}
+        </Stagger>
+      </section>
+
+      <section className="border-y border-outline bg-white py-20">
+        <div className="container-page grid gap-12 lg:grid-cols-[0.8fr_1.2fr]">
+          <Reveal>
+            <p className="eyebrow">Where we go</p>
+            <h2 className="mt-3 text-3xl font-extrabold sm:text-4xl">Routes and pickup points.</h2>
+            <p className="mt-4 text-on-surface-variant">We connect the main cities in Nigeria and the countries next door.</p>
+            <div className="mt-8 flex flex-wrap gap-2">
+              {(catalog?.routes || company.routes).map((route) => <span key={route} className="chip">{route}</span>)}
+            </div>
+          </Reveal>
+          <Stagger className="grid gap-3 sm:grid-cols-2">
+            {(catalog?.hubs || []).map((hub) => (
+              <StaggerItem key={hub.name} className="flex gap-3 rounded-2xl border border-outline p-4">
+                <span className="material-symbols-outlined text-primary">location_on</span>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold">{hub.name}</p>
+                  <p className="mt-0.5 text-xs text-on-surface-variant">{hub.address}</p>
+                </div>
+              </StaggerItem>
             ))}
-          </motion.div>
+            {!catalog && !error && [0, 1, 2, 3].map((key) => <div key={key} className="skeleton h-20" />)}
+          </Stagger>
         </div>
       </section>
 
-      {/* Routes Coverage */}
-      <section className="bg-surface-container px-4 py-20 sm:px-6 md:px-8 lg:px-12">
-        <div className="mx-auto max-w-7xl">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5 }}
-            className="mb-12 max-w-2xl"
-          >
-            <p className="mb-3 text-xs font-bold uppercase tracking-widest text-primary">Coverage area</p>
-            <h2 className="text-3xl font-bold text-on-surface sm:text-4xl">
-              We cover Nigeria and West Africa.
-            </h2>
-            <p className="mt-4 text-base leading-relaxed text-on-surface-variant">
-              Cross-border and interstate routes connecting major cities and hubs.
-            </p>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ delay: 0.1, duration: 0.5 }}
-            className="flex flex-wrap gap-3"
-          >
-            {company.routes.map((route, i) => (
-              <motion.span
-                key={route}
-                initial={{ opacity: 0, scale: 0.9 }}
-                whileInView={{ opacity: 1, scale: 1 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.05, duration: 0.3 }}
-                className="max-w-full break-words rounded-lg border border-outline bg-white px-5 py-3 text-sm font-bold text-on-surface shadow-sm transition-colors duration-200 hover:border-primary"
-              >
-                {route}
-              </motion.span>
-            ))}
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            transition={{ delay: 0.2, duration: 0.5 }}
-            className="mt-12 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
-          >
-            {company.hubs.slice(0, 6).map((hub) => (
-              <div key={hub.name} className="min-w-0 rounded-xl border border-outline bg-white p-4 text-center shadow-sm">
-                <span className="material-symbols-outlined mb-2 text-2xl text-primary">location_on</span>
-                <p className="break-words text-sm font-bold text-on-surface">{hub.name}</p>
-                <p className="mt-1 break-words text-xs text-on-surface-variant">{hub.address}</p>
-              </div>
-            ))}
-          </motion.div>
-        </div>
-      </section>
-
-      {/* CTA */}
-      <section className="bg-primary px-4 py-16 text-white sm:px-6 md:px-8 lg:px-12">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-8 md:flex-row md:items-center"
-        >
-          <div className="max-w-2xl">
-            <h2 className="text-3xl font-bold sm:text-4xl">Ready to book?</h2>
-            <p className="mt-3 text-base leading-relaxed text-white/90">
-              Choose any service above or contact us directly for a custom quote.
-            </p>
-          </div>
-          <div className="flex w-full flex-col gap-4 sm:w-auto sm:flex-row">
-            <a
-              href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/40 bg-white/10 px-8 py-4 text-sm font-bold text-white transition-all hover:bg-white hover:text-primary"
-            >
-              <span className="material-symbols-outlined text-base">chat</span>
-              WhatsApp
-            </a>
-            <a
-              href="#services"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-8 py-4 text-sm font-bold text-primary transition-colors hover:bg-surface-container"
-            >
-              Choose service
+      <section className="container-page py-20">
+        <Reveal className="relative overflow-hidden rounded-3xl bg-primary px-8 py-14 text-white sm:px-14">
+          <div className="hero-grid absolute inset-0" />
+          <div className="relative flex flex-col gap-8 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-3xl font-extrabold sm:text-4xl">Need something different?</h2>
+              <p className="mt-3 max-w-xl text-white/85">Message us on WhatsApp for group trips, events or a special route.</p>
+            </div>
+            <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} target="_blank" rel="noreferrer" className="btn btn-lg bg-white text-primary hover:bg-white/90">
+              <span className="material-symbols-outlined">chat</span> Chat with us
             </a>
           </div>
-        </motion.div>
+        </Reveal>
       </section>
     </div>
   );

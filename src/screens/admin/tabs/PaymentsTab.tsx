@@ -42,12 +42,12 @@ export default function PaymentsTab({
     <>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <KPICard
-          label="Transactions"
+          label="All payments"
           value={payments.length}
           icon="receipt_long"
         />
         <KPICard
-          label="Under review"
+          label="To check"
           value={
             payments.filter((payment) =>
               ["PAYMENT_SUBMITTED", "UNDER_REVIEW"].includes(payment.status),
@@ -57,7 +57,7 @@ export default function PaymentsTab({
           tone="blue"
         />
         <KPICard
-          label="Verified revenue"
+          label="Money received"
           value={formatPrice(
             paid.reduce((sum, payment) => sum + (payment.amount || 0), 0),
           )}
@@ -65,7 +65,7 @@ export default function PaymentsTab({
           tone="green"
         />
         <KPICard
-          label="Unreconciled"
+          label="Not matched to bank"
           value={paid.filter((payment) => !payment.isReconciled).length}
           icon="rule"
           tone="red"
@@ -75,10 +75,10 @@ export default function PaymentsTab({
         <div className="flex flex-col gap-3 border-b border-outline px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">
-              Payment ledger
+              Payments
             </h2>
             <p className="mt-1 text-xs text-on-surface-variant">
-              Provider references, customer evidence, and settlement state.
+              Every payment, with receipts customers uploaded.
             </p>
           </div>
           <select
@@ -87,8 +87,8 @@ export default function PaymentsTab({
             className="h-10 rounded-md border border-outline bg-white px-3 text-sm font-semibold"
           >
             <option>All</option>
-            <option value="PAYMENT_SUBMITTED">Awaiting proof</option>
-            <option value="UNDER_REVIEW">Under review</option>
+            <option value="PAYMENT_SUBMITTED">Waiting for receipt</option>
+            <option value="UNDER_REVIEW">To check</option>
             <option value="PAID">Paid</option>
             <option value="PAYMENT_REJECTED">Rejected</option>
             <option value="REFUNDED">Refunded</option>
@@ -103,7 +103,7 @@ export default function PaymentsTab({
                 <th className={tableHeaderClass}>Amount</th>
                 <th className={tableHeaderClass}>Method</th>
                 <th className={tableHeaderClass}>Status</th>
-                <th className={tableHeaderClass}>Settlement</th>
+                <th className={tableHeaderClass}>Matched to bank</th>
                 <th className={tableHeaderClass}>Action</th>
               </tr>
             </thead>
@@ -135,7 +135,7 @@ export default function PaymentsTab({
                   </td>
                   <td className={tableCellClass}>
                     <StatusBadge
-                      status={payment.isReconciled ? "Reconciled" : "Pending"}
+                      status={payment.isReconciled ? "Matched" : "Not yet"}
                     />
                   </td>
                   <td className={tableCellClass}>
@@ -159,7 +159,7 @@ export default function PaymentsTab({
           <EmptyState
             icon="payments"
             title="No payment records"
-            description="Transactions matching the selected settlement filter will appear here."
+            description="No payments match this filter."
           />
         )}
       </section>
@@ -174,7 +174,7 @@ export default function PaymentsTab({
             <header className="flex items-start justify-between border-b border-outline p-5">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-                  Payment evidence
+                  Payment receipt
                 </p>
                 <h2
                   id="payment-dialog-title"
@@ -205,7 +205,7 @@ export default function PaymentsTab({
                       <span className="material-symbols-outlined">
                         picture_as_pdf
                       </span>
-                      Open PDF evidence
+                      Open PDF receipt
                     </a>
                   ) : (
                     <img
@@ -216,7 +216,7 @@ export default function PaymentsTab({
                   )
                 ) : (
                   <p className="text-sm text-on-surface-variant">
-                    No proof file has been uploaded.
+                    The customer hasn’t uploaded a receipt yet.
                   </p>
                 )}
               </div>
@@ -242,14 +242,14 @@ export default function PaymentsTab({
                           }}
                           className="h-10 w-full rounded-md bg-primary px-4 text-sm font-bold text-white hover:bg-primary-container"
                         >
-                          Approve payment
+                          Confirm payment
                         </button>
                         <button
                           type="button"
                           onClick={() => setRejecting(true)}
                           className="h-10 w-full rounded-md border border-red-200 px-4 text-sm font-bold text-red-700 hover:bg-red-50"
                         >
-                          Reject with reason
+                          Decline
                         </button>
                       </>
                     )}
@@ -262,7 +262,7 @@ export default function PaymentsTab({
                         }}
                       >
                         <label className="block text-sm font-semibold">
-                          Required rejection reason
+                          Why are you declining it? (the customer will see this)
                           <textarea
                             autoFocus
                             required
@@ -274,7 +274,7 @@ export default function PaymentsTab({
                           />
                         </label>
                         <button className="mt-3 h-10 w-full rounded-md bg-red-700 px-4 text-sm font-bold text-white hover:bg-red-800">
-                          Reject payment
+                          Decline payment
                         </button>
                       </form>
                     )}
@@ -282,8 +282,8 @@ export default function PaymentsTab({
                       <label className="flex items-center justify-between rounded-md border border-outline p-3 text-sm font-semibold">
                         <span>
                           {selected.isReconciled
-                            ? "Settlement reconciled"
-                            : "Mark settlement reconciled"}
+                            ? "Matched to bank statement"
+                            : "Mark as matched to bank statement"}
                         </span>
                         <input
                           type="checkbox"

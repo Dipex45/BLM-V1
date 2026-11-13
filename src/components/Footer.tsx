@@ -1,73 +1,61 @@
 import { Link } from 'react-router-dom';
 import { company } from '../lib/company';
-
-const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+import { serviceSlug } from '../lib/catalog';
+import { useCatalog } from '../hooks/useCatalog';
 
 const popularRoutes = [
-  { label: 'Lagos to Cotonou transport', path: '/corridors/lagos-cotonou' },
-  { label: 'Cotonou to Lagos transport', path: '/corridors/cotonou-lagos' },
-  { label: 'Lagos to Lome transport', path: '/corridors/lagos-lome' },
-  { label: 'Lagos to Accra transport', path: '/corridors/lagos-accra' },
+  { label: 'Lagos to Cotonou', path: '/corridors/lagos-cotonou' },
+  { label: 'Cotonou to Lagos', path: '/corridors/cotonou-lagos' },
+  { label: 'Lagos to Lomé', path: '/corridors/lagos-lome' },
+  { label: 'Lagos to Accra', path: '/corridors/lagos-accra' },
 ];
 
 export default function Footer() {
+  const { catalog } = useCatalog();
   return (
-    <footer className="z-50 mt-auto border-t border-outline-variant bg-white px-4 py-10 md:px-8">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-4">
-        <div className="min-w-0 md:col-span-2">
-          <img src={company.logo} alt="BLM Motors logo" className="mb-4 h-20 w-44 object-contain" />
-          <p className="safe-text mb-8 max-w-lg text-sm font-medium leading-relaxed text-on-surface-variant">
-            {company.summary}
-          </p>
-          <div className="mb-8 grid gap-3 text-sm font-semibold text-secondary sm:grid-cols-2">
-            <a href={`tel:${company.beninPhone}`} className="flex min-w-0 items-center gap-3 hover:text-primary">
-              <span className="material-symbols-outlined shrink-0 text-lg text-primary">call</span>
-              <span className="safe-text">{company.beninPhoneDisplay}</span>
-            </a>
-            <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} className="flex min-w-0 items-center gap-3 hover:text-primary">
-              <span className="material-symbols-outlined shrink-0 text-lg text-primary">chat</span>
-              <span className="safe-text">WhatsApp</span>
-            </a>
-            <a href={`mailto:${company.email}`} className="flex min-w-0 items-center gap-3 hover:text-primary">
-              <span className="material-symbols-outlined shrink-0 text-lg text-primary">mail</span>
-              <span className="safe-text">{company.email}</span>
-            </a>
-          </div>
-          <p className="safe-text flex items-center gap-3 text-sm font-semibold text-secondary">
-            <span className="material-symbols-outlined shrink-0 text-lg text-primary">location_on</span>
-            <span>{company.address}</span>
-          </p>
-        </div>
-
+    <footer className="mt-auto border-t border-outline bg-white">
+      <div className="container-page grid gap-10 py-14 md:grid-cols-[1.4fr_1fr_1fr_1fr]">
         <div>
-          <h4 className="mb-4 text-sm font-bold">Services</h4>
-          <ul className="flex flex-col gap-2 text-sm text-on-surface-variant">
-            {company.services.slice(0, 6).map((service) => (
-              <li key={service.title}>
-                <Link to={`/services/${slugify(service.title)}`} className="hover:text-primary transition-colors">{service.title}</Link>
-              </li>
+          <img src={company.logo} alt="BLM Motors" className="h-14 w-36 object-contain" />
+          <p className="mt-4 max-w-md text-sm leading-relaxed text-on-surface-variant">{company.summary}</p>
+          <div className="mt-6 flex flex-wrap gap-2">
+            <a href={`tel:${company.phone}`} className="chip"><span className="material-symbols-outlined text-base text-primary">call</span>{company.phoneDisplay}</a>
+            <a href={`mailto:${company.email}`} className="chip"><span className="material-symbols-outlined text-base text-primary">mail</span>{company.email}</a>
+            <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} target="_blank" rel="noreferrer" className="chip"><span className="material-symbols-outlined text-base text-primary">chat</span>WhatsApp</a>
+          </div>
+        </div>
+        <div>
+          <h2 className="text-sm font-bold">Services</h2>
+          <ul className="mt-4 space-y-2 text-sm text-on-surface-variant">
+            {company.services.map((service) => (
+              <li key={service.title}><Link to={`/services/${serviceSlug(service.title)}`} className="hover:text-primary">{service.title}</Link></li>
             ))}
           </ul>
         </div>
-
         <div>
-          <h4 className="mb-4 text-sm font-bold">Popular routes</h4>
-          <ul className="flex flex-col gap-2 text-sm text-on-surface-variant">
+          <h2 className="text-sm font-bold">Popular routes</h2>
+          <ul className="mt-4 space-y-2 text-sm text-on-surface-variant">
             {popularRoutes.map((route) => (
-              <li key={route.path}>
-                <Link to={route.path} className="transition-colors hover:text-primary">{route.label}</Link>
-              </li>
+              <li key={route.path}><Link to={route.path} className="hover:text-primary">{route.label}</Link></li>
             ))}
+          </ul>
+        </div>
+        <div>
+          <h2 className="text-sm font-bold">Where we go</h2>
+          <ul className="mt-4 space-y-2 text-sm text-on-surface-variant">
+            {(catalog?.routes || company.routes).map((route) => <li key={route}>{route}</li>)}
           </ul>
         </div>
       </div>
-      <div className="mx-auto mt-8 flex max-w-7xl flex-col justify-between gap-4 border-t border-outline-variant pt-8 text-xs font-medium text-on-surface-variant md:flex-row">
-        <p>&copy; 2026 {company.legalName}. All rights reserved.</p>
-        <div className="flex flex-wrap gap-4">
-          <Link to="/tracking" className="hover:text-primary">Track Booking</Link>
-          <Link to="/reviews" className="hover:text-primary">Reviews & Ratings</Link>
-          <Link to="/legal" className="hover:text-primary">Privacy policy</Link>
-          <Link to="/legal" className="hover:text-primary">Terms of service</Link>
+      <div className="border-t border-outline">
+        <div className="container-page flex flex-col gap-3 py-6 text-xs text-on-surface-variant sm:flex-row sm:items-center sm:justify-between">
+          <p>© {new Date().getFullYear()} {company.legalName}. All rights reserved.</p>
+          <nav className="flex flex-wrap gap-4" aria-label="Footer">
+            <Link to="/tracking" className="hover:text-primary">Track booking</Link>
+            <Link to="/reviews" className="hover:text-primary">Reviews</Link>
+            <Link to="/support" className="hover:text-primary">Help</Link>
+            <Link to="/legal" className="hover:text-primary">Privacy & terms</Link>
+          </nav>
         </div>
       </div>
     </footer>

@@ -39,9 +39,9 @@ function describeDevice(userAgent: string) {
 }
 
 function formatLastSeen(value: string | null) {
-  if (!value) return 'Activity time unavailable';
+  if (!value) return 'Unknown';
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Activity time unavailable';
+  if (Number.isNaN(date.getTime())) return 'Unknown';
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
@@ -66,7 +66,7 @@ export default function SessionManager() {
         }));
       })
       .catch((error: any) => {
-        if (active) notify(error.response?.data?.error || 'Device sessions could not be loaded.', 'error');
+        if (active) notify(error.response?.data?.error || 'We couldn’t load your devices.', 'error');
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -78,11 +78,11 @@ export default function SessionManager() {
 
   const revokeSession = async (session: DeviceSession) => {
     const confirmation = await confirmAction({
-      title: session.current ? 'Sign out this device?' : 'Revoke this device?',
+      title: session.current ? 'Sign out of this device?' : 'Sign out that device?',
       message: session.current
-        ? 'You will return to the sign-in screen and this browser will no longer be authorised.'
-        : `${describeDevice(session.userAgent)} will be denied on its next authenticated request.`,
-      confirmLabel: session.current ? 'Sign out' : 'Revoke access',
+        ? 'You’ll be signed out on this device.'
+        : `${describeDevice(session.userAgent)} will be signed out.`,
+      confirmLabel: 'Sign out',
       tone: 'danger',
     });
     if (confirmation === null) return;
@@ -96,9 +96,9 @@ export default function SessionManager() {
         return;
       }
       setSessions((current) => current.map((item) => item.id === session.id ? { ...item, revoked: true } : item));
-      notify('Device access revoked.', 'success');
+      notify('That device has been signed out.', 'success');
     } catch (error: any) {
-      notify(error.response?.data?.error || 'This session could not be revoked.', 'error');
+      notify(error.response?.data?.error || 'We couldn’t sign that device out. Please try again.', 'error');
     } finally {
       setWorkingId(null);
     }
@@ -107,7 +107,7 @@ export default function SessionManager() {
   const revokeAll = async () => {
     const confirmation = await confirmAction({
       title: 'Sign out on every device?',
-      message: 'All active device sessions and Firebase refresh tokens for this account will be revoked.',
+      message: 'Every phone and computer signed in to your account will be signed out.',
       confirmLabel: 'Sign out everywhere',
       tone: 'danger',
     });
@@ -119,7 +119,7 @@ export default function SessionManager() {
       await signOut(auth);
       navigate('/login', { replace: true });
     } catch (error: any) {
-      notify(error.response?.data?.error || 'Sessions could not be revoked.', 'error');
+      notify(error.response?.data?.error || 'We couldn’t sign out your devices. Please try again.', 'error');
       setWorkingId(null);
     }
   };
@@ -134,7 +134,7 @@ export default function SessionManager() {
             <span className="material-symbols-outlined text-lg text-primary">devices</span>
             Signed-in devices
           </h2>
-          <p className="mt-1 text-xs leading-5 text-on-surface-variant">Review browsers that have recently used your account.</p>
+          <p className="mt-1 text-xs leading-5 text-on-surface-variant">Devices that are signed in to your account.</p>
         </div>
         {activeSessions.length > 1 && (
           <button
@@ -153,7 +153,7 @@ export default function SessionManager() {
           {[0, 1].map((item) => <div key={item} className="h-20 animate-pulse rounded-md bg-surface-container" />)}
         </div>
       ) : activeSessions.length === 0 ? (
-        <p className="py-8 text-center text-sm text-on-surface-variant">No active device sessions were found.</p>
+        <p className="py-8 text-center text-sm text-on-surface-variant">No signed-in devices found.</p>
       ) : (
         <div className="divide-y divide-outline">
           {activeSessions.map((session) => (
@@ -163,7 +163,7 @@ export default function SessionManager() {
                   <p className="safe-text text-sm font-bold text-on-surface">{describeDevice(session.userAgent)}</p>
                   {session.current && <span className="rounded bg-green-50 px-2 py-0.5 text-[10px] font-bold uppercase text-green-700">This device</span>}
                 </div>
-                <p className="mt-1 safe-text text-xs text-on-surface-variant">Last active {formatLastSeen(session.lastSeenAt)} | IP {session.ip}</p>
+                <p className="mt-1 safe-text text-xs text-on-surface-variant">Last used {formatLastSeen(session.lastSeenAt)}</p>
               </div>
               <button
                 type="button"
@@ -171,7 +171,7 @@ export default function SessionManager() {
                 disabled={workingId !== null}
                 className="h-9 shrink-0 rounded-md border border-outline px-3 text-xs font-bold text-on-surface hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
               >
-                {workingId === session.id ? 'Working...' : session.current ? 'Sign out' : 'Revoke'}
+                {workingId === session.id ? 'Signing out…' : 'Sign out'}
               </button>
             </div>
           ))}

@@ -1,4 +1,8 @@
 rules_version = '2';
+
+// All writes go through the BLM API (Firebase Admin SDK). The browser only reads.
+// Roles: the `admins` collection and the token `role` claim are written exclusively
+// by the API; a user's own `users` document can never grant staff access.
 service cloud.firestore {
   match /databases/{database}/documents {
     match /{document=**} {
@@ -13,28 +17,16 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function adminDoc() {
-      return get(/databases/$(database)/documents/admins/$(request.auth.uid));
-    }
-
-    function userDoc() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid));
-    }
-
-    function hasAdminRecord() {
-      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
-    }
-
-    function hasUserRecord() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
-    }
-
     function role() {
-      return hasAdminRecord() ? adminDoc().data.role : (hasUserRecord() ? userDoc().data.role : 'customer');
+      return request.auth.token.role is string
+        ? request.auth.token.role
+        : (exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+            ? get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role
+            : 'customer');
     }
 
     function hasRole(roles) {
-      return isSignedIn() && (role() in roles || role() == 'super_admin');
+      return isSignedIn() && (role() in roles || role() == 'super_admin' || role() == 'admin');
     }
 
     function isOps() {
@@ -42,113 +34,80 @@ service cloud.firestore {
     }
 
     match /admins/{adminId} {
-      allow read: if hasRole(['dispatcher', 'finance_admin', 'customer_support_agent']);
-      allow create, update, delete: if false;
+      allow read: if isOps() || isOwner(adminId);
     }
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isOps();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId) &&
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'verificationStatus', 'fraudFlags', 'paymentHistory']);
-      allow delete: if false;
+      allow create: if isOwner(userId)
+        && request.resource.data.role == 'customer'
+        && request.resource.data.uid == userId;
+      allow update: if isOwner(userId)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'uid', 'verificationStatus', 'fraudFlags', 'paymentHistory']);
     }
 
     match /customers/{customerId} {
       allow read: if isOwner(customerId) || isOps();
-      allow create, update: if isOwner(customerId);
-      allow delete: if false;
     }
 
     match /settings/{settingId} {
       allow read: if isSignedIn();
-      allow write: if false;
     }
 
     match /hubs/{hubId} {
       allow read: if isSignedIn();
-      allow write: if false;
     }
 
     match /blocked_dates/{dateId} {
       allow read: if isSignedIn();
-      allow write: if false;
     }
 
     match /bookings/{bookingId} {
       allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isOps());
-      allow create, update: if false;
-      allow delete: if false;
     }
 
     match /drivers/{driverId} {
       allow read: if isOps() || isOwner(driverId);
-      allow create, update, delete: if false;
-    }
-
-    match /vehicles/{vehicleId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if false;
     }
 
     match /driver_locations/{driverId} {
       allow read: if isOps() || isOwner(driverId);
-      allow create, update, delete: if false;
     }
 
     match /payments/{paymentId} {
       allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || hasRole(['finance_admin', 'customer_support_agent']));
-      allow create, update, delete: if false;
     }
 
     match /refunds/{refundId} {
-      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || hasRole(['finance_admin', 'customer_support_agent']));
-      allow create, update, delete: if false;
+      allow read: if hasRole(['finance_admin', 'customer_support_agent']);
     }
 
     match /ledger_entries/{entryId} {
       allow read: if hasRole(['finance_admin']);
-      allow create, update, delete: if false;
     }
 
     match /audit_logs/{auditId} {
       allow read: if hasRole(['super_admin']);
-      allow create, update, delete: if false;
     }
 
     match /booking_events/{eventId} {
       allow read: if isOps();
-      allow create, update, delete: if false;
     }
 
     match /support_tickets/{ticketId} {
       allow read: if isOps() || resource.data.customerId == request.auth.uid;
-      allow create, update, delete: if false;
-    }
-
-    match /support_conversations/{conversationId} {
-      allow read: if isOps() || resource.data.userId == request.auth.uid;
-      allow create, update, delete: if false;
-
-      match /messages/{messageId} {
-        allow read: if isOps();
-        allow create, update, delete: if false;
-      }
     }
 
     match /notification_logs/{notificationId} {
       allow read: if isOps();
-      allow create, update, delete: if false;
     }
 
-    match /realtime_events/{eventId} {
+    match /newsletter_subscribers/{subscriberId} {
       allow read: if isOps();
-      allow create, update, delete: if false;
     }
 
     match /reviews/{reviewId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if false;
+      allow read: if isOps() || (isSignedIn() && resource.data.status == 'published');
     }
   }
 }

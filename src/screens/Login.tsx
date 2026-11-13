@@ -1,273 +1,145 @@
 import { FormEvent, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { GoogleAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { motion } from 'framer-motion';
-import { auth, db } from '../lib/firebase';
-import { AuditAction, logAudit } from '../lib/audit';
-import { company } from '../lib/company';
+import { Link } from 'react-router-dom';
+import { AnimatePresence } from 'framer-motion';
+import { GoogleAuthProvider, OAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
+import { Apple } from 'lucide-react';
+import { auth } from '../lib/firebase';
+import { authContinueUrl, ensureCustomerProfile, getEmailAuthError, getProviderAuthError } from '../lib/authFlow';
+import AuthLayout, { FormMessage, GoogleIcon } from '../components/AuthLayout';
+import { Spinner } from '../components/ui/motion';
+
+type Mode = 'signin' | 'reset';
 
 export default function Login() {
+  const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState<'email' | 'google' | 'apple' | 'reset' | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const navigate = useNavigate();
 
-  const getFriendlyAuthError = (code: string): string => {
-    switch (code) {
-      case 'auth/invalid-credential':
-      case 'auth/wrong-password':
-      case 'auth/user-not-found':
-        return 'Invalid email or password. Please verify your credentials and try again.';
-      case 'auth/too-many-requests':
-        return 'Too many failed attempts. Your account has been temporarily locked. Please reset your password or try again later.';
-      case 'auth/user-disabled':
-        return 'This account has been disabled. Please contact support.';
-      case 'auth/network-request-failed':
-        return 'Network connection error. Please check your internet and try again.';
-      case 'auth/invalid-email':
-        return 'Please enter a valid email address.';
-      default:
-        return 'Sign in failed. Please verify your email and password and try again.';
-    }
-  };
+  const normalizedEmail = email.trim().toLowerCase();
 
-  const handleLogin = async (e: FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  const handleSignIn = async (event: FormEvent) => {
+    event.preventDefault();
     setError('');
     setMessage('');
-
+    setBusy('email');
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-
-      if (!userCredential.user.emailVerified) {
-        setMessage('Please verify your email address. We sent a verification link to your inbox.');
-        return;
-      }
-
-      const adminDoc = await getDoc(doc(db, 'admins', userCredential.user.uid));
-      if (adminDoc.exists()) {
-        await logAudit(userCredential.user.uid, userCredential.user.email || 'admin', AuditAction.ADMIN_LOGIN, {
-          method: 'email',
-        });
-        navigate('/admin');
-      } else {
-        navigate('/dashboard');
-      }
+      // Routing reacts to the auth state: verified users land on their dashboard,
+      // unverified email accounts are sent to /verify-email.
+      await signInWithEmailAndPassword(auth, normalizedEmail, password);
     } catch (err: any) {
-      setError(getFriendlyAuthError(err.code));
-    } finally {
-      setLoading(false);
+      setError(getEmailAuthError(err?.code));
+      setBusy(null);
     }
   };
 
-  const handleForgotPassword = async () => {
-    if (!email) {
-      setError('Please enter your email address to reset your password.');
-      return;
-    }
-
-    setLoading(true);
+  const handleReset = async (event: FormEvent) => {
+    event.preventDefault();
     setError('');
     setMessage('');
-
+    setBusy('reset');
     try {
-      await sendPasswordResetEmail(auth, email);
-      setMessage('Password reset link sent to your inbox.');
+      await sendPasswordResetEmail(auth, normalizedEmail, authContinueUrl());
+      setMessage(`If ${normalizedEmail} has an account, we’ve sent a reset link. Check your inbox and spam folder.`);
     } catch (err: any) {
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-email') {
-        // Don't reveal whether the email exists — show a neutral message for security
-        setMessage('If an account with that email exists, a reset link has been sent.');
-      } else if (err.code === 'auth/too-many-requests') {
-        setError('Too many reset attempts. Please wait a few minutes before trying again.');
+      if (err?.code === 'auth/user-not-found') {
+        setMessage(`If ${normalizedEmail} has an account, we’ve sent a reset link. Check your inbox and spam folder.`);
       } else {
-        setError('Failed to send reset email. Please try again.');
+        setError(getEmailAuthError(err?.code));
       }
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setLoading(true);
+  const handleProvider = async (name: 'Google' | 'Apple') => {
     setError('');
-
+    setMessage('');
+    setBusy(name === 'Google' ? 'google' : 'apple');
     try {
-      const provider = new GoogleAuthProvider();
+      const provider = name === 'Google' ? new GoogleAuthProvider() : new OAuthProvider('apple.com');
+      if (provider instanceof OAuthProvider) {
+        provider.addScope('email');
+        provider.addScope('name');
+      }
       const result = await signInWithPopup(auth, provider);
-
-      const userDoc = await getDoc(doc(db, 'users', result.user.uid));
-      if (!userDoc.exists()) {
-        await setDoc(doc(db, 'users', result.user.uid), {
-          uid: result.user.uid,
-          fullName: result.user.displayName || 'Google User',
-          email: result.user.email,
-          role: 'customer',
-          createdAt: new Date().toISOString(),
-        });
-      }
-
-      const adminDoc = await getDoc(doc(db, 'admins', result.user.uid));
-      if (adminDoc.exists()) {
-        await logAudit(result.user.uid, result.user.email || 'admin', AuditAction.ADMIN_LOGIN, {
-          method: 'google',
-        });
-      }
-
-      navigate('/dashboard');
+      await ensureCustomerProfile(result.user, `${name} customer`).catch(() => undefined);
     } catch (err: any) {
-      console.error('Google login error:', err.code, err.message);
-      
-      // Detect specific error types
-      if (err.code === 'auth/popup-blocked') {
-        setError('Popup was blocked by your browser. Please: 1) Disable popup blockers (including ad blockers), 2) Try a different browser, or 3) Use incognito/private mode.');
-      } else if (err.code === 'auth/popup-closed-by-user') {
-        setError('Google login was cancelled. Please try again and complete the sign-in process.');
-      } else if (err.code === 'auth/cancelled-popup-request') {
-        setError('Another popup request is pending. Please wait a moment and try again.');
-      } else if (err.code === 'auth/network-request-failed') {
-        setError('Network connection error. Please check your internet and try again.');
-      } else if (err.code === 'auth/unauthorized-domain') {
-        setError('Google Sign-In is not configured for this domain. The website administrator needs to add this domain to Firebase Console settings (Project Settings > Authorized domains). Please contact support or try email/password login.');
-      } else {
-        setError(`Google login failed (${err.code}). Please try again or use email/password login.`);
-      }
-    } finally {
-      setLoading(false);
+      setError(getProviderAuthError(name, err?.code));
+      setBusy(null);
     }
   };
 
   return (
-    <div className="flex min-h-screen bg-background">
-      <div className="relative hidden w-1/2 items-center justify-center overflow-hidden bg-secondary p-20 lg:flex">
-        <img
-          src={company.authImage}
-          alt="BLM Motors transport service"
-          className="absolute inset-0 h-full w-full object-cover object-center opacity-70"
-        />
-        <div className="absolute inset-0 bg-black/60" />
-        <div className="relative z-10 max-w-lg text-white">
-          <div className="mb-10 inline-block">
-            <img
-              src={company.logo}
-              alt="BLM Motors logo"
-              className="h-20 w-64 object-contain md:h-24 md:w-72 [filter:drop-shadow(0_0_15px_rgba(255,255,255,1))_drop-shadow(0_0_35px_rgba(255,255,255,0.9))_drop-shadow(0_0_60px_rgba(255,255,255,0.6))]"
-            />
-          </div>
-          <h2 className="mb-6 text-5xl font-bold leading-tight">Welcome back.</h2>
-          <p className="text-lg font-medium leading-relaxed text-white/82">
-            Sign in to manage bookings for transport, touring, car hire, pickup, and cross-border trips.
-          </p>
-        </div>
-      </div>
+    <AuthLayout
+      title={mode === 'signin' ? 'Welcome back' : 'Reset your password'}
+      subtitle={mode === 'signin' ? 'Sign in to see your bookings, pay, and track your trips.' : 'Enter your email and we’ll send you a link to set a new password.'}
+      sideTitle="Every journey, one account."
+      sideBody="Book rides, tours, car hire and deliveries, then follow each one as it happens."
+    >
+      <AnimatePresence initial={false}>
+        {error && <FormMessage key="error" tone="error">{error}</FormMessage>}
+        {message && <FormMessage key="message" tone="success">{message}</FormMessage>}
+      </AnimatePresence>
 
-      <div className="flex w-full items-center justify-center bg-white p-8 lg:w-1/2">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.97 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-md rounded-lg border border-outline bg-white p-8 shadow-sm md:p-10"
-        >
-          <div className="mb-9 text-center">
-            <h1 className="mb-2 text-3xl font-bold">Sign in</h1>
-            <p className="text-sm text-on-surface-variant">Access your bookings and delivery history.</p>
-          </div>
-
-          {error && (
-            <div className="mb-6 rounded-md bg-error-container p-4 text-sm font-medium text-on-error-container">
-              {error}
-            </div>
-          )}
-
-          {message && (
-            <div className="mb-6 rounded-md bg-primary/10 p-4 text-sm font-medium text-primary">
-              {message}
-            </div>
-          )}
-
-          <div className="mb-8 space-y-4">
-            <button
-              onClick={handleGoogleLogin}
-              disabled={loading}
-              className="flex w-full items-center justify-center gap-4 rounded-md border border-outline bg-white py-4 font-bold text-on-surface transition-colors hover:bg-surface-container disabled:opacity-60"
-            >
-              <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.84z" />
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-              </svg>
-              Continue with Google
+      {mode === 'signin' ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button type="button" onClick={() => handleProvider('Google')} disabled={busy !== null} className="btn-outline">
+              {busy === 'google' ? <Spinner /> : <GoogleIcon />} Google
             </button>
-            <div className="flex items-center gap-4 px-2">
-              <div className="h-px flex-1 bg-outline" />
-              <span className="text-xs font-bold text-on-surface-variant">or</span>
-              <div className="h-px flex-1 bg-outline" />
-            </div>
+            <button type="button" onClick={() => handleProvider('Apple')} disabled={busy !== null} className="btn-dark">
+              {busy === 'apple' ? <Spinner /> : <Apple className="h-5 w-5" fill="currentColor" aria-hidden="true" />} Apple
+            </button>
+          </div>
+          <div className="my-6 flex items-center gap-4 text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
+            <span className="h-px flex-1 bg-outline" /> or with email <span className="h-px flex-1 bg-outline" />
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-5">
+          <form onSubmit={handleSignIn} className="space-y-5" noValidate={false}>
             <div>
-              <label className="mb-2 block text-sm font-bold text-on-surface-variant">Email address</label>
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-lg text-primary">person</span>
-                <input
-                  type="email"
-                  required
-                  className="w-full rounded-md border border-outline bg-surface-container py-3.5 pl-12 pr-4 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
-                  placeholder="name@email.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
+              <label htmlFor="email" className="field-label">Email address</label>
+              <input id="email" type="email" autoComplete="email" required className="field" placeholder="name@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
             </div>
-
             <div>
-              <label className="mb-2 block text-sm font-bold text-on-surface-variant">Password</label>
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-lg text-primary">lock</span>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  required
-                  className="w-full rounded-md border border-outline bg-surface-container py-3.5 pl-12 pr-16 font-medium transition-colors focus:bg-white focus:ring-2 focus:ring-primary/20"
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((prev) => !prev)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-bold text-primary hover:text-primary/80"
-                >
-                  {showPassword ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <div className="mt-2 text-right">
-                <button type="button" onClick={handleForgotPassword} className="text-sm font-bold text-primary hover:underline">
+              <div className="flex items-center justify-between">
+                <label htmlFor="password" className="field-label">Password</label>
+                <button type="button" onClick={() => { setMode('reset'); setError(''); setMessage(''); }} className="mb-1.5 text-xs font-bold text-primary hover:underline">
                   Forgot password?
                 </button>
               </div>
+              <div className="relative">
+                <input id="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" required className="field pr-12" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} />
+                <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-container" aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                  <span className="material-symbols-outlined text-xl">{showPassword ? 'visibility_off' : 'visibility'}</span>
+                </button>
+              </div>
             </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-4 font-bold text-on-primary transition-colors hover:bg-primary-container disabled:opacity-50"
-            >
-              {loading ? <span className="h-4 w-4 animate-spin rounded-full border-b-2 border-on-primary" /> : 'Log in'}
+            <button type="submit" disabled={busy !== null} className="btn-primary btn-lg w-full">
+              {busy === 'email' ? <><Spinner /> Signing in…</> : 'Sign in'}
             </button>
           </form>
-
-          <div className="mt-8 border-t border-outline pt-8 text-center">
-            <p className="text-sm text-on-surface-variant">
-              Do not have an account? <Link to="/register" className="font-bold text-primary hover:underline">Create one</Link>
-            </p>
+          <p className="mt-8 text-center text-sm text-on-surface-variant">
+            Don’t have an account? <Link to="/register" className="font-bold text-primary hover:underline">Create an account</Link>
+          </p>
+        </>
+      ) : (
+        <form onSubmit={handleReset} className="space-y-5">
+          <div>
+            <label htmlFor="reset-email" className="field-label">Email address</label>
+            <input id="reset-email" type="email" autoComplete="email" required className="field" placeholder="name@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
-        </motion.div>
-      </div>
-    </div>
+          <button type="submit" disabled={busy !== null} className="btn-primary btn-lg w-full">
+            {busy === 'reset' ? <><Spinner /> Sending…</> : 'Send reset link'}
+          </button>
+          <button type="button" onClick={() => { setMode('signin'); setError(''); setMessage(''); }} className="btn-ghost w-full">
+            <span className="material-symbols-outlined text-lg">arrow_back</span> Back to sign in
+          </button>
+        </form>
+      )}
+    </AuthLayout>
   );
 }

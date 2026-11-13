@@ -1,703 +1,387 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { db, storage } from '../lib/firebase';
+import { apiErrorMessage, apiGet, apiPost } from '../lib/api';
 import { useAuth } from '../hooks/useAuth';
-import { type SupportedCurrency, useCurrency } from '../hooks/useCurrency';
-import { paymentService } from '../lib/payments/paymentService';
-import { BankAccountConfig, PaymentRecord } from '../lib/payments/types';
-import { DEFAULT_BANK_CONFIG } from '../lib/payments/bankConfig';
-import { apiGet, apiPost } from '../lib/api';
-import StripePaymentForm from '../components/payments/StripePaymentForm';
+import { useCatalog } from '../hooks/useCatalog';
+import { useCurrency } from '../contexts/CurrencyContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { SUPPORTED_CURRENCIES, type SupportedCurrency } from '../lib/catalog';
+import type { BankAccountConfig, PaymentRecord } from '../lib/payments/types';
+import StripePaymentForm from '../components/payments/StripePaymentForm';
+import { easeOutExpo, Spinner } from '../components/ui/motion';
 
-type PublicConfig = {
-  features: Record<string, boolean>;
-  payments: { paystack: boolean; stripe: boolean; manualBankTransfer: boolean };
-  mapsEnabled: boolean;
-};
+type CheckoutData = { booking: Record<string, any>; payments: PaymentRecord[]; bankDetails: BankAccountConfig | null };
+type Method = 'paystack' | 'stripe' | 'bank_transfer';
+
+const PAID_STATUSES = ['Paid', 'Confirmed', 'Dispatched', 'InTransit', 'Completed'];
 
 export default function Checkout() {
-  const { bookingId } = useParams<{ bookingId: string }>();
+  const { bookingId = '' } = useParams<{ bookingId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
+  const { catalog } = useCatalog();
   const { formatPrice, displayCurrency } = useCurrency();
   const { t } = useLocale();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
 
-  const [loading, setLoading] = useState(true);
-  const [booking, setBooking] = useState<any>(null);
-  const [paymentRecord, setPaymentRecord] = useState<PaymentRecord | null>(null);
-  const [bankConfig, setBankConfig] = useState<BankAccountConfig>(DEFAULT_BANK_CONFIG);
-  const [copied, setCopied] = useState(false);
-  const [copiedRef, setCopiedRef] = useState(false);
-  const [selectedMethod, setSelectedMethod] = useState<'bank_transfer' | 'paystack' | 'stripe'>('paystack');
-  const [publicConfig, setPublicConfig] = useState<PublicConfig | null>(null);
-  const [gatewayLoading, setGatewayLoading] = useState(false);
-  const [gatewayError, setGatewayError] = useState('');
-  const [stripeClientSecret, setStripeClientSecret] = useState('');
+  const [data, setData] = useState<CheckoutData | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [method, setMethod] = useState<Method | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [stripeSecret, setStripeSecret] = useState('');
+  const [proof, setProof] = useState<File | null>(null);
+  const [note, setNote] = useState('');
+  const [copied, setCopied] = useState<string | null>(null);
 
-  const supportedCurrencies: SupportedCurrency[] = ['NGN', 'XOF', 'GHS', 'USD', 'EUR', 'GBP'];
-  const requestedInvoiceCurrency = booking?.displayCurrency;
-  const invoiceCurrency: SupportedCurrency = supportedCurrencies.includes(requestedInvoiceCurrency)
-    ? requestedInvoiceCurrency
-    : displayCurrency;
-  const paystackCurrency: 'NGN' | 'GHS' = invoiceCurrency === 'GHS' ? 'GHS' : 'NGN';
-  const formatInvoicePrice = (amount: number) => formatPrice(amount, invoiceCurrency);
+  const load = useCallback(async () => {
+    try {
+      const response = await apiGet<CheckoutData>(`/api/bookings/${encodeURIComponent(bookingId)}`);
+      setData(response.data);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(apiErrorMessage(err, 'We couldn’t load this booking.'));
+    }
+  }, [bookingId]);
 
-  // Upload Proof Form State
-  const [proofFile, setProofFile] = useState<File | null>(null);
-  const [customerNote, setCustomerNote] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState(false);
+  useEffect(() => { void load(); }, [load]);
 
-  // Fetch Booking and Bank Details
+  // Paystack redirects back with ?reference=…; verify it server-side once.
   useEffect(() => {
-    if (!bookingId) return;
-
-    let unsubscribePayment: (() => void) | null = null;
-
-    const initCheckout = async () => {
-      try {
-        setLoading(true);
-        const configResponse = await apiGet<PublicConfig>('/api/public/config');
-        setPublicConfig(configResponse.data);
-        const preferredMethod = configResponse.data.payments.paystack
-          ? 'paystack'
-          : configResponse.data.payments.manualBankTransfer
-            ? 'bank_transfer'
-            : 'stripe';
-        setSelectedMethod(preferredMethod);
-
-        // 1. Fetch booking
-        const bookingRef = doc(db, 'bookings', bookingId);
-        const bookingSnap = await getDoc(bookingRef);
-        
-        if (!bookingSnap.exists()) {
-          setLoading(false);
-          return;
-        }
-
-        const bData = { id: bookingSnap.id, ...bookingSnap.data() };
-        setBooking(bData);
-
-        // 2. Fetch Bank Settings
-        try {
-          const bankSnap = await getDoc(doc(db, 'settings', 'bank_accounts'));
-          if (bankSnap.exists() && bankSnap.data()?.value) {
-            setBankConfig({ ...DEFAULT_BANK_CONFIG, ...bankSnap.data().value });
-          }
-        } catch (e) {
-          console.warn('Using default bank config', e);
-        }
-
-        // 3. Load an existing authoritative payment record when present.
-        const payment = await paymentService.getPaymentByBookingId(bookingId);
-        setPaymentRecord(payment);
-
-        const paystackReference = searchParams.get('reference') || searchParams.get('trxref');
-        if (paystackReference) {
-          await apiGet(`/api/payment/paystack/verify/${encodeURIComponent(paystackReference)}`);
-          setPaymentRecord(await paymentService.getPaymentByBookingId(bookingId));
-        }
-
-        // 4. Real-time listener on payment record for instant admin approval updates
-        if (payment?.id) {
-          unsubscribePayment = onSnapshot(doc(db, 'payments', payment.id), (snap) => {
-            if (snap.exists()) {
-              setPaymentRecord({ ...snap.data(), id: snap.id } as PaymentRecord);
-            }
-          });
-        }
-      } catch (err) {
-        console.error('Checkout init error:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initCheckout();
-
-    return () => {
-      if (unsubscribePayment) unsubscribePayment();
-    };
-  }, [bookingId, searchParams, user]);
-
-  const initializeManualTransfer = async () => {
-    if (!booking) return;
-    setGatewayLoading(true);
-    setGatewayError('');
-    try {
-      const initialized = await paymentService.initializePayment(booking);
-      setPaymentRecord({ ...(paymentRecord || {}), ...initialized, id: initialized.paymentId, bookingId: booking.id, provider: 'manual_bank_transfer', method: 'BANK_TRANSFER', status: 'AWAITING_PAYMENT' } as PaymentRecord);
-      if (initialized.bankDetails) setBankConfig(initialized.bankDetails);
-    } catch (error: any) {
-      setGatewayError(error.response?.data?.error || error.message || 'Manual transfer could not be initialized.');
-    } finally {
-      setGatewayLoading(false);
-    }
-  };
-
-  const startPaystack = async () => {
-    if (!bookingId) return;
-    setGatewayLoading(true);
-    setGatewayError('');
-    try {
-      const response = await apiPost<any>('/api/payment/paystack/initialize', { bookingId, currency: paystackCurrency });
-      const authorizationUrl = response.data?.data?.authorization_url;
-      if (!authorizationUrl) throw new Error('Paystack did not return a checkout URL.');
-      window.location.assign(authorizationUrl);
-    } catch (error: any) {
-      setGatewayError(error.response?.data?.error || error.message || 'Paystack checkout could not start.');
-      setGatewayLoading(false);
-    }
-  };
-
-  const startStripe = async () => {
-    if (!bookingId || stripeClientSecret) return;
-    setGatewayLoading(true);
-    setGatewayError('');
-    try {
-      const response = await apiPost<{ clientSecret: string }>('/api/payment/stripe/create-intent', { bookingId, currency: invoiceCurrency });
-      setStripeClientSecret(response.data.clientSecret);
-    } catch (error: any) {
-      setGatewayError(error.response?.data?.error || error.message || 'Stripe checkout could not start.');
-    } finally {
-      setGatewayLoading(false);
-    }
-  };
-
-  const handleCopyAccount = () => {
-    if (!bankConfig.accountNumber) return;
-    navigator.clipboard.writeText(bankConfig.accountNumber);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
-  };
-
-  const handleCopyReference = () => {
-    const ref = paymentRecord?.paymentReference || booking?.paymentReference;
-    if (!ref) return;
-    navigator.clipboard.writeText(ref);
-    setCopiedRef(true);
-    setTimeout(() => setCopiedRef(false), 2500);
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setUploadError(null);
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Validate size (max 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      setUploadError('File size exceeds 5MB limit. Please upload a smaller image or PDF document.');
-      return;
-    }
-
-    // Validate type (JPG, PNG, PDF)
-    const validTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
-    if (!validTypes.includes(file.type)) {
-      setUploadError('Invalid file type. Please upload a JPG, PNG image, or PDF document.');
-      return;
-    }
-
-    setProofFile(file);
-
-  };
-
-  const handleSubmitProof = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!paymentRecord || !proofFile) {
-      setUploadError('Please select a payment receipt file (image or PDF) to submit.');
-      return;
-    }
-
-    setUploading(true);
-    setUploadError(null);
-
-    try {
-      const safeName = proofFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const fileRef = storageRef(storage, `payment-proofs/${user?.uid || 'guest'}/${paymentRecord.id}/${Date.now()}-${safeName}`);
-      await uploadBytes(fileRef, proofFile, { contentType: proofFile.type });
-      const proofUrl = await getDownloadURL(fileRef);
-      await paymentService.submitProof({
-        paymentId: paymentRecord.id,
-        customerNote: customerNote.trim(),
-        proofOfPaymentUrl: proofUrl,
-        proofFileName: proofFile.name,
+    const reference = searchParams.get('reference') || searchParams.get('trxref');
+    if (!reference) return;
+    setBusy('verify');
+    apiGet(`/api/payment/paystack/verify/${encodeURIComponent(reference)}`)
+      .then(load)
+      .catch((err) => setError(apiErrorMessage(err, 'We couldn’t confirm your Paystack payment yet.')))
+      .finally(() => {
+        setBusy(null);
+        setSearchParams({}, { replace: true });
       });
-      setUploadSuccess(true);
-    } catch (err: any) {
-      setUploadError(err.response?.data?.error || err.message || 'Failed to upload payment proof.');
+  }, [load, searchParams, setSearchParams]);
+
+  // Live: reload when the booking changes (payment approved, dispatch, etc.).
+  useEffect(() => {
+    if (!user || !bookingId) return;
+    let first = true;
+    return onSnapshot(doc(db, 'bookings', bookingId), () => {
+      if (first) { first = false; return; }
+      void load();
+    }, () => undefined);
+  }, [bookingId, load, user]);
+
+  const payments = catalog?.payments;
+  useEffect(() => {
+    if (method || !payments || !data) return;
+    const hasTransfer = data.payments.some((payment) => payment.provider === 'manual_bank_transfer');
+    setMethod(hasTransfer && payments.manualBankTransfer ? 'bank_transfer' : payments.paystack ? 'paystack' : payments.stripe ? 'stripe' : payments.manualBankTransfer ? 'bank_transfer' : null);
+  }, [data, method, payments]);
+
+  if (loadError) {
+    return (
+      <div className="container-page flex min-h-[60vh] flex-col items-center justify-center text-center">
+        <span className="material-symbols-outlined text-6xl text-on-surface-variant">receipt_long</span>
+        <h1 className="mt-4 text-2xl font-extrabold">Booking not found</h1>
+        <p className="mt-2 text-on-surface-variant">{loadError}</p>
+        <div className="mt-8 flex gap-3"><button onClick={load} className="btn-outline">Retry</button><Link to="/bookings" className="btn-primary">My bookings</Link></div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="container-page grid gap-8 py-12 lg:grid-cols-[1fr_380px]">
+        <div className="space-y-6"><div className="skeleton h-24" /><div className="skeleton h-72" /></div>
+        <div className="skeleton h-96" />
+      </div>
+    );
+  }
+
+  const { booking } = data;
+  const manual = data.payments.find((payment) => payment.provider === 'manual_bank_transfer');
+  const isPaid = PAID_STATUSES.includes(booking.status);
+  const isCancelled = booking.status === 'Cancelled';
+  const invoiceCurrency: SupportedCurrency = SUPPORTED_CURRENCIES.includes(booking.displayCurrency) ? booking.displayCurrency : displayCurrency;
+  const paystackCurrency: SupportedCurrency = invoiceCurrency === 'GHS' ? 'GHS' : 'NGN';
+  const total = Number(booking.totalAmount || 0);
+  const snapshot = booking.pricingSnapshot || {};
+
+  const copy = (value: string, key: string) => {
+    void navigator.clipboard.writeText(value);
+    setCopied(key);
+    window.setTimeout(() => setCopied(null), 2000);
+  };
+
+  const run = async (key: string, action: () => Promise<void>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      await action();
+    } catch (err) {
+      setError(apiErrorMessage(err));
     } finally {
-      setUploading(false);
+      setBusy(null);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center bg-background px-4">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="text-sm font-bold text-on-surface-variant">Securing payment gateway & instructions...</p>
-        </div>
-      </div>
-    );
-  }
+  const startPaystack = () => run('paystack', async () => {
+    const response = await apiPost<{ data?: { authorization_url?: string } }>('/api/payment/paystack/initialize', { bookingId, currency: paystackCurrency });
+    const url = response.data?.data?.authorization_url;
+    if (!url) throw new Error('Paystack didn’t open. Please try again.');
+    window.location.assign(url);
+  });
 
-  if (!booking) {
-    return (
-      <div className="flex min-h-[70vh] flex-col items-center justify-center bg-background px-4 text-center">
-        <span className="material-symbols-outlined mb-4 text-6xl text-on-surface-variant">receipt_long</span>
-        <h1 className="text-2xl font-bold text-on-surface">Booking Not Found</h1>
-        <p className="mt-2 text-sm text-on-surface-variant">The requested booking reference could not be located.</p>
-        <Link to="/services" className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-bold text-white">
-          Explore Services
-        </Link>
-      </div>
-    );
-  }
+  const startStripe = () => run('stripe', async () => {
+    const response = await apiPost<{ clientSecret: string }>('/api/payment/stripe/create-intent', { bookingId, currency: invoiceCurrency });
+    setStripeSecret(response.data.clientSecret);
+  });
 
-  const paymentRef = paymentRecord?.paymentReference || booking.paymentReference || '';
-  const trackingId = paymentRecord?.trackingId || booking.trackingId;
-  const isPaid = ['PAID', 'succeeded'].includes(String(paymentRecord?.status)) || booking.status === 'Confirmed' || booking.status === 'Paid';
-  const isUnderReview = paymentRecord?.status === 'UNDER_REVIEW' || uploadSuccess;
-  const isRejected = paymentRecord?.status === 'PAYMENT_REJECTED';
+  const startTransfer = () => run('transfer', async () => {
+    await apiPost('/api/payment/manual/initialize', { bookingId });
+    await load();
+  });
+
+  const submitProof = (event: FormEvent) => {
+    event.preventDefault();
+    if (!proof || !manual || !user) return;
+    void run('proof', async () => {
+      const safeName = proof.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fileRef = storageRef(storage, `payment-proofs/${user.uid}/${manual.id}/${Date.now()}-${safeName}`);
+      await uploadBytes(fileRef, proof, { contentType: proof.type });
+      await apiPost('/api/payment/manual/proof', {
+        paymentId: manual.id,
+        proofOfPaymentUrl: await getDownloadURL(fileRef),
+        proofFileName: proof.name,
+        customerNote: note.trim() || undefined,
+      });
+      setProof(null);
+      await load();
+    });
+  };
+
+  const pickProof = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    setError(null);
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) return setError('The file is too big. Please keep it under 5 MB.');
+    if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.type)) return setError('Please upload a photo (JPG, PNG, WEBP) or a PDF.');
+    setProof(file);
+  };
+
+  const cancelBooking = () => run('cancel', async () => {
+    if (!window.confirm('Cancel this booking? You can’t undo this.')) return;
+    await apiPost('/api/bookings/cancel', { bookingId, reason: 'Cancelled by customer at checkout' });
+    navigate('/bookings', { replace: true });
+  });
+
+  const methods: { id: Method; label: string; detail: string; icon: string; enabled: boolean }[] = [
+    { id: 'paystack', label: 'Paystack', detail: `Card, bank app or USSD (${paystackCurrency})`, icon: 'bolt', enabled: Boolean(payments?.paystack) },
+    { id: 'stripe', label: 'Debit or credit card', detail: `Visa or Mastercard (${invoiceCurrency})`, icon: 'credit_card', enabled: Boolean(payments?.stripe) },
+    { id: 'bank_transfer', label: 'Bank transfer', detail: 'Send money to our account and upload the receipt', icon: 'account_balance', enabled: Boolean(payments?.manualBankTransfer) },
+  ];
+
+  const steps = ['Booked', 'Pay', 'Done'];
+  const stepIndex = isPaid ? 2 : manual?.status === 'UNDER_REVIEW' ? 1 : 1;
 
   return (
-    <div className="min-h-screen bg-background px-4 py-12 sm:px-6 md:px-8 lg:px-12">
-      <div className="mx-auto max-w-5xl">
-        {/* Header Breadcrumbs */}
-        <div className="mb-8 flex items-center justify-between">
-          <Link
-            to="/services"
-            className="inline-flex items-center gap-2 rounded-lg border border-outline bg-white px-4 py-2 text-xs font-bold text-on-surface-variant transition-colors hover:border-primary hover:text-primary"
-          >
-            <span className="material-symbols-outlined text-base">arrow_back</span>
-            Back to Services
-          </Link>
-
-          {trackingId && (
-            <Link
-              to={`/tracking?booking=${encodeURIComponent(trackingId)}`}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary/10 px-4 py-2 text-xs font-bold text-primary transition-colors hover:bg-primary hover:text-white"
-            >
-              <span className="material-symbols-outlined text-base">location_searching</span>
-              Live Track Booking
-            </Link>
-          )}
+    <div className="container-page py-10 sm:py-14">
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="eyebrow">{t('checkout')}</p>
+          <h1 className="mt-2 text-3xl font-extrabold sm:text-4xl">{isPaid ? 'You’re booked!' : isCancelled ? 'Booking cancelled' : 'Pay for your booking'}</h1>
         </div>
+        <ol className="flex items-center gap-2 text-xs font-bold">
+          {steps.map((step, index) => (
+            <li key={step} className="flex items-center gap-2">
+              <motion.span animate={{ backgroundColor: index <= stepIndex ? '#c1121f' : '#e2e3df', color: index <= stepIndex ? '#fff' : '#555c62' }} className="flex h-7 w-7 items-center justify-center rounded-full">
+                {index < stepIndex || (isPaid && index === 2) ? <span className="material-symbols-outlined text-sm">check</span> : index + 1}
+              </motion.span>
+              <span className={index <= stepIndex ? 'text-on-surface' : 'text-on-surface-variant'}>{step}</span>
+              {index < steps.length - 1 && <span className="mx-1 h-px w-6 bg-outline" />}
+            </li>
+          ))}
+        </ol>
+      </div>
 
-        {/* Status Banner */}
-        <div className="mb-8">
+      <div className="grid gap-8 lg:grid-cols-[1fr_380px]">
+        <div className="space-y-6">
+          <AnimatePresence>
+            {error && <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="alert-error" role="alert"><span className="material-symbols-outlined">error</span>{error}</motion.div>}
+          </AnimatePresence>
+
+          {busy === 'verify' && <div className="alert-info"><Spinner /> Checking your Paystack payment…</div>}
+
           {isPaid && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-green-200 bg-green-50 p-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-green-600 text-white">
-                  <span className="material-symbols-outlined text-2xl">verified</span>
-                </div>
+            <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ ease: easeOutExpo, duration: 0.6 }} className="card overflow-hidden">
+              <div className="flex items-center gap-5 bg-green-50 p-6">
+                <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', delay: 0.15 }} className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-success text-white">
+                  <span className="material-symbols-outlined text-3xl">check</span>
+                </motion.span>
                 <div>
-                  <h2 className="text-lg font-bold text-green-900">Payment Verified & Booking Confirmed!</h2>
-                  <p className="text-xs font-medium text-green-700 mt-1">
-                    Your transfer has been verified by the finance department. Your tracking ID is <span className="font-bold font-mono">{trackingId}</span>.
-                  </p>
+                  <p className="text-lg font-bold text-green-900">Payment received</p>
+                  <p className="text-sm text-green-800">We’ll assign your driver and let you know by SMS and email.</p>
                 </div>
+              </div>
+              <div className="flex flex-wrap gap-3 p-6">
+                <Link to={`/tracking?booking=${encodeURIComponent(booking.trackingId || bookingId)}`} className="btn-primary">Track this booking</Link>
+                <Link to="/dashboard" className="btn-outline">Go to dashboard</Link>
               </div>
             </motion.div>
           )}
 
-          {isUnderReview && !isPaid && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-amber-200 bg-amber-50 p-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-amber-500 text-white">
-                  <span className="material-symbols-outlined text-2xl">hourglass_top</span>
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-amber-900">Payment Submitted For Verification</h2>
-                  <p className="text-xs font-medium text-amber-700 mt-1">
-                    Your proof of transfer has been received and is currently under review by our finance team. You will receive real-time status updates.
-                  </p>
-                </div>
-              </div>
-            </motion.div>
-          )}
+          {isCancelled && <div className="alert-info"><span className="material-symbols-outlined">block</span>This booking was cancelled{booking.refundStatus && booking.refundStatus !== 'N/A' ? ` · refund: ${booking.refundStatus}` : ''}.</div>}
 
-          {isRejected && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="rounded-lg border border-error/20 bg-error-container p-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-error text-white">
-                  <span className="material-symbols-outlined text-2xl">error</span>
-                </div>
-                <div>
-                  <h2 className="text-lg font-bold text-on-error-container">Payment Verification Failed</h2>
-                  <p className="text-xs font-medium text-on-error-container/80 mt-1">
-                    Reason: {paymentRecord?.rejectionReason || 'Transfer not found or incorrect amount.'}. Please re-verify the bank details and upload a valid receipt below.
-                  </p>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-          {/* Left Column: Payment Methods & Bank Account Details */}
-          <div className="space-y-6">
-            {/* Payment Method Selector Card */}
-            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-primary">{t('paymentChannels')}</span>
-                  <h3 className="text-xl font-bold text-on-surface">{t('selectPayment')}</h3>
-                </div>
-                <span className="text-xs font-semibold text-on-surface-variant">Secure server-verified checkout</span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Option 1: Direct Bank Transfer (Available) */}
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('bank_transfer')}
-                  disabled={!publicConfig?.payments.manualBankTransfer || isPaid}
-                  className={`flex items-start gap-3 rounded-lg border p-4 text-left transition-all ${
-                    selectedMethod === 'bank_transfer'
-                      ? 'border-primary bg-primary/5 shadow-sm'
-                      : 'border-outline hover:border-primary/50'
-                  }`}
-                >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white">
-                    <span className="material-symbols-outlined text-xl">account_balance</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1 flex-wrap">
-                      <p className="font-bold text-xs text-on-surface">Direct Bank Transfer</p>
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-[9px] font-bold uppercase text-green-700">{publicConfig?.payments.manualBankTransfer ? 'Available' : 'Not configured'}</span>
-                    </div>
-                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
-                      Official bank account transfer with manual receipt verification.
-                    </p>
-                  </div>
-                </button>
-
-                {/* Option 2: Stripe card checkout */}
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('stripe')}
-                  disabled={!publicConfig?.payments.stripe || !import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || isPaid}
-                  className={`flex items-start gap-3 rounded-lg border p-4 text-left transition-all ${
-                    selectedMethod === 'stripe'
-                      ? 'border-primary bg-primary/5 shadow-sm'
-                      : 'border-outline hover:border-primary/50'
-                  }`}
-                >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-container text-on-surface-variant">
-                    <span className="material-symbols-outlined text-xl">credit_card</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1 flex-wrap">
-                      <p className="font-bold text-xs text-on-surface">Debit / Credit Card</p>
-                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[9px] font-bold text-on-surface-variant">{publicConfig?.payments.stripe ? 'Available' : 'Not configured'}</span>
-                    </div>
-                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
-                      Mastercard, Visa & Verve online card gateway.
-                    </p>
-                  </div>
-                </button>
-
-                {/* Option 3: Paystack checkout */}
-                <button
-                  type="button"
-                  onClick={() => setSelectedMethod('paystack')}
-                  disabled={!publicConfig?.payments.paystack || isPaid}
-                  className={`flex items-start gap-3 rounded-lg border p-4 text-left transition-all ${
-                    selectedMethod === 'paystack'
-                      ? 'border-primary bg-primary/5 shadow-sm'
-                      : 'border-outline hover:border-primary/50'
-                  }`}
-                >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-container text-on-surface-variant">
-                    <span className="material-symbols-outlined text-xl">bolt</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1 flex-wrap">
-                      <p className="font-bold text-xs text-on-surface">Paystack / Online</p>
-                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[9px] font-bold text-on-surface-variant">{publicConfig?.payments.paystack ? 'Available' : 'Not configured'}</span>
-                    </div>
-                    <p className="text-[10px] text-on-surface-variant mt-0.5 font-medium">
-                      Instant online checkout gateway integration.
-                    </p>
-                  </div>
-                </button>
-
-              </div>
-
-              {gatewayError && <p role="alert" className="mt-4 rounded-lg border border-error/20 bg-error-container p-3 text-xs font-bold text-on-error-container">{gatewayError}</p>}
-
-              {!isPaid && selectedMethod === 'paystack' && publicConfig?.payments.paystack && (
-                <button type="button" onClick={startPaystack} disabled={gatewayLoading} className="mt-5 w-full rounded-lg bg-primary px-5 py-4 text-sm font-bold text-white disabled:opacity-50">
-                  {gatewayLoading ? 'Opening secure checkout...' : `Pay ${formatPrice(booking.totalAmount, paystackCurrency)} with Paystack`}
-                </button>
-              )}
-
-              {!isPaid && selectedMethod === 'stripe' && publicConfig?.payments.stripe && (
-                <div className="mt-5">
-                  {!stripeClientSecret ? (
-                    <button type="button" onClick={startStripe} disabled={gatewayLoading} className="w-full rounded-lg bg-primary px-5 py-4 text-sm font-bold text-white disabled:opacity-50">
-                      {gatewayLoading ? 'Preparing card checkout...' : 'Continue to card payment'}
+          {!isPaid && !isCancelled && (
+            <section className="card p-6 sm:p-8">
+              <h2 className="text-lg font-bold">{t('selectPayment')}</h2>
+              {!payments ? (
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-24" />)}</div>
+              ) : methods.every((item) => !item.enabled) ? (
+                <p className="alert-info mt-5">Online payment isn’t available right now. Please message us on WhatsApp to finish your booking.</p>
+              ) : (
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  {methods.map((item) => (
+                    <button key={item.id} type="button" disabled={!item.enabled} onClick={() => { setMethod(item.id); setError(null); }} className="option-card text-left disabled:cursor-not-allowed disabled:opacity-45" data-active={method === item.id}>
+                      <span className="material-symbols-outlined text-primary">{item.icon}</span>
+                      <p className="mt-2 text-sm font-bold">{item.label}</p>
+                      <p className="mt-1 text-xs text-on-surface-variant">{item.enabled ? item.detail : 'Not available right now'}</p>
                     </button>
+                  ))}
+                </div>
+              )}
+
+              <AnimatePresence mode="wait">
+                <motion.div key={method || 'none'} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="mt-6">
+                  {method === 'paystack' && (
+                    <button type="button" onClick={startPaystack} disabled={busy !== null} className="btn-primary btn-lg w-full">
+                      {busy === 'paystack' ? <><Spinner /> Opening Paystack…</> : `Pay ${formatPrice(total, paystackCurrency)} with Paystack`}
+                    </button>
+                  )}
+                  {method === 'stripe' && (stripeSecret ? (
+                    <StripePaymentForm clientSecret={stripeSecret} amountLabel={formatPrice(total, invoiceCurrency)} onPaid={load} />
                   ) : (
-                    <StripePaymentForm clientSecret={stripeClientSecret} onPaid={() => window.location.reload()} />
+                    <button type="button" onClick={startStripe} disabled={busy !== null} className="btn-primary btn-lg w-full">
+                      {busy === 'stripe' ? <><Spinner /> Loading card form…</> : `Pay ${formatPrice(total, invoiceCurrency)} by card`}
+                    </button>
+                  ))}
+                  {method === 'bank_transfer' && !manual && (
+                    <button type="button" onClick={startTransfer} disabled={busy !== null} className="btn-primary btn-lg w-full">
+                      {busy === 'transfer' ? <><Spinner /> Getting details…</> : 'Show bank details'}
+                    </button>
                   )}
-                </div>
-              )}
+                </motion.div>
+              </AnimatePresence>
+            </section>
+          )}
 
-              {!isPaid && selectedMethod === 'bank_transfer' && publicConfig?.payments.manualBankTransfer && !paymentRecord && (
-                <button type="button" onClick={initializeManualTransfer} disabled={gatewayLoading} className="mt-5 w-full rounded-lg bg-primary px-5 py-4 text-sm font-bold text-white disabled:opacity-50">
-                  {gatewayLoading ? 'Preparing instructions...' : 'Generate bank transfer instructions'}
-                </button>
-              )}
-
-              {!publicConfig?.payments.paystack && !publicConfig?.payments.stripe && !publicConfig?.payments.manualBankTransfer && (
-                <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs font-semibold text-amber-900">
-                  Online payment is temporarily unavailable. Contact BLM support to complete this booking.
-                </p>
-              )}
-            </div>
-
-            {selectedMethod === 'bank_transfer' && paymentRecord && (
-            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
-              <div className="flex items-center justify-between border-b border-outline pb-6">
+          {!isPaid && !isCancelled && method === 'bank_transfer' && manual && (
+            <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card p-6 sm:p-8">
+              <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <span className="inline-block rounded-full bg-primary/10 px-3 py-1 text-xs font-bold text-primary mb-2">
-                    Official Bank Transfer
-                  </span>
-                  <h2 className="text-2xl font-bold text-on-surface">Payment Instructions</h2>
+                  <h2 className="text-lg font-bold">Transfer {formatPrice(total, 'NGN')}</h2>
+                  <p className="mt-1 text-sm text-on-surface-variant">Put the reference below in the transfer description{manual.deadline ? `, and pay before ${new Date(manual.deadline).toLocaleString()}` : ''}.</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-xs text-on-surface-variant font-medium">Total Amount Due</p>
-                  <p className="text-2xl font-black text-primary">{formatPrice(booking.totalAmount, 'NGN')}</p>
-                </div>
+                <PaymentStatus status={manual.status} />
               </div>
-
-              {/* Unique Payment Reference Box */}
-              <div className="mt-6 rounded-lg border border-primary/20 bg-primary/5 p-5">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-wider text-primary">Your Payment Reference</p>
-                    <p className="mt-1 font-mono text-xl font-black text-on-surface tracking-wider">{paymentRef}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleCopyReference}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-xs font-bold text-white shadow-sm transition-all hover:bg-primary-container"
-                  >
-                    <span className="material-symbols-outlined text-sm">{copiedRef ? 'check' : 'content_copy'}</span>
-                    <span>{copiedRef ? 'Copied!' : 'Copy Reference'}</span>
-                  </button>
-                </div>
-                <p className="mt-2 text-xs text-on-surface-variant font-medium">
-                  ⚠️ <span className="font-semibold text-on-surface">Important:</span> Include this reference code as your transfer remark or narration for instant matching.
-                </p>
-              </div>
-
-              {/* Bank Account Details Grid */}
-              <div className="mt-6 space-y-4">
-                <div className="rounded-lg border border-outline bg-surface-container/30 p-5 space-y-4">
-                  <div className="flex justify-between items-center pb-3 border-b border-outline/60">
-                    <span className="text-xs font-bold text-on-surface-variant">Bank Name</span>
-                    <span className="text-sm font-bold text-on-surface">{bankConfig.bankName}</span>
-                  </div>
-
-                  <div className="flex justify-between items-center pb-3 border-b border-outline/60">
-                    <span className="text-xs font-bold text-on-surface-variant">Account Name</span>
-                    <span className="text-sm font-bold text-on-surface">{bankConfig.accountName}</span>
-                  </div>
-
-                  <div className="flex justify-between items-center pb-3 border-b border-outline/60 flex-wrap gap-2">
-                    <span className="text-xs font-bold text-on-surface-variant">Account Number</span>
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono text-lg font-black text-primary tracking-wider">{bankConfig.accountNumber}</span>
-                      <button
-                        type="button"
-                        onClick={handleCopyAccount}
-                        className="p-1.5 rounded-md hover:bg-primary/10 text-primary transition-colors"
-                        title="Copy Account Number"
-                      >
-                        <span className="material-symbols-outlined text-base">{copied ? 'check' : 'content_copy'}</span>
-                      </button>
+              {manual.status === 'PAYMENT_REJECTED' && <p className="alert-error mt-4">We couldn’t confirm this payment: {manual.rejectionReason || 'transfer not found'}. Please upload the correct receipt.</p>}
+              {data.bankDetails ? (
+                <dl className="mt-6 divide-y divide-outline rounded-2xl border border-outline">
+                  {[
+                    ['Reference', manual.paymentReference, 'ref'],
+                    ['Bank', data.bankDetails.bankName],
+                    ['Account name', data.bankDetails.accountName],
+                    ['Account number', data.bankDetails.accountNumber, 'acct'],
+                  ].map(([label, value, key]) => (
+                    <div key={label} className="flex items-center justify-between gap-4 px-5 py-4">
+                      <dt className="text-sm text-on-surface-variant">{label}</dt>
+                      <dd className="flex items-center gap-2 font-mono text-sm font-bold">
+                        {value}
+                        {key && value && (
+                          <button type="button" onClick={() => copy(value, key)} className="flex h-8 w-8 items-center justify-center rounded-lg text-primary hover:bg-primary-soft" aria-label={`Copy ${label}`}>
+                            <span className="material-symbols-outlined text-base">{copied === key ? 'check' : 'content_copy'}</span>
+                          </button>
+                        )}
+                      </dd>
                     </div>
-                  </div>
-
-                  {bankConfig.branchName && (
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-bold text-on-surface-variant">Branch</span>
-                      <span className="text-xs font-semibold text-on-surface">{bankConfig.branchName}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="rounded-lg bg-surface-container-lowest border border-outline p-5 text-xs font-medium text-on-surface-variant space-y-2">
-                  <p className="font-bold text-on-surface text-sm">Payment Process:</p>
-                  <ol className="list-decimal pl-4 space-y-1.5 leading-relaxed">
-                    <li>Open your banking app or internet banking portal.</li>
-                    <li>Transfer the exact total of <strong className="text-on-surface">{formatPrice(booking.totalAmount, 'NGN')}</strong> to the account above.</li>
-                    <li>Set narration to <strong className="font-mono text-primary">{paymentRef}</strong>.</li>
-                    <li>Take a screenshot or download the payment receipt.</li>
-                    <li>Upload your receipt in the form on the right to complete verification.</li>
-                  </ol>
-                </div>
-              </div>
-            </div>
-            )}
-          </div>
-
-          {/* Right Column: Upload Proof & Booking Summary */}
-          <div className="space-y-6">
-            {/* Upload Proof Form Card */}
-            {selectedMethod === 'bank_transfer' && paymentRecord && (
-            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
-              <h3 className="text-lg font-bold text-on-surface mb-2">Upload Proof of Payment</h3>
-              <p className="text-xs text-on-surface-variant mb-6 font-medium">
-                Upload your transfer receipt or bank transaction slip for verification.
-              </p>
-
-              {uploadError && (
-                <div className="mb-4 rounded-xl border border-error/20 bg-error-container p-3.5 text-xs font-bold text-on-error-container">
-                  {uploadError}
-                </div>
+                  ))}
+                </dl>
+              ) : (
+                <p className="alert-info mt-6">Our bank details are being updated. Please contact us before you send any money.</p>
               )}
+              {data.bankDetails?.instructions && <p className="mt-4 text-sm text-on-surface-variant">{data.bankDetails.instructions}</p>}
 
-              <form onSubmit={handleSubmitProof} className="space-y-5">
-                {/* File Upload Drop Zone */}
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
-                    Payment Receipt (JPG, PNG, or PDF)
-                  </label>
-                  <label className="relative flex min-h-[140px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-outline bg-surface-container/20 p-6 text-center transition-all hover:border-primary hover:bg-primary/5">
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/jpg,application/pdf"
-                      onChange={handleFileSelect}
-                      disabled={uploading || isPaid}
-                      className="sr-only"
-                    />
-                    {proofFile ? (
-                      <div className="flex flex-col items-center gap-2">
-                        <span className="material-symbols-outlined text-3xl text-primary">description</span>
-                        <p className="text-xs font-bold text-on-surface">{proofFile.name}</p>
-                        <p className="text-[10px] text-on-surface-variant font-medium">
-                          {(proofFile.size / 1024).toFixed(1)} KB — Click to change
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center gap-2">
-                        <span className="material-symbols-outlined text-3xl text-on-surface-variant">upload_file</span>
-                        <p className="text-xs font-bold text-on-surface">Click to select receipt or drop file here</p>
-                        <p className="text-[10px] text-on-surface-variant font-medium">Supported: PNG, JPG, JPEG, PDF up to 5MB</p>
-                      </div>
-                    )}
-                  </label>
-                </div>
-
-                {/* Customer Note */}
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
-                    Transaction Remarks / Bank Sender Name
-                  </label>
-                  <input
-                    type="text"
-                    value={customerNote}
-                    onChange={(e) => setCustomerNote(e.target.value)}
-                    placeholder="e.g. Sent from John Doe / Access Bank"
-                    disabled={uploading || isPaid}
-                    className="w-full rounded-xl border border-outline bg-surface-container px-4 py-3 text-xs font-medium text-on-surface focus:border-primary focus:outline-none"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={uploading || !proofFile || isPaid}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-primary py-4 text-sm font-bold text-white shadow-lg shadow-primary/25 transition-all hover:brightness-110 disabled:opacity-50"
-                >
-                  {uploading ? (
-                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                  ) : (
-                    <>
-                      <span className="material-symbols-outlined text-lg">check_circle</span>
-                      <span>{isUnderReview ? 'Update Payment Receipt' : 'Submit Proof of Transfer'}</span>
-                    </>
-                  )}
+              <form onSubmit={submitProof} className="mt-8 space-y-4 border-t border-outline pt-6">
+                <h3 className="font-bold">{manual.status === 'UNDER_REVIEW' ? 'We’re checking your receipt — you can replace it if needed' : 'Upload your receipt'}</h3>
+                <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-outline p-8 text-center transition-colors hover:border-primary hover:bg-primary-soft/40">
+                  <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={pickProof} className="sr-only" />
+                  <span className="material-symbols-outlined text-3xl text-primary">{proof ? 'description' : 'upload_file'}</span>
+                  <span className="text-sm font-bold">{proof ? proof.name : 'Choose your receipt (photo or PDF, up to 5 MB)'}</span>
+                </label>
+                <input className="field" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Name on the account you paid from (optional)" maxLength={500} />
+                <button type="submit" disabled={!proof || busy !== null} className="btn-primary w-full">
+                  {busy === 'proof' ? <><Spinner /> Uploading…</> : 'Send receipt'}
                 </button>
               </form>
-            </div>
-            )}
-
-            {/* Booking Summary Card */}
-            <div className="rounded-lg border border-outline bg-white p-7 shadow-sm">
-              <h4 className="text-sm font-bold uppercase tracking-wider text-on-surface mb-4">Trip Summary</h4>
-              <dl className="space-y-3 text-xs">
-                <div className="flex justify-between">
-                  <dt className="text-on-surface-variant font-medium">Service Category</dt>
-                  <dd className="font-bold text-on-surface">{booking.serviceType || 'Transport Service'}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-on-surface-variant font-medium">Class / Package</dt>
-                  <dd className="font-bold text-on-surface">{booking.vehicleClass}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-on-surface-variant font-medium">Pickup Point</dt>
-                  <dd className="font-bold text-on-surface text-right max-w-[200px] truncate">{booking.pickup}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-on-surface-variant font-medium">Destination</dt>
-                  <dd className="font-bold text-on-surface text-right max-w-[200px] truncate">{booking.destination}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-on-surface-variant font-medium">Date & Time</dt>
-                  <dd className="font-bold text-on-surface">{booking.date} at {booking.time}</dd>
-                </div>
-                {trackingId && (
-                  <div className="flex justify-between border-t border-outline pt-3">
-                    <dt className="text-primary font-bold">Live Tracking ID</dt>
-                    <dd className="font-mono font-bold text-primary">{trackingId}</dd>
-                  </div>
-                )}
-                {booking.pricingSnapshot && (
-                  <>
-                    <div className="flex justify-between border-t border-outline pt-3">
-                      <dt className="font-medium text-on-surface-variant">Base price</dt>
-                      <dd className="font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.basePrice || 0))}</dd>
-                    </div>
-                    {Number(booking.pricingSnapshot.distanceKm || booking.distanceKm || 0) > 0 && (
-                      <div className="flex justify-between gap-3">
-                        <dt className="font-medium text-on-surface-variant">Distance</dt>
-                        <dd className="text-right font-bold text-on-surface">{Number(booking.pricingSnapshot.distanceKm || booking.distanceKm).toFixed(1)} km</dd>
-                      </div>
-                    )}
-                    {Number(booking.pricingSnapshot.variableFee || booking.pricingSnapshot.extraFee || 0) > 0 && (
-                      <div className="flex justify-between gap-3">
-                        <dt className="font-medium text-on-surface-variant">{booking.pricingSnapshot.feeLabel || 'Service fee'}</dt>
-                        <dd className="text-right font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.variableFee || booking.pricingSnapshot.extraFee))}</dd>
-                      </div>
-                    )}
-                    {Number(booking.pricingSnapshot.weekendSurcharge || 0) > 0 && (
-                      <div className="flex justify-between gap-3"><dt className="font-medium text-on-surface-variant">Weekend surcharge</dt><dd className="font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.weekendSurcharge))}</dd></div>
-                    )}
-                    {Number(booking.pricingSnapshot.nightSurcharge || 0) > 0 && (
-                      <div className="flex justify-between gap-3"><dt className="font-medium text-on-surface-variant">Night surcharge</dt><dd className="font-bold text-on-surface">{formatInvoicePrice(Number(booking.pricingSnapshot.nightSurcharge))}</dd></div>
-                    )}
-                  </>
-                )}
-                <div className="flex justify-between border-t border-outline pt-3 text-sm">
-                  <dt className="font-bold text-on-surface">Total</dt>
-                  <dd className="font-black text-primary">{formatInvoicePrice(Number(booking.totalAmount || 0))}</dd>
-                </div>
-              </dl>
-            </div>
-          </div>
+            </motion.section>
+          )}
         </div>
+
+        <aside className="lg:sticky lg:top-28 lg:self-start">
+          <div className="card overflow-hidden">
+            <div className="border-b border-outline bg-secondary px-6 py-5 text-white">
+              <p className="text-xs font-semibold uppercase tracking-wider text-white/60">Tracking number</p>
+              <p className="mt-1 font-mono text-lg font-bold">{booking.trackingId || bookingId}</p>
+            </div>
+            <dl className="space-y-3 p-6 text-sm">
+              <SummaryRow label="Service" value={booking.serviceType} />
+              <SummaryRow label="Car or package" value={booking.vehicleClass} />
+              <SummaryRow label="From" value={booking.pickup} />
+              <SummaryRow label="To" value={booking.destination} />
+              <SummaryRow label="When" value={`${booking.date} · ${booking.time}`} />
+              {Number(snapshot.distanceKm) > 0 && <SummaryRow label="Distance" value={`${snapshot.distanceKm} km`} />}
+              <div className="border-t border-outline pt-3" />
+              <SummaryRow label="Trip price" value={formatPrice(Number(snapshot.basePrice || 0), invoiceCurrency)} />
+              {Number(snapshot.extraFee) > 0 && <SummaryRow label={snapshot.feeLabel || 'Fees'} value={formatPrice(Number(snapshot.extraFee), invoiceCurrency)} />}
+              {Number(snapshot.weekendSurcharge) > 0 && <SummaryRow label="Weekend surcharge" value={formatPrice(Number(snapshot.weekendSurcharge), invoiceCurrency)} />}
+              {Number(snapshot.nightSurcharge) > 0 && <SummaryRow label="Night surcharge" value={formatPrice(Number(snapshot.nightSurcharge), invoiceCurrency)} />}
+              <div className="flex items-baseline justify-between border-t border-outline pt-4">
+                <dt className="font-bold">Total</dt>
+                <dd className="text-2xl font-extrabold text-primary">{formatPrice(total, invoiceCurrency)}</dd>
+              </div>
+              {invoiceCurrency !== 'NGN' && <p className="text-right text-xs text-on-surface-variant">That’s {formatPrice(total, 'NGN')} in naira</p>}
+            </dl>
+            {!isPaid && !isCancelled && ['Quoted', 'Booked'].includes(booking.status) && (
+              <div className="border-t border-outline p-4">
+                <button type="button" onClick={cancelBooking} disabled={busy !== null} className="btn-ghost w-full text-sm text-on-surface-variant">Cancel booking</button>
+              </div>
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   );
+}
+
+function SummaryRow({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <dt className="shrink-0 text-on-surface-variant">{label}</dt>
+      <dd className="text-right font-semibold">{value || '—'}</dd>
+    </div>
+  );
+}
+
+function PaymentStatus({ status }: { status?: string }) {
+  const labels: Record<string, [string, string]> = {
+    AWAITING_PAYMENT: ['Waiting for payment', 'bg-surface-container text-on-surface'],
+    UNDER_REVIEW: ['Checking receipt', 'bg-amber-100 text-amber-900'],
+    PAID: ['Paid', 'bg-green-100 text-green-800'],
+    PAYMENT_REJECTED: ['Not confirmed', 'bg-red-100 text-red-800'],
+  };
+  const [label, tone] = labels[status || ''] || [status || 'Pending', 'bg-surface-container text-on-surface'];
+  return <span className={`rounded-full px-3 py-1 text-xs font-bold ${tone}`}>{label}</span>;
 }

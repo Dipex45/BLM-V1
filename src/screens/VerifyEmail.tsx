@@ -1,112 +1,99 @@
-import React, { useState } from 'react';
-import { auth } from '../lib/firebase';
-import { sendEmailVerification, signOut } from 'firebase/auth';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { sendEmailVerification } from 'firebase/auth';
+import { useAuth } from '../hooks/useAuth';
+import { auth } from '../lib/firebase';
+import { authContinueUrl, getEmailAuthError } from '../lib/authFlow';
+import { easeOutExpo, Spinner } from '../components/ui/motion';
+
+const RESEND_COOLDOWN = 60;
 
 export default function VerifyEmail() {
-  const location = useLocation();
-  const [message, setMessage] = useState(
-    location.state?.verificationSent === false
-      ? 'Your account was created, but the first email could not be sent. Use the resend button below.'
-      : '',
+  const { user, refresh, signOut } = useAuth();
+  const [checking, setChecking] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const [message, setMessage] = useState<{ tone: 'error' | 'success' | 'info'; text: string } | null>(() =>
+    sessionStorage.getItem('blm-verification-sent') === 'failed'
+      ? { tone: 'error', text: 'Your account is ready, but we couldn’t send the email. Tap “Resend email”.' }
+      : null,
   );
-  const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
-  const user = auth.currentUser;
 
-  const handleResend = async () => {
+  // Poll quietly so the page moves on as soon as the link is clicked in another tab.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh().catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setTimeout(() => setCooldown((value) => value - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [cooldown]);
+
+  const resend = async () => {
     if (!user) return;
-    setLoading(true);
+    setSending(true);
     try {
-      await sendEmailVerification(user);
-      setMessage("A fresh verification link has been sent.");
-    } catch (error: any) {
-      setMessage(error.message);
+      await sendEmailVerification(user.firebaseUser, authContinueUrl());
+      setMessage({ tone: 'success', text: `We’ve sent a new link to ${user.email}.` });
+      setCooldown(RESEND_COOLDOWN);
+    } catch (err: any) {
+      setMessage({ tone: 'error', text: getEmailAuthError(err?.code) });
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   };
 
-  const handleRefresh = async () => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    setLoading(true);
-    setMessage('');
+  const checkNow = async () => {
+    setChecking(true);
     try {
-      await currentUser.reload();
-      await currentUser.getIdToken(true);
-      if (currentUser.emailVerified) {
-        navigate('/dashboard', { replace: true });
-      } else {
-        setMessage('Your email is not verified yet. Open the verification link in your inbox, then check again.');
+      await refresh();
+      if (!auth.currentUser?.emailVerified) {
+        setMessage({ tone: 'info', text: 'Not confirmed yet. Click the link in the email, then come back here.' });
       }
     } catch {
-      setMessage('We could not refresh your verification status. Check your connection and try again.');
+      setMessage({ tone: 'error', text: 'We couldn’t check right now. Please check your internet.' });
     } finally {
-      setLoading(false);
+      setChecking(false);
     }
-  };
-
-  const handleLogout = async () => {
-    await signOut(auth);
-    navigate('/login');
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center p-8 text-center">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full p-8 md:p-10 bg-white rounded-lg border border-outline shadow-sm"
-      >
-        <div className="w-20 h-20 bg-primary/10 text-primary rounded-lg flex items-center justify-center mx-auto mb-8">
-          <span className="material-symbols-outlined text-4xl">mark_email_unread</span>
+    <div className="flex min-h-[calc(100vh-5rem)] items-center justify-center px-4 py-12">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: easeOutExpo }} className="card w-full max-w-md p-8 text-center sm:p-10">
+        <div className="relative mx-auto mb-8 flex h-20 w-20 items-center justify-center">
+          <span className="absolute inset-0 animate-ping-slow rounded-full bg-primary/15" />
+          <span className="relative flex h-20 w-20 items-center justify-center rounded-full bg-primary-soft text-primary">
+            <span className="material-symbols-outlined text-4xl">mark_email_unread</span>
+          </span>
         </div>
-        <h1 className="text-3xl font-bold text-on-surface mb-4">Verify your email.</h1>
-        <p className="text-on-surface-variant font-semibold text-sm leading-relaxed mb-8">
-          User: {user?.email}<br/>
-          Status: pending verification
-        </p>
-        
-        <p className="text-on-surface-variant text-sm mb-10 leading-relaxed">
-          Please check your inbox and follow the verification link before accessing your dashboard.
+        <h1 className="text-3xl font-extrabold">Check your inbox</h1>
+        <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">
+          We’ve sent a link to <strong className="text-on-surface">{user?.email}</strong>. Click it to confirm your email — this page will move on by itself.
         </p>
 
         {message && (
-          <div className="mb-8 p-4 bg-primary/5 text-primary rounded-md text-sm font-bold">
-            {message}
+          <div className={`mt-6 text-left ${message.tone === 'error' ? 'alert-error' : message.tone === 'success' ? 'alert-success' : 'alert-info'}`} role="status">
+            {message.text}
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-4">
-          <button
-            onClick={handleRefresh}
-            disabled={loading}
-            className="w-full py-4 bg-primary text-white font-bold rounded-md text-sm hover:bg-primary-container transition-colors"
-          >
-            {loading ? 'Checking...' : 'I have verified my email'}
+        <div className="mt-8 grid gap-3">
+          <button type="button" onClick={checkNow} disabled={checking} className="btn-primary btn-lg w-full">
+            {checking ? <><Spinner /> Checking…</> : 'I’ve clicked the link'}
           </button>
-          
-          <button
-            onClick={handleResend}
-            disabled={loading}
-            className="w-full py-4 bg-surface-container border border-outline text-on-surface font-bold rounded-md text-sm hover:bg-outline/10 transition-colors"
-          >
-            {loading ? 'Sending...' : 'Resend email'}
+          <button type="button" onClick={resend} disabled={sending || cooldown > 0} className="btn-outline w-full">
+            {sending ? <Spinner /> : null}
+            {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend email'}
           </button>
-
-          <button
-            onClick={handleLogout}
-            className="w-full py-4 bg-white border border-red-100 text-red-500 font-bold rounded-md text-sm hover:bg-red-50 transition-colors"
-          >
-            Log out
+          <button type="button" onClick={() => void signOut()} className="btn-ghost w-full text-on-surface-variant">
+            Use a different account
           </button>
         </div>
+        <p className="mt-6 text-xs text-on-surface-variant">Can’t find it? Check your spam or promotions folder.</p>
       </motion.div>
     </div>
   );

@@ -6,9 +6,8 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
-    "build": "vite build && node scripts/generate-seo-pages.mjs",
+    "build": "vite build && tsx scripts/generate-seo-pages.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test": "jest"
   },
@@ -61,5 +60,8 @@
   },
   "overrides": {
     "qs": "^6.16.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
