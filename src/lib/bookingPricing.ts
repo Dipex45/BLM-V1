@@ -1,4 +1,4 @@
-import { effectiveKmRate, type PricingCatalog } from './catalog';
+import { effectiveKmRate, type PricingCatalog } from './catalog.js';
 
 export type ServiceKind = 'distance' | 'car_hire' | 'touring' | 'cross_border' | 'logistics';
 

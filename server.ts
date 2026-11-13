@@ -15,8 +15,8 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import * as Sentry from "@sentry/node";
-import { company } from "./src/lib/company";
-import { calculateBookingQuote, needsRouteDistance, serviceKind } from "./src/lib/bookingPricing";
+import { company } from "./src/lib/company.js";
+import { calculateBookingQuote, needsRouteDistance, serviceKind } from "./src/lib/bookingPricing.js";
 import {
   DEFAULT_FEATURE_FLAGS,
   DEFAULT_TRACKING_LOCATIONS,
@@ -24,7 +24,7 @@ import {
   resolveCurrencyRates,
   resolvePricingCatalog,
   type PublicCatalog,
-} from "./src/lib/catalog";
+} from "./src/lib/catalog.js";
 
 type Role =
   | "super_admin"
@@ -52,6 +52,8 @@ declare global {
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === "production";
+/** True when running as a Vercel function rather than a long-running server (Railway, local). */
+const isVercel = Boolean(process.env.VERCEL);
 const DEFAULT_EMAIL_FROM = process.env.NOTIFICATION_EMAIL_FROM || "BLM Motors <bookings@blmmotors.ng>";
 
 /** Without these the live site cannot work, so the server refuses to start. */
@@ -801,6 +803,10 @@ class OperationsQueue {
       log("warn", "REDIS_URL missing; background jobs will run inline and health will report degraded");
       return;
     }
+    if (isVercel) {
+      // A Vercel function stops between requests, so a queue worker would never run; do jobs directly.
+      return;
+    }
 
     this.connection = new IORedis(redisUrl, { maxRetriesPerRequest: null, enableOfflineQueue: false });
     let lastErrorLog = 0;
@@ -1333,7 +1339,33 @@ function contentSecurityDirectives() {
   };
 }
 
-async function startServer() {
+/** On Vercel, fall back to the project's own addresses so only the Firebase key is required. */
+function applyHostingDefaults() {
+  if (!isVercel) return;
+  const productionHost = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  if (!envValue("APP_URL") && productionHost) process.env.APP_URL = `https://${productionHost}`;
+  if (!envValue("CORS_ORIGINS") && envValue("APP_URL")) {
+    const previewHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter(Boolean).map((host) => `https://${host}`);
+    process.env.CORS_ORIGINS = [envValue("APP_URL"), ...previewHosts].join(",");
+  }
+}
+
+/** A request from a page on the same address as the server is never a cross-site request. */
+function isSameOrigin(origin: string, req: Request) {
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  try {
+    return Boolean(host) && new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds the whole API. Railway and local development also serve the website from it;
+ * on Vercel the website is served by Vercel itself and only the API runs here.
+ */
+export async function createApp({ serveFrontend }: { serveFrontend: boolean }) {
+  applyHostingDefaults();
   const missingEnvironment = validateEnvironment();
   const app = express();
   operationsQueue = new OperationsQueue();
@@ -1342,16 +1374,14 @@ async function startServer() {
 
   app.set("trust proxy", 1);
   app.use(
-    cors({
-      origin(origin, callback) {
-        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
-          callback(null, true);
-          return;
-        }
+    cors((req, callback) => {
+      const origin = req.headers.origin;
+      const allowed = !origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin) || isSameOrigin(origin, req as Request);
+      if (!allowed) {
         callback(new Error("CORS origin denied"));
-      },
-      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      credentials: true,
+        return;
+      }
+      callback(null, { origin: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], credentials: true });
     }),
   );
   app.use(
@@ -3139,6 +3169,8 @@ async function startServer() {
     });
   });
 
+  if (!serveFrontend) return app;
+
   if (!isProduction) {
     // Vite is only needed while developing; production serves the prebuilt dist folder.
     const { createServer: createViteServer } = await import("vite");
@@ -3165,12 +3197,19 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    log("info", "Server running", { url: `http://0.0.0.0:${PORT}` });
-  });
+  return app;
 }
 
-startServer().catch((error) => {
-  log("error", "Server failed to start", { error: error instanceof Error ? error.stack || error.message : String(error) });
-  process.exit(1);
-});
+// On Vercel, api/index.ts imports createApp and runs it per request instead.
+if (!isVercel) {
+  createApp({ serveFrontend: true })
+    .then((app) => {
+      app.listen(PORT, "0.0.0.0", () => {
+        log("info", "Server running", { url: `http://0.0.0.0:${PORT}` });
+      });
+    })
+    .catch((error) => {
+      log("error", "Server failed to start", { error: error instanceof Error ? error.stack || error.message : String(error) });
+      process.exit(1);
+    });
+}

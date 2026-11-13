@@ -1,4 +1,4 @@
-import { company, defaultVehicles } from './company';
+import { company, defaultVehicles } from './company.js';
 
 /**
  * Single source of truth for everything that affects a price.
