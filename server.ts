@@ -2944,6 +2944,24 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+    const searchLandingPages = [
+      "/services",
+      "/services/long-and-short-distance-trips",
+      "/services/cross-border-trips",
+      "/services/touring",
+      "/services/car-hire",
+      "/services/pickup-and-logistics",
+      "/corridors/lagos-cotonou",
+      "/corridors/cotonou-lagos",
+      "/corridors/lagos-lome",
+      "/corridors/lagos-accra",
+      "/legal",
+    ];
+    for (const route of searchLandingPages) {
+      app.get(route, (_req, res) => {
+        res.sendFile(path.join(distPath, route.slice(1), "index.html"));
+      });
+    }
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

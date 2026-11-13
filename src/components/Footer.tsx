@@ -3,6 +3,13 @@ import { company } from '../lib/company';
 
 const slugify = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
+const popularRoutes = [
+  { label: 'Lagos to Cotonou transport', path: '/corridors/lagos-cotonou' },
+  { label: 'Cotonou to Lagos transport', path: '/corridors/cotonou-lagos' },
+  { label: 'Lagos to Lome transport', path: '/corridors/lagos-lome' },
+  { label: 'Lagos to Accra transport', path: '/corridors/lagos-accra' },
+];
+
 export default function Footer() {
   return (
     <footer className="z-50 mt-auto border-t border-outline-variant bg-white px-4 py-10 md:px-8">
@@ -44,10 +51,12 @@ export default function Footer() {
         </div>
 
         <div>
-          <h4 className="mb-4 text-sm font-bold">Routes</h4>
+          <h4 className="mb-4 text-sm font-bold">Popular routes</h4>
           <ul className="flex flex-col gap-2 text-sm text-on-surface-variant">
-            {company.routes.map((route) => (
-              <li key={route}>{route}</li>
+            {popularRoutes.map((route) => (
+              <li key={route.path}>
+                <Link to={route.path} className="transition-colors hover:text-primary">{route.label}</Link>
+              </li>
             ))}
           </ul>
         </div>

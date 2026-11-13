@@ -1,5 +1,14 @@
 # Production Setup
 
+## Google Search setup
+
+1. Set `VITE_SITE_URL` to the final public HTTPS domain before building. Do not leave it pointed at a preview deployment after the custom domain is live.
+2. Create a Google Search Console Domain property for the final domain and complete the DNS verification step.
+3. Set `VITE_GOOGLE_SITE_VERIFICATION` to the verification content value if Google asks for an HTML meta tag, then redeploy.
+4. Submit `https://YOUR_DOMAIN/sitemap.xml` in Search Console.
+5. Use URL Inspection to request indexing for the home page, `/services/cross-border-trips`, and each page under `/corridors/`.
+6. Recheck indexing and search performance after Google has crawled the deployment. Search appearance and ranking are not immediate or guaranteed.
+
 ## Recommended hosting
 
 Use Railway for the Express API, BullMQ workers, SSE endpoint, and optionally the built frontend. Use Vercel for the frontend only when `VITE_API_BASE_URL` points to the Railway HTTPS domain. Set `APP_URL` to the public frontend and `CORS_ORIGINS` to every exact allowed frontend origin, comma separated.
