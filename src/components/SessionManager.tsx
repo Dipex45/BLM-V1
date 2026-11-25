@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Skeleton } from './ui/Skeleton';
 import { signOut } from 'firebase/auth';
 import { useNavigate } from 'react-router-dom';
 import { apiDelete, apiGet, apiPost } from '../lib/api';
@@ -150,7 +151,7 @@ export default function SessionManager() {
 
       {loading ? (
         <div className="mt-5 space-y-3" aria-label="Loading device sessions">
-          {[0, 1].map((item) => <div key={item} className="h-20 animate-pulse rounded-md bg-surface-container" />)}
+          {[0, 1].map((item) => <Skeleton key={item} className="h-20" delay={item * 0.14} />)}
         </div>
       ) : activeSessions.length === 0 ? (
         <p className="py-8 text-center text-sm text-on-surface-variant">No signed-in devices found.</p>

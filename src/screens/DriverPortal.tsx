@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Skeleton } from '../components/ui/Skeleton';
 import { apiErrorMessage, apiGet, apiPost } from '../lib/api';
 import { statusLabel } from '../hooks/useMyBookings';
 
@@ -106,7 +107,7 @@ export default function DriverPortal() {
   };
 
   if (loading) {
-    return <div className="mx-auto max-w-3xl animate-pulse space-y-4 px-4 py-10"><div className="h-9 w-52 rounded bg-surface-container" /><div className="h-40 rounded-lg bg-surface-container" /></div>;
+    return <div className="mx-auto max-w-3xl space-y-4 px-4 py-10" role="status" aria-label="Loading"><Skeleton className="h-9 w-52" /><Skeleton className="h-40 rounded-2xl" delay={0.15} /></div>;
   }
 
   const availability = data?.driver.availability?.state || 'offline';

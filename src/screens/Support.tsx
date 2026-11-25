@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Skeleton } from '../components/ui/Skeleton';
 import { apiErrorMessage, apiGet, apiPost } from "../lib/api";
 import StatusBadge from "./admin/components/StatusBadge";
 import EmptyState from "./admin/components/EmptyState";
@@ -184,12 +185,9 @@ export default function Support() {
               </h2>
             </div>
             {loading ? (
-              <div className="animate-pulse space-y-3 p-5">
+              <div className="space-y-3 p-5" role="status" aria-label="Loading messages">
                 {[0, 1, 2].map((item) => (
-                  <div
-                    key={item}
-                    className="h-20 rounded-lg bg-surface-container"
-                  />
+                  <Skeleton key={item} className="h-20" delay={item * 0.14} />
                 ))}
               </div>
             ) : tickets.length ? (

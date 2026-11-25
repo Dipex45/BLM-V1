@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { PanelSkeleton } from '../components/ui/Skeleton';
 import { useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { company } from '../lib/company';
@@ -126,7 +127,7 @@ export default function Tracking() {
       <div className="container-page py-12">
         <AnimatePresence mode="wait">
           {error && <motion.p key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="alert-error"><span className="material-symbols-outlined">search_off</span>{error}</motion.p>}
-          {loading && !record && <motion.div key="loading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]"><div className="skeleton h-80 rounded-2xl" /><div className="skeleton h-80 rounded-2xl" /></motion.div>}
+          {loading && !record && <motion.div key="loading" className="grid gap-6 lg:grid-cols-[1.3fr_1fr]"><PanelSkeleton lines={5} /><PanelSkeleton lines={4} delay={0.2} /></motion.div>}
           {record && (
             <motion.div key={record.id} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: easeOutExpo }} className="grid gap-6 lg:grid-cols-[1.3fr_1fr]">
               <section className="card p-6 sm:p-8">

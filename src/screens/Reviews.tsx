@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ListSkeleton, Skeleton } from '../components/ui/Skeleton';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { apiErrorMessage, apiGet } from '../lib/api';
@@ -21,7 +22,7 @@ function Stars({ value, size = 'text-lg' }: { value: number; size?: string }) {
 function EligibleTrips({ onPick }: { onPick: (booking: BookingRecord) => void }) {
   const { bookings, loading } = useMyBookings();
   const eligible = bookings.filter((booking) => booking.status === 'Completed' && !booking.reviewId);
-  if (loading) return <div className="skeleton h-16" />;
+  if (loading) return <Skeleton className="h-16 rounded-xl" />;
   if (!eligible.length) return <p className="text-sm text-on-surface-variant">You can review a trip after it’s finished.</p>;
   return (
     <div className="space-y-2">
@@ -95,7 +96,7 @@ export default function Reviews() {
           </div>
           {error && <p className="alert-error mt-6">{error}</p>}
           {!reviews && !error ? (
-            <div className="mt-8 space-y-4">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-36 rounded-2xl" />)}</div>
+            <div className="mt-8"><ListSkeleton label="Loading reviews" /></div>
           ) : visible.length === 0 ? (
             <div className="card mt-8 p-12 text-center text-on-surface-variant">No reviews yet for this service.</div>
           ) : (

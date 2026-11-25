@@ -1,4 +1,5 @@
 import { FormEvent, useRef, useState } from 'react';
+import { Skeleton } from '../components/ui/Skeleton';
 import { Link } from 'react-router-dom';
 import { motion, useScroll, useTransform } from 'framer-motion';
 import { company } from '../lib/company';
@@ -19,7 +20,7 @@ const steps = [
 ];
 
 export default function About() {
-  const { catalog, error: catalogError } = useCatalog();
+  const { catalog } = useCatalog();
   const { formatPrice } = useCurrency();
   const heroRef = useRef<HTMLElement>(null);
   const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
@@ -95,7 +96,7 @@ export default function About() {
           <Link to="/services" className="btn-outline">All services</Link>
         </Reveal>
         <Stagger className="mt-12 grid gap-5 md:grid-cols-2 lg:grid-cols-5">
-          {company.services.map((service) => {
+          {company.services.map((service, index) => {
             const start = catalog ? serviceStartingPrice(service.kind, catalog) : null;
             return (
               <StaggerItem key={service.title}>
@@ -103,7 +104,7 @@ export default function About() {
                   <span className="material-symbols-outlined text-3xl text-primary transition-transform duration-300 group-hover:-translate-y-1">{service.icon}</span>
                   <h3 className="mt-6 text-lg font-bold">{service.title}</h3>
                   <p className="mt-2 flex-1 text-sm text-on-surface-variant">{service.desc}</p>
-                  <p className="mt-6 text-sm font-bold">{start ? <>From <span className="text-primary">{formatPrice(start.amount)}</span>{start.suffix}</> : catalogError ? <span className="text-on-surface-variant">Price unavailable</span> : <span className="skeleton inline-block h-4 w-24" />}</p>
+                  <p className="mt-6 text-sm font-bold">{start ? <>From <span className="text-primary">{formatPrice(start.amount)}</span>{start.suffix}</> : <Skeleton className="h-5 w-28" delay={index * 0.12} />}</p>
                 </Link>
               </StaggerItem>
             );

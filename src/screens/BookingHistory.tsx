@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ListSkeleton } from '../components/ui/Skeleton';
 import { Link } from 'react-router-dom';
 import { statusLabel, statusTone, useMyBookings } from '../hooks/useMyBookings';
 import { useCurrency } from '../contexts/CurrencyContext';
@@ -48,7 +49,7 @@ export default function BookingHistory() {
       {error && <p className="alert-error mt-6">{error}</p>}
 
       {loading ? (
-        <div className="mt-6 space-y-3">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-24 rounded-2xl" />)}</div>
+        <div className="mt-6"><ListSkeleton label="Loading bookings" /></div>
       ) : visible.length === 0 ? (
         <div className="card mt-6 p-12 text-center text-on-surface-variant">No bookings found.</div>
       ) : (

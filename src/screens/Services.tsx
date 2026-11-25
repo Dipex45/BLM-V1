@@ -6,6 +6,7 @@ import { serviceStartingPrice } from '../lib/bookingPricing';
 import { useCatalog } from '../hooks/useCatalog';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { Skeleton } from '../components/ui/Skeleton';
 import { easeOutExpo, fadeUp, Reveal, Stagger, StaggerItem } from '../components/ui/motion';
 
 export default function Services() {
@@ -54,11 +55,21 @@ export default function Services() {
                       <span className="material-symbols-outlined text-2xl">{service.icon}</span>
                     </span>
                     <span className="rounded-full bg-surface-container px-3 py-1 text-xs font-bold text-on-surface">
-                      {start ? <>From {formatPrice(start.amount)}{start.suffix}</> : error ? 'Price unavailable' : <span className="skeleton inline-block h-3 w-20 align-middle" />}
+                      {start ? <>From {formatPrice(start.amount)}{start.suffix}</> : <Skeleton className="my-0.5 h-3 w-24 rounded-full" delay={index * 0.12} />}
                     </span>
                   </div>
                   <h3 className="mt-8 text-xl font-bold group-hover:text-primary">{service.title}</h3>
                   <p className="mt-3 flex-1 text-sm leading-relaxed text-on-surface-variant">{service.desc}</p>
+                  {index === 0 && !catalog && (
+                    <div className="mt-6 space-y-4 border-t border-outline pt-5">
+                      {[0, 1, 2].map((row) => (
+                        <div key={row} className="flex items-center justify-between">
+                          <Skeleton className="h-4 w-28" delay={row * 0.14} />
+                          <Skeleton className="h-4 w-16" delay={row * 0.14 + 0.08} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {index === 0 && catalog && (
                     <ul className="mt-6 space-y-2 border-t border-outline pt-5 text-sm">
                       {catalog.vehicles.filter((vehicle) => Number(vehicle.kmRate) > 0).map((vehicle) => (
@@ -100,7 +111,15 @@ export default function Services() {
                 </div>
               </StaggerItem>
             ))}
-            {!catalog && !error && [0, 1, 2, 3].map((key) => <div key={key} className="skeleton h-20" />)}
+            {!catalog && [0, 1, 2, 3].map((key) => (
+              <div key={key} className="flex items-center gap-3 rounded-2xl border border-outline p-4">
+                <Skeleton className="h-9 w-9 shrink-0 rounded-full" delay={key * 0.12} />
+                <div className="flex-1">
+                  <Skeleton className="h-4 w-1/2" delay={key * 0.12 + 0.06} />
+                  <Skeleton className="mt-2 h-3 w-4/5" delay={key * 0.12 + 0.12} />
+                </div>
+              </div>
+            ))}
           </Stagger>
         </div>
       </section>

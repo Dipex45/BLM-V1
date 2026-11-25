@@ -7,12 +7,34 @@ type State = { catalog: PublicCatalog | null; error: string | null; loading: boo
 let cache: { at: number; promise: Promise<PublicCatalog> } | null = null;
 const listeners = new Set<(catalog: PublicCatalog) => void>();
 const TTL = 60_000;
+const FIRST_RETRY = 5_000;
+const SLOWEST_RETRY = 60_000;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryDelay = FIRST_RETRY;
+
+/** After a failure, quietly try again (5s, 10s, 20s… up to 60s) so prices appear as soon as the server is back. */
+function retryLater() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    if (listeners.size) fetchCatalog(true).catch(() => undefined);
+  }, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, SLOWEST_RETRY);
+}
 
 function fetchCatalog(force = false) {
   if (!cache || force || Date.now() - cache.at > TTL) {
     const promise = apiGet<PublicCatalog>('/api/public/catalog').then((response) => response.data);
     cache = { at: Date.now(), promise };
-    promise.then((catalog) => listeners.forEach((listener) => listener(catalog))).catch(() => { cache = null; });
+    promise
+      .then((catalog) => {
+        retryDelay = FIRST_RETRY;
+        listeners.forEach((listener) => listener(catalog));
+      })
+      .catch(() => {
+        cache = null;
+        retryLater();
+      });
   }
   return cache.promise;
 }

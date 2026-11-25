@@ -1,4 +1,5 @@
 import { lazy, ReactNode, Suspense, useEffect } from 'react';
+import { PageSkeleton } from './components/ui/Skeleton';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuth } from './hooks/useAuth';
@@ -36,16 +37,6 @@ function Splash() {
           <motion.div className="h-full w-1/3 rounded-full bg-primary" animate={{ x: ['-100%', '300%'] }} transition={{ duration: 1.1, repeat: Infinity, ease: 'easeInOut' }} />
         </div>
       </motion.div>
-    </div>
-  );
-}
-
-function PageFallback() {
-  return (
-    <div className="container-page space-y-4 py-16" aria-label="Loading page">
-      <div className="skeleton h-10 w-1/3" />
-      <div className="skeleton h-5 w-1/2" />
-      <div className="mt-8 grid gap-4 md:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-48" />)}</div>
     </div>
   );
 }
@@ -93,7 +84,7 @@ function AnimatedRoutes() {
         exit={{ opacity: 0, y: -6 }}
         transition={{ duration: 0.35, ease: easeOutExpo }}
       >
-        <Suspense fallback={<PageFallback />}>
+        <Suspense fallback={<PageSkeleton />}>
           <Routes location={location}>
             <Route path="/" element={<About />} />
             <Route path="/services" element={<Services />} />

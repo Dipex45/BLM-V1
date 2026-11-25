@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ListSkeleton, Skeleton } from '../components/ui/Skeleton';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuth } from '../hooks/useAuth';
@@ -44,7 +45,7 @@ export default function Dashboard() {
           <StaggerItem key={stat.label} className="card p-6">
             <span className="material-symbols-outlined rounded-xl bg-primary-soft p-2 text-primary">{stat.icon}</span>
             <p className="mt-5 text-sm text-on-surface-variant">{stat.label}</p>
-            <p className="mt-1 text-3xl font-extrabold">{loading ? <span className="skeleton inline-block h-8 w-10" /> : <AnimatedNumber value={stat.value} format={String} />}</p>
+            <p className="mt-1 text-3xl font-extrabold">{loading ? <Skeleton className="h-9 w-12" /> : <AnimatedNumber value={stat.value} format={String} />}</p>
           </StaggerItem>
         ))}
         <StaggerItem className="card bg-secondary p-6 text-white">
@@ -61,7 +62,7 @@ export default function Dashboard() {
             <Link to="/bookings" className="text-sm font-bold text-primary hover:underline">View all</Link>
           </div>
           {loading ? (
-            <div className="space-y-4">{[0, 1].map((key) => <div key={key} className="skeleton h-40 rounded-2xl" />)}</div>
+            <ListSkeleton label="Loading bookings" />
           ) : [...unpaid, ...active].length === 0 ? (
             <div className="card flex flex-col items-center p-12 text-center">
               <span className="material-symbols-outlined text-5xl text-on-surface-variant/50">route</span>

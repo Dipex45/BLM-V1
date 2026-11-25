@@ -1,4 +1,5 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from 'react';
+import { PanelSkeleton, Skeleton } from '../components/ui/Skeleton';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -24,7 +25,7 @@ export default function Checkout() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { catalog, error: catalogError, reload: reloadCatalog } = useCatalog();
+  const { catalog } = useCatalog();
   const { formatPrice, displayCurrency } = useCurrency();
   const { t } = useLocale();
 
@@ -95,8 +96,8 @@ export default function Checkout() {
   if (!data) {
     return (
       <div className="container-page grid gap-8 py-12 lg:grid-cols-[1fr_380px]">
-        <div className="space-y-6"><div className="skeleton h-24" /><div className="skeleton h-72" /></div>
-        <div className="skeleton h-96" />
+        <div className="space-y-6"><PanelSkeleton lines={1} /><PanelSkeleton lines={4} delay={0.15} /></div>
+        <PanelSkeleton lines={6} delay={0.3} />
       </div>
     );
   }
@@ -238,14 +239,8 @@ export default function Checkout() {
           {!isPaid && !isCancelled && (
             <section className="card p-6 sm:p-8">
               <h2 className="text-lg font-bold">{t('selectPayment')}</h2>
-              {!payments && catalogError ? (
-                <div className="alert-error mt-5">
-                  <span className="material-symbols-outlined">cloud_off</span>
-                  <span className="flex-1">{catalogError}</span>
-                  <button type="button" onClick={reloadCatalog} className="font-bold underline">Retry</button>
-                </div>
-              ) : !payments ? (
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-24" />)}</div>
+              {!payments ? (
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((key) => <Skeleton key={key} className="h-24 rounded-2xl" delay={key * 0.14} />)}</div>
               ) : methods.every((item) => !item.enabled) ? (
                 <p className="alert-info mt-5">Online payment isn’t available right now. Please message us on WhatsApp to finish your booking.</p>
               ) : (
