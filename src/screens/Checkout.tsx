@@ -24,7 +24,7 @@ export default function Checkout() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { catalog } = useCatalog();
+  const { catalog, error: catalogError, reload: reloadCatalog } = useCatalog();
   const { formatPrice, displayCurrency } = useCurrency();
   const { t } = useLocale();
 
@@ -238,7 +238,13 @@ export default function Checkout() {
           {!isPaid && !isCancelled && (
             <section className="card p-6 sm:p-8">
               <h2 className="text-lg font-bold">{t('selectPayment')}</h2>
-              {!payments ? (
+              {!payments && catalogError ? (
+                <div className="alert-error mt-5">
+                  <span className="material-symbols-outlined">cloud_off</span>
+                  <span className="flex-1">{catalogError}</span>
+                  <button type="button" onClick={reloadCatalog} className="font-bold underline">Retry</button>
+                </div>
+              ) : !payments ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-3">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-24" />)}</div>
               ) : methods.every((item) => !item.enabled) ? (
                 <p className="alert-info mt-5">Online payment isn’t available right now. Please message us on WhatsApp to finish your booking.</p>

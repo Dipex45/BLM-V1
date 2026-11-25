@@ -264,7 +264,15 @@ export default function ServiceOrder() {
           </div>
         )}
 
-        {!catalog ? (
+        {!catalog && catalogError ? (
+          <div className="card p-8">
+            <h2 className="text-lg font-bold">You can still book with us</h2>
+            <p className="mt-2 text-on-surface-variant">Online prices aren’t available right now. Try again in a moment, or message us on WhatsApp and we’ll give you a price.</p>
+            <a href={`https://wa.me/${company.whatsapp.replace('+', '')}?text=${encodeURIComponent(company.whatsappMessage)}`} target="_blank" rel="noreferrer" className="btn-primary mt-6">
+              <span className="material-symbols-outlined">chat</span> Chat with us
+            </a>
+          </div>
+        ) : !catalog ? (
           <div className="space-y-6">{[0, 1, 2].map((key) => <div key={key} className="skeleton h-56 rounded-2xl" />)}</div>
         ) : (
           <motion.form onSubmit={submit} initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="space-y-6">
@@ -484,7 +492,7 @@ export default function ServiceOrder() {
                 <div className="space-y-3"><div className="skeleton h-4" /><div className="skeleton h-4 w-2/3" /><div className="skeleton mt-4 h-9 w-1/2" /></div>
               ) : (
                 <p className="text-on-surface-variant">
-                  {quoteError || (usesRoute && catalog?.mapsEnabled ? 'Enter where you’re going from and to, and we’ll show the price.' : 'Pick your options to see the price.')}
+                  {quoteError || (!catalog && catalogError ? 'Price unavailable right now.' : usesRoute && catalog?.mapsEnabled ? 'Enter where you’re going from and to, and we’ll show the price.' : 'Pick your options to see the price.')}
                 </p>
               )}
               {quoting && quote && <p className="flex items-center gap-2 text-xs text-on-surface-variant"><Spinner className="h-3 w-3" /> Updating price…</p>}

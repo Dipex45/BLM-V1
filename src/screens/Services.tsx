@@ -54,7 +54,7 @@ export default function Services() {
                       <span className="material-symbols-outlined text-2xl">{service.icon}</span>
                     </span>
                     <span className="rounded-full bg-surface-container px-3 py-1 text-xs font-bold text-on-surface">
-                      {start ? <>From {formatPrice(start.amount)}{start.suffix}</> : <span className="skeleton inline-block h-3 w-20 align-middle" />}
+                      {start ? <>From {formatPrice(start.amount)}{start.suffix}</> : error ? 'Price unavailable' : <span className="skeleton inline-block h-3 w-20 align-middle" />}
                     </span>
                   </div>
                   <h3 className="mt-8 text-xl font-bold group-hover:text-primary">{service.title}</h3>

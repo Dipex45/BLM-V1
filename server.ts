@@ -118,16 +118,41 @@ function readServiceAccount(): Record<string, string> | null {
   }
 }
 
+/** Says what is wrong with the Firebase key. Never includes any part of the key itself. */
+function serviceAccountProblem(): string | null {
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() && !process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim()) return null;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (!raw) return "FIREBASE_SERVICE_ACCOUNT_JSON is not set";
+  try {
+    JSON.parse(raw);
+  } catch {
+    return "FIREBASE_SERVICE_ACCOUNT_JSON was not pasted correctly: it must be the whole file, from { to }, with no quotes around it";
+  }
+  const account = readServiceAccount();
+  if (!account) return "FIREBASE_SERVICE_ACCOUNT_JSON is not a service account key (client_email or private_key is missing)";
+  if (account.project_id && firebaseWebConfig.projectId && account.project_id !== firebaseWebConfig.projectId) {
+    return `FIREBASE_SERVICE_ACCOUNT_JSON is from a different Firebase project: it must be from ${firebaseWebConfig.projectId}`;
+  }
+  return null;
+}
+
+/** Settings that stop the server from starting. `problems` names settings only, so it is safe to show on /api/health. */
+export class StartupError extends Error {
+  constructor(readonly problems: string[]) {
+    super(`Missing required production settings: ${problems.join("; ")}`);
+  }
+}
+
 function validateEnvironment() {
-  const required = requiredProductionKeys.filter((key) => !envValue(key));
-  if (!firebaseWebConfig.projectId) required.push("VITE_FIREBASE_PROJECT_ID (or firebase-applet-config.json projectId)");
+  const required = requiredProductionKeys.filter((key) => !envValue(key)).map((key) => `${key} is not set`);
+  if (!firebaseWebConfig.projectId) required.push("VITE_FIREBASE_PROJECT_ID is not set (or projectId in firebase-applet-config.json)");
   if (!readServiceAccount() && !process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
-    required.push("FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS");
+    required.push(serviceAccountProblem() || "FIREBASE_SERVICE_ACCOUNT_JSON is not set");
   }
   const optional = Object.keys(optionalEnvironmentKeys).filter((key) => !envValue(key));
   for (const key of optional) log("warn", `${key} is not set: ${optionalEnvironmentKeys[key]}`);
   if (isProduction && required.length > 0) {
-    throw new Error(`Missing required production settings: ${required.join(", ")}`);
+    throw new StartupError(required);
   }
   return [...required, ...optional];
 }
@@ -1487,6 +1512,7 @@ export async function createApp({ serveFrontend }: { serveFrontend: boolean }) {
       redis: operationsQueue.connected ? "connected" : operationsQueue.enabled ? "unreachable" : "not_configured",
       queues: operationsQueue.connected ? "queue" : "running_directly",
       firebaseAdmin: readServiceAccount() || process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() ? "configured" : "missing_credentials",
+      problems: [serviceAccountProblem()].filter(Boolean),
       firebaseProject: firebaseWebConfig.projectId || null,
       firestoreDatabase: firebaseWebConfig.firestoreDatabaseId,
       providers: {

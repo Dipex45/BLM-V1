@@ -3,7 +3,7 @@
  * here (see the rewrite in vercel.json), so the same API that runs on Railway runs on Vercel.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createApp } from "../server.js";
+import { createApp, StartupError } from "../server.js";
 
 let appPromise: ReturnType<typeof createApp> | null = null;
 
@@ -18,6 +18,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     console.error("API failed to start:", error instanceof Error ? error.message : error);
     res.statusCode = 503;
     res.setHeader("Content-Type", "application/json");
+    res.setHeader("Cache-Control", "no-store");
+    if ((req.url || "").split("?")[0] === "/api/health") {
+      // Names the settings to fix in Vercel. Never includes their values.
+      const problems = error instanceof StartupError ? error.problems : ["The server could not start. See the Vercel logs for the reason."];
+      res.end(JSON.stringify({ ok: false, problems }));
+      return;
+    }
     res.end(JSON.stringify({ error: "Online booking is temporarily unavailable. Please try again shortly, or book with us on WhatsApp." }));
   }
 }

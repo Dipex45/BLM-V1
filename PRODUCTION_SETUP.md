@@ -16,7 +16,7 @@ The live site runs on **Vercel** (project `blm-v1`, address `https://blm-v1.verc
 - [ ] That is the only required setting. `APP_URL` and `CORS_ORIGINS` fill themselves in from the Vercel address; set them only when you add a custom domain (e.g. `APP_URL` = `https://blmmotors.ng`, `CORS_ORIGINS` = `https://blmmotors.ng`).
 - [ ] Add the payment, email, SMS and Maps keys from `.env.example` for the features you want. Anything left out is hidden, not broken.
 - [ ] **Deployments → latest → ⋯ → Redeploy.** New settings only take effect after a redeploy.
-- [ ] Open `https://blm-v1.vercel.app/api/health`. You want `"ok": true` and `"firebaseAdmin": "configured"`. If it says “Online booking is temporarily unavailable”, the key is missing or was pasted incompletely.
+- [ ] Open `https://blm-v1.vercel.app/api/health`. You want `"ok": true` and `"firebaseAdmin": "configured"`. If something is wrong, the `problems` list names the setting to fix (never its value). Fix it, redeploy, and check again.
 - [ ] **Custom domain (optional):** Settings → Domains → add it and follow Vercel’s DNS instructions, then add it to Firebase’s Authorized domains and set `APP_URL` / `CORS_ORIGINS` as above.
 
 ### 3. First admin

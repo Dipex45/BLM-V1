@@ -19,7 +19,7 @@ const steps = [
 ];
 
 export default function About() {
-  const { catalog } = useCatalog();
+  const { catalog, error: catalogError } = useCatalog();
   const { formatPrice } = useCurrency();
   const heroRef = useRef<HTMLElement>(null);
   const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
@@ -103,7 +103,7 @@ export default function About() {
                   <span className="material-symbols-outlined text-3xl text-primary transition-transform duration-300 group-hover:-translate-y-1">{service.icon}</span>
                   <h3 className="mt-6 text-lg font-bold">{service.title}</h3>
                   <p className="mt-2 flex-1 text-sm text-on-surface-variant">{service.desc}</p>
-                  <p className="mt-6 text-sm font-bold">{start ? <>From <span className="text-primary">{formatPrice(start.amount)}</span>{start.suffix}</> : <span className="skeleton inline-block h-4 w-24" />}</p>
+                  <p className="mt-6 text-sm font-bold">{start ? <>From <span className="text-primary">{formatPrice(start.amount)}</span>{start.suffix}</> : catalogError ? <span className="text-on-surface-variant">Price unavailable</span> : <span className="skeleton inline-block h-4 w-24" />}</p>
                 </Link>
               </StaggerItem>
             );

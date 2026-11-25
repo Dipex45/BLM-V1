@@ -48,7 +48,7 @@ const byNewest = (a: any, b: any) => (b.createdAt?.toMillis?.() ?? Date.parse(b.
 export default function AdminDashboard() {
   const { user } = useAuth();
   const { formatPrice } = useCurrency();
-  const { catalog } = useCatalog();
+  const { catalog, error: catalogError, reload: reloadCatalog } = useCatalog();
   const { notify, confirmAction, requestForm, feedbackLayer } = useAdminFeedback();
 
   const role = (user?.role || 'customer_support_agent') as AdminRole;
@@ -190,6 +190,14 @@ export default function AdminDashboard() {
     await quiet(act(() => apiPost('/api/bookings/update-status', { bookingId: booking.id, status, cancellationReason }), `Booking updated.`));
   };
 
+  const catalogPlaceholder = catalogError ? (
+    <div className="alert-error">
+      <span className="material-symbols-outlined">error</span>
+      <span className="flex-1">{catalogError}</span>
+      <button type="button" onClick={reloadCatalog} className="font-bold underline">Retry</button>
+    </div>
+  ) : <AdminSkeleton />;
+
   const content = () => {
     if (loading) return <AdminSkeleton />;
     if (loadError) {
@@ -271,7 +279,7 @@ export default function AdminDashboard() {
               await saveSetting('vehicle_types', catalog.vehicles.filter((_, i) => i !== index));
             }}
           />
-        ) : <AdminSkeleton />;
+        ) : catalogPlaceholder;
       case 'hubs':
         return (
           <HubsTab
@@ -319,7 +327,7 @@ export default function AdminDashboard() {
               return getDownloadURL(fileRef);
             }}
           />
-        ) : <AdminSkeleton />;
+        ) : catalogPlaceholder;
       case 'admins':
         return (
           <AdminsTab
