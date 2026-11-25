@@ -5,6 +5,7 @@ import { auth, db } from '../lib/firebase';
 import { apiPost, apiErrorMessage } from '../lib/api';
 import { AppRole, isFederatedUser } from '../lib/authFlow';
 import { logger } from '../lib/logger';
+import { finishProviderSignIn } from '../lib/providerSignIn';
 
 export type AppUser = {
   uid: string;
@@ -93,6 +94,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   buildRef.current = buildUser;
 
   useEffect(() => {
+    // Done here because a customer coming back from Google may never see the login page again.
+    void finishProviderSignIn();
     return onIdTokenChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
         syncedFor.current = null;

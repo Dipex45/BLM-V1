@@ -15,6 +15,10 @@
       "destination": "/api"
     },
     {
+      "source": "/__/auth/(.*)",
+      "destination": "https://gen-lang-client-0039054423.firebaseapp.com/__/auth/$1"
+    },
+    {
       "source": "/services",
       "destination": "/services/index.html"
     },

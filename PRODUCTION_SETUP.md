@@ -17,6 +17,7 @@ The live site runs on **Vercel** (project `blm-v1`, address `https://blm-v1.verc
 - [ ] Add the payment, email, SMS and Maps keys from `.env.example` for the features you want. Anything left out is hidden, not broken.
 - [ ] **Deployments → latest → ⋯ → Redeploy.** New settings only take effect after a redeploy.
 - [ ] Open `https://blm-v1.vercel.app/api/health`. You want `"ok": true` and `"firebaseAdmin": "configured"`. If something is wrong, the `problems` list names the setting to fix (never its value). Fix it, redeploy, and check again.
+- [ ] **Google sign-in without a popup:** in Google Cloud → APIs & Services → Credentials → the OAuth web client, add `https://blm-v1.vercel.app/__/auth/handler` under **Authorized redirect URIs**. Only after that, set `VITE_FIREBASE_AUTH_DOMAIN` = `blm-v1.vercel.app` (Production) and redeploy. Setting it first breaks Google sign-in. `vercel.json` already forwards `/__/auth/` to Firebase. Use your custom domain in both places if you add one.
 - [ ] **Custom domain (optional):** Settings → Domains → add it and follow Vercel’s DNS instructions, then add it to Firebase’s Authorized domains and set `APP_URL` / `CORS_ORIGINS` as above.
 
 ### 3. First admin

@@ -1,10 +1,11 @@
 import { FormEvent, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { GoogleAuthProvider, OAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { Apple } from 'lucide-react';
 import { auth } from '../lib/firebase';
-import { authContinueUrl, ensureCustomerProfile, getEmailAuthError, getProviderAuthError } from '../lib/authFlow';
+import { authContinueUrl, getEmailAuthError } from '../lib/authFlow';
+import { useProviderSignIn } from '../lib/providerSignIn';
 import AuthLayout, { FormMessage, GoogleIcon } from '../components/AuthLayout';
 import { Spinner } from '../components/ui/motion';
 
@@ -15,9 +16,13 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [busy, setBusy] = useState<'email' | 'google' | 'apple' | 'reset' | null>(null);
+  const [busy, setBusy] = useState<'email' | 'reset' | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+
+  const returnTo = (useLocation().state as { from?: string } | null)?.from;
+  const { provider, signIn: signInWith } = useProviderSignIn((text) => { setError(text); setMessage(''); }, returnTo);
+  const locked = busy !== null || provider !== null;
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -55,24 +60,6 @@ export default function Login() {
     }
   };
 
-  const handleProvider = async (name: 'Google' | 'Apple') => {
-    setError('');
-    setMessage('');
-    setBusy(name === 'Google' ? 'google' : 'apple');
-    try {
-      const provider = name === 'Google' ? new GoogleAuthProvider() : new OAuthProvider('apple.com');
-      if (provider instanceof OAuthProvider) {
-        provider.addScope('email');
-        provider.addScope('name');
-      }
-      const result = await signInWithPopup(auth, provider);
-      await ensureCustomerProfile(result.user, `${name} customer`).catch(() => undefined);
-    } catch (err: any) {
-      setError(getProviderAuthError(name, err?.code));
-      setBusy(null);
-    }
-  };
-
   return (
     <AuthLayout
       title={mode === 'signin' ? 'Welcome back' : 'Reset your password'}
@@ -88,11 +75,11 @@ export default function Login() {
       {mode === 'signin' ? (
         <>
           <div className="grid gap-3 sm:grid-cols-2">
-            <button type="button" onClick={() => handleProvider('Google')} disabled={busy !== null} className="btn-outline">
-              {busy === 'google' ? <Spinner /> : <GoogleIcon />} Google
+            <button type="button" onClick={() => void signInWith('Google')} disabled={locked} className="btn-outline">
+              {provider === 'Google' ? <Spinner /> : <GoogleIcon />} Google
             </button>
-            <button type="button" onClick={() => handleProvider('Apple')} disabled={busy !== null} className="btn-dark">
-              {busy === 'apple' ? <Spinner /> : <Apple className="h-5 w-5" fill="currentColor" aria-hidden="true" />} Apple
+            <button type="button" onClick={() => void signInWith('Apple')} disabled={locked} className="btn-dark">
+              {provider === 'Apple' ? <Spinner /> : <Apple className="h-5 w-5" fill="currentColor" aria-hidden="true" />} Apple
             </button>
           </div>
           <div className="my-6 flex items-center gap-4 text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
@@ -118,7 +105,7 @@ export default function Login() {
                 </button>
               </div>
             </div>
-            <button type="submit" disabled={busy !== null} className="btn-primary btn-lg w-full">
+            <button type="submit" disabled={locked} className="btn-primary btn-lg w-full">
               {busy === 'email' ? <><Spinner /> Signing in…</> : 'Sign in'}
             </button>
           </form>

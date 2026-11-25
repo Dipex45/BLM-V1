@@ -68,7 +68,7 @@ export function getProviderAuthError(providerName: string, code?: string) {
     case 'auth/popup-blocked':
       return `Your browser blocked the ${providerName} window. Allow pop-ups for this site and try again.`;
     case 'auth/popup-closed-by-user':
-      return `${providerName} sign-in was closed before it finished.`;
+      return `The ${providerName} window closed before sign-in finished. Please try again, or sign in with your email.`;
     case 'auth/cancelled-popup-request':
       return 'A sign-in window is already open. Finish or close it, then try again.';
     case 'auth/account-exists-with-different-credential':

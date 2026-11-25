@@ -47,6 +47,7 @@ export default defineConfig(({mode}) => {
             const normalized = id.replace(/\\/g, '/');
             if (normalized.includes('/src/screens/AdminDashboard') || normalized.includes('/src/screens/admin/')) return 'admin-dashboard';
             if (normalized.includes('/src/screens/')) return `screen-${normalized.split('/src/screens/')[1].split('.')[0].toLowerCase()}`;
+            if (/\/src\/lib\/(firebase|authFlow|providerSignIn)\.ts$/.test(normalized)) return 'app-auth';
             if (normalized.includes('/node_modules/recharts/') || normalized.includes('/node_modules/d3-')) return 'vendor-charts';
             if (normalized.includes('/node_modules/firebase/')) return 'vendor-firebase';
             if (normalized.includes('/node_modules/framer-motion/') || normalized.includes('/node_modules/motion-dom/')) return 'vendor-motion';
